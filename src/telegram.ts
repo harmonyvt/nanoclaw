@@ -7,6 +7,7 @@ import {
   extractTelegramChatId,
 } from './config.js';
 import { storeChatMetadata, storeTextMessage } from './db.js';
+import { markdownToTelegramHtml } from './format.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
 
@@ -98,7 +99,14 @@ export async function sendTelegramMessage(
   }
 
   for (const chunk of chunks) {
-    await bot.api.sendMessage(numericId, chunk);
+    const html = markdownToTelegramHtml(chunk);
+    try {
+      await bot.api.sendMessage(numericId, html, { parse_mode: 'HTML' });
+    } catch (err) {
+      // Fallback: send as plain text if HTML parsing fails
+      logger.debug({ err }, 'HTML parse failed, falling back to plain text');
+      await bot.api.sendMessage(numericId, chunk);
+    }
   }
 }
 
