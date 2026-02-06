@@ -60,6 +60,10 @@ export function extractTelegramChatId(id: string): number {
   return Number(id.slice(3));
 }
 
+// Telegram file handling
+export const TELEGRAM_FILE_MAX_SIZE = 20 * 1024 * 1024; // 20MB (Telegram Bot API limit)
+export const UPLOADS_DIR_NAME = 'uploads';
+
 // Timezone for scheduled tasks (cron expressions, etc.)
 // Uses system timezone by default
 export const TIMEZONE =
