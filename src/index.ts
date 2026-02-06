@@ -2,6 +2,7 @@ import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
+import { registerBuiltins } from './commands.js';
 import {
   ASSISTANT_NAME,
   DATA_DIR,
@@ -624,7 +625,8 @@ async function main(): Promise<void> {
   initDatabase();
   logger.info('Database initialized');
   loadState();
-  connectTelegram(() => registeredGroups);
+  registerBuiltins();
+  connectTelegram(() => registeredGroups, { sessions: () => sessions });
   startSchedulerLoop({
     sendMessage,
     registeredGroups: () => registeredGroups,
