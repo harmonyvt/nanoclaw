@@ -36,6 +36,7 @@ import {
 import { NewMessage, RegisteredGroup, Session } from './types.js';
 import { loadJson, saveJson } from './utils.js';
 import { logger } from './logger.js';
+import { retrieve, save } from './memory.js';
 
 let lastTimestamp = '';
 let sessions: Session = {};
@@ -133,7 +134,10 @@ async function processMessage(msg: NewMessage): Promise<void> {
         .replace(/"/g, '&quot;');
     return `<message sender="${escapeXml(m.sender_name)}" time="${m.timestamp}">${escapeXml(m.content)}</message>`;
   });
-  const prompt = `<messages>\n${lines.join('\n')}\n</messages>`;
+
+  // Retrieve relevant memories for the latest message
+  const memoryContext = await retrieve(content);
+  const prompt = `${memoryContext}${memoryContext ? '\n\n' : ''}<messages>\n${lines.join('\n')}\n</messages>`;
 
   if (!prompt) return;
 
@@ -149,6 +153,15 @@ async function processMessage(msg: NewMessage): Promise<void> {
   if (response) {
     lastAgentTimestamp[msg.chat_jid] = msg.timestamp;
     await sendMessage(msg.chat_jid, `${ASSISTANT_NAME}: ${response}`);
+
+    // Save conversation to supermemory (fire-and-forget)
+    save(
+      missedMessages.map((m) => ({
+        sender: m.sender_name,
+        content: m.content,
+      })),
+      response,
+    );
   }
 }
 

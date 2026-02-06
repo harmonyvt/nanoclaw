@@ -64,3 +64,6 @@ export function extractTelegramChatId(id: string): number {
 // Uses system timezone by default
 export const TIMEZONE =
   process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+// Supermemory API key for cross-thread memory
+export const SUPERMEMORY_API_KEY = process.env.SUPERMEMORY_API_KEY || '';
