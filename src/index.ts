@@ -148,7 +148,7 @@ async function processMessage(msg: NewMessage): Promise<void> {
 
   if (response) {
     lastAgentTimestamp[msg.chat_jid] = msg.timestamp;
-    await sendMessage(msg.chat_jid, `${ASSISTANT_NAME}: ${response}`);
+    await sendMessage(msg.chat_jid, response);
   }
 }
 
@@ -265,7 +265,7 @@ function startIpcWatcher(): void {
                 ) {
                   await sendMessage(
                     data.chatJid,
-                    `${ASSISTANT_NAME}: ${data.text}`,
+                    data.text,
                   );
                   logger.info(
                     { chatJid: data.chatJid, sourceGroup },
