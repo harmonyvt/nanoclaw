@@ -25,6 +25,8 @@ Single Bun process that connects to Telegram, routes messages to Claude Agent SD
 | `/customize` | Adding channels, integrations, changing behavior |
 | `/commit` | Commit/push with secret scanning and co-author credits |
 | `/pr` | Create a pull request (branches off main if needed) |
+| `/restart` | Restart the NanoClaw background service |
+| `/logs` | View recent logs, errors, or follow live output |
 | `/debug` | Container issues, logs, troubleshooting |
 
 ## Development
