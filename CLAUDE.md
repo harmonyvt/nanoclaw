@@ -167,8 +167,10 @@ Per-group IPC directories prevent cross-group access. Non-main groups can only s
 - `browse_navigate` -- Go to URL
 - `browse_snapshot` -- Accessibility tree / aria snapshot
 - `browse_click` -- Click using description text (CSS-like selectors are treated as best-effort hints)
+- `browse_click_xy` -- Click at exact pixel coordinates (fallback when browse_click fails)
 - `browse_fill` -- Fill form field (description-based element search + typing)
-- `browse_screenshot` -- Capture page (also sent as Telegram photo)
+- `browse_type_at_xy` -- Click at coordinates then type text (fallback when browse_fill fails)
+- `browse_screenshot` -- Capture page (also sent as Telegram photo); use Read tool on path for visual inspection
 - `browse_wait_for_user` -- Handoff to user via takeover web URL, wait until user returns control
 - `browse_go_back` -- Browser back button
 - `browse_evaluate` -- Present for backward compatibility; currently unsupported in CUA mode

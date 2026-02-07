@@ -13,20 +13,21 @@ export function createIpcMcp(ctx: IpcMcpContext) {
   return createSdkMcpServer({
     name: 'nanoclaw',
     version: '1.0.0',
-    tools: NANOCLAW_TOOLS.map((t) =>
-      tool(
-        t.name,
-        t.description,
-        t.schema.shape,
-        async (args: Record<string, unknown>) => {
-          const result = await t.handler(args, ctx);
-          return {
-            content: [{ type: 'text' as const, text: result.content }],
-            isError: result.isError,
-          };
-        },
+    tools: [
+      ...NANOCLAW_TOOLS.map((t) =>
+        tool(
+          t.name,
+          t.description,
+          t.schema.shape,
+          async (args: Record<string, unknown>) => {
+            const result = await t.handler(args, ctx);
+            return {
+              content: [{ type: 'text' as const, text: result.content }],
+              isError: result.isError,
+            };
+          },
+        ),
       ),
-    ),
 
       tool(
         'send_voice',
@@ -1084,7 +1085,7 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
 
       tool(
         'browse_screenshot',
-        'Take a screenshot of the current browser page. Returns the saved image path plus labeled UI elements mapped to grid cells.',
+        'Take a screenshot of the current browser page. Returns the saved image path plus labeled UI elements mapped to grid cells. If the text summary is insufficient or elements are missing, use the Read tool on the screenshot file path to visually inspect the image.',
         {},
         async () => {
           const res = await writeBrowseRequest('screenshot', {});
@@ -1100,11 +1101,15 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
             res.analysis && typeof res.analysis.summary === 'string'
               ? res.analysis.summary
               : null;
+          const screenshotPath = typeof res.result === 'string' ? res.result : '';
+          const hint = screenshotPath
+            ? `\n\nTo visually inspect this screenshot, use the Read tool on: ${screenshotPath}`
+            : '';
           return {
             content: [
               {
                 type: 'text',
-                text: summary || `Screenshot saved: ${res.result}`,
+                text: (summary || `Screenshot saved: ${res.result}`) + hint,
               },
             ],
           };
