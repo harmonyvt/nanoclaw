@@ -129,6 +129,46 @@ export const NANOCLAW_TOOLS: NanoTool[] = [
     },
   },
 
+  {
+    name: 'send_file',
+    description:
+      'Send a file/document to the current chat via Telegram. Use this to share downloaded files, generated documents, or any file accessible to the agent.',
+    schema: z.object({
+      path: z
+        .string()
+        .describe(
+          'Absolute path to the file inside the container (e.g., "/workspace/group/media/report.pdf")',
+        ),
+      caption: z
+        .string()
+        .optional()
+        .describe('Optional caption to send with the file'),
+    }),
+    handler: async (args, ctx): Promise<ToolResult> => {
+      const filePath = args.path as string;
+
+      if (!fs.existsSync(filePath)) {
+        return {
+          content: `File not found: ${filePath}`,
+          isError: true,
+        };
+      }
+
+      const data = {
+        type: 'file',
+        chatJid: ctx.chatJid,
+        filePath,
+        caption: (args.caption as string) || null,
+        groupFolder: ctx.groupFolder,
+        timestamp: new Date().toISOString(),
+      };
+
+      const filename = writeIpcFile(MESSAGES_DIR, data);
+
+      return { content: `File queued for delivery (${filename}): ${filePath}` };
+    },
+  },
+
   // ── Task Scheduling ─────────────────────────────────────────────────────
 
   {
@@ -1117,6 +1157,73 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
         };
       }
       return { content: 'Browser page closed.' };
+    },
+  },
+
+  {
+    name: 'browse_extract_file',
+    description:
+      'Extract/download a file from the CUA sandbox desktop to the agent. Returns the local file path which can then be sent to the user via send_file. Useful for downloading files the browser saved, exporting documents, etc.',
+    schema: z.object({
+      path: z
+        .string()
+        .describe(
+          'Absolute path to the file inside the CUA sandbox (e.g., "/root/Downloads/report.pdf", "~/Documents/data.csv")',
+        ),
+    }),
+    handler: async (args): Promise<ToolResult> => {
+      const res = await writeBrowseRequest(
+        'extract_file',
+        { path: args.path as string },
+        120000,
+      );
+      if (res.status === 'error') {
+        return {
+          content: `File extraction failed: ${res.error}`,
+          isError: true,
+        };
+      }
+      return {
+        content: `File extracted to: ${res.result}`,
+      };
+    },
+  },
+
+  {
+    name: 'browse_upload_file',
+    description:
+      'Upload a file from the agent into the CUA sandbox desktop. Useful for making files received from Telegram available in the browser environment (e.g., uploading a document to a web form).',
+    schema: z.object({
+      source_path: z
+        .string()
+        .describe(
+          'Path to the file inside the agent container (e.g., "/workspace/group/media/document.pdf")',
+        ),
+      destination_path: z
+        .string()
+        .optional()
+        .describe(
+          'Destination path inside the CUA sandbox (default: ~/Downloads/{filename})',
+        ),
+    }),
+    handler: async (args): Promise<ToolResult> => {
+      const res = await writeBrowseRequest(
+        'upload_file',
+        {
+          source_path: args.source_path as string,
+          destination_path: (args.destination_path as string) || null,
+        },
+        120000,
+      );
+      if (res.status === 'error') {
+        return {
+          content: `File upload failed: ${res.error}`,
+          isError: true,
+        };
+      }
+      return {
+        content: `File uploaded: ${res.result}`,
+      };
     },
   },
 ];

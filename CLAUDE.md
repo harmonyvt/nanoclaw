@@ -150,6 +150,7 @@ Per-group IPC directories prevent cross-group access. Non-main groups can only s
 ### Communication
 
 - `send_message` -- Send message to current chat
+- `send_file` -- Send a file/document to current chat (path must be under /workspace/group/ or /workspace/global/)
 - `send_voice` -- Send a voice message using Freya TTS (text-to-speech with emotion support)
 
 ### Task Scheduling
@@ -173,6 +174,8 @@ Per-group IPC directories prevent cross-group access. Non-main groups can only s
 - `browse_screenshot` -- Capture page (also sent as Telegram photo); use Read tool on path for visual inspection
 - `browse_wait_for_user` -- Handoff to user via takeover web URL, wait until user returns control
 - `browse_go_back` -- Browser back button
+- `browse_extract_file` -- Extract a file from CUA sandbox to agent (for sending via `send_file`)
+- `browse_upload_file` -- Upload a file from agent into CUA sandbox (e.g., Telegram attachment → browser)
 - `browse_evaluate` -- Present for backward compatibility; currently unsupported in CUA mode
 - `browse_close` -- Close browser page
 
