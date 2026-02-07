@@ -80,9 +80,9 @@ Credentials are resolved with a fallback chain in `container-runner.ts:resolveCr
 2. **macOS Keychain** -- reads `Claude Code-credentials` via `security find-generic-password`
 3. **`~/.claude/.credentials.json`** -- parses `claudeAiOauth.accessToken`
 
-Non-auth API keys (`OPENAI_API_KEY`, `FIRECRAWL_API_KEY`) are always extracted from `.env` regardless of auth source.
+Non-auth API keys are no longer mounted into containers. They are used on host via IPC capability gateway.
 
-Credentials are written to `data/env/env` and mounted read-only at `/workspace/env-dir/env`. The container entrypoint sources this file.
+When `SECRETLESS_MODE=true`, no credentials are mounted into containers.
 
 ## Container Runtime
 
@@ -95,6 +95,7 @@ Uses **Docker CLI** (`docker run -i --rm`). The codebase was originally written 
 - Max output: 10MB default (`CONTAINER_MAX_OUTPUT_SIZE`)
 - Entrypoint: sources env from `/workspace/env-dir/env`, then runs `bun /app/dist/index.js`
 - The env-dir mount (credentials as a file) was originally a workaround for an Apple Container bug with `-e` env vars when using `-i` stdin. Docker doesn't have this bug, but the pattern is harmless and still works.
+- Secretless mode: forces host capability gateway, disables container credential mounts, and defaults container networking to `none`.
 - **The host process must NOT be containerized** -- it needs Docker socket access, macOS keychain access, and direct filesystem access.
 
 ### Volume Mounts
@@ -234,7 +235,7 @@ Requires `SUPERMEMORY_API_KEY`. When enabled, memories are also automatically re
 
 | Variable           | Default      | Purpose                                                                 |
 | ------------------ | ------------ | ----------------------------------------------------------------------- |
-| `DEFAULT_PROVIDER` | `anthropic`  | Default provider for groups without explicit `providerConfig`            |
+| `DEFAULT_PROVIDER` | `anthropic` | Default provider for groups without explicit `providerConfig` |
 | `DEFAULT_MODEL`    | (empty)      | Default model override (e.g. `claude-sonnet-4-5-20250929`, `gpt-4o`)    |
 
 ### Optional
@@ -253,6 +254,8 @@ Requires `SUPERMEMORY_API_KEY`. When enabled, memories are also automatically re
 | `ASSISTANT_NAME`            | `Andy`                   | Bot trigger name (`@Name`)              |
 | `CONTAINER_IMAGE`           | `nanoclaw-agent:latest`  | Docker image for agent containers       |
 | `CONTAINER_TIMEOUT`         | `300000` (5 min)         | Container execution timeout (ms)        |
+| `SECRETLESS_MODE`           | `false`                  | Enable strict secretless containers (no mounted secrets) |
+| `CONTAINER_NETWORK_MODE`    | `default` or `none`      | Container network policy (`none` recommended with secretless mode) |
 | `CONTAINER_MAX_OUTPUT_SIZE` | `10485760` (10MB)        | Max container stdout/stderr             |
 | `SANDBOX_IDLE_TIMEOUT_MS`   | `1800000`                | Sandbox auto-stop timeout               |
 | `SANDBOX_TAILSCALE_ENABLED` | `true`                   | Use Tailscale IP for wait-for-user URLs |

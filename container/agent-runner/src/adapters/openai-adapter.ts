@@ -9,7 +9,6 @@
  * Conversation history is persisted between invocations via openai-session.ts.
  */
 
-import OpenAI from 'openai';
 import fs from 'fs';
 import type { ProviderAdapter, AdapterInput, AgentEvent } from '../types.js';
 import { buildOpenAITools, executeNanoTool } from './openai-tools.js';
@@ -20,11 +19,35 @@ import {
   type SessionMessage,
 } from './openai-session.js';
 import { NANOCLAW_TOOLS } from '../tool-registry.js';
+import { writeCapabilityRequest } from '../tool-registry.js';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
 /** Maximum agentic loop iterations to prevent runaway tool-calling */
 export const MAX_ITERATIONS = 50;
+
+type OpenAIToolCall = {
+  id: string;
+  type?: string;
+  function?: {
+    name?: string;
+    arguments?: string;
+  };
+};
+
+type OpenAIMessage = {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content?: string | null;
+  tool_calls?: OpenAIToolCall[];
+  tool_call_id?: string;
+  [key: string]: unknown;
+};
+
+type OpenAIChatCompletion = {
+  choices?: Array<{
+    message?: OpenAIMessage;
+  }>;
+};
 
 // ─── Logging ────────────────────────────────────────────────────────────────
 
@@ -92,7 +115,6 @@ export function buildSystemPrompt(input: AdapterInput): string {
 
 export class OpenAIAdapter implements ProviderAdapter {
   async *run(input: AdapterInput): AsyncGenerator<AgentEvent> {
-    const client = new OpenAI(); // reads OPENAI_API_KEY from env
     const model = input.model || 'gpt-4o';
 
     const sessionId = input.sessionId || generateSessionId();
@@ -103,13 +125,9 @@ export class OpenAIAdapter implements ProviderAdapter {
     const systemPrompt = buildSystemPrompt(input);
     const tools = buildOpenAITools();
 
-    // History messages are stored as SessionMessage (loose types for serialization).
-    // Cast to ChatCompletionMessageParam -- the shapes are compatible at runtime.
-    const restoredHistory = history.filter(
-      (m) => m.role !== 'system',
-    ) as unknown as OpenAI.ChatCompletionMessageParam[];
+    const restoredHistory = history.filter((m) => m.role !== 'system') as OpenAIMessage[];
 
-    const messages: OpenAI.ChatCompletionMessageParam[] = [
+    const messages: OpenAIMessage[] = [
       { role: 'system', content: systemPrompt },
       ...restoredHistory,
       { role: 'user', content: input.prompt },
@@ -119,21 +137,38 @@ export class OpenAIAdapter implements ProviderAdapter {
     while (iterations++ < MAX_ITERATIONS) {
       log(`Iteration ${iterations}, sending ${messages.length} messages to ${model}`);
 
-      const response = await client.chat.completions.create({
-        model,
-        messages,
-        tools: tools.length > 0 ? tools : undefined,
-      });
+      const responsePayload = await writeCapabilityRequest(
+        'openai_chat_completion',
+        {
+          model,
+          messages,
+          tools: tools.length > 0 ? tools : undefined,
+        },
+        120000,
+      );
+
+      if (responsePayload.status === 'error') {
+        throw new Error(
+          responsePayload.error || 'OpenAI gateway returned an unknown error',
+        );
+      }
+
+      const response = responsePayload.result as OpenAIChatCompletion;
+      if (!response?.choices || response.choices.length === 0) {
+        throw new Error('OpenAI gateway returned no choices');
+      }
 
       const choice = response.choices[0];
-      if (!choice) break;
+      if (!choice?.message) {
+        throw new Error('OpenAI gateway returned malformed choice message');
+      }
 
       const assistantMessage = choice.message;
       messages.push(assistantMessage);
 
       // No tool calls = final response
       if (!assistantMessage.tool_calls || assistantMessage.tool_calls.length === 0) {
-        if (assistantMessage.content) {
+        if (typeof assistantMessage.content === 'string' && assistantMessage.content) {
           yield { type: 'result', result: assistantMessage.content };
         }
         break;
@@ -141,16 +176,17 @@ export class OpenAIAdapter implements ProviderAdapter {
 
       // Execute each tool call
       for (const toolCall of assistantMessage.tool_calls) {
-        const toolName = toolCall.function.name;
+        const toolName = toolCall.function?.name || 'unknown';
+        const preview = (toolCall.function?.arguments || '').slice(0, 200);
         yield {
           type: 'tool_start',
           toolName,
-          preview: toolCall.function.arguments.slice(0, 200),
+          preview,
         };
 
         let args: Record<string, unknown>;
         try {
-          args = JSON.parse(toolCall.function.arguments);
+          args = JSON.parse(toolCall.function?.arguments || '{}');
         } catch {
           args = {};
         }
@@ -158,7 +194,7 @@ export class OpenAIAdapter implements ProviderAdapter {
         const result = await executeNanoTool(toolName, args, input.ipcContext);
 
         messages.push({
-          role: 'tool' as const,
+          role: 'tool',
           tool_call_id: toolCall.id,
           content: result,
         });

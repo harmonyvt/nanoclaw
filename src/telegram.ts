@@ -382,17 +382,26 @@ function startSelfUpdateProcess(chatId: number): void {
   );
 
   const outputFd = fs.openSync(SELF_UPDATE_LOG, 'a');
+  const childEnv: NodeJS.ProcessEnv = {
+    PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin',
+    HOME: process.env.HOME || PROJECT_ROOT,
+    SHELL: process.env.SHELL || '/bin/bash',
+    TELEGRAM_BOT_TOKEN,
+    SELF_UPDATE_CHAT_ID: String(chatId),
+    SELF_UPDATE_BRANCH,
+    SELF_UPDATE_REMOTE,
+  };
+  for (const key of ['SSH_AUTH_SOCK', 'GIT_SSH_COMMAND', 'LANG', 'LC_ALL']) {
+    const value = process.env[key];
+    if (typeof value === 'string' && value.length > 0) {
+      childEnv[key] = value;
+    }
+  }
   const child = spawn('bash', [SELF_UPDATE_SCRIPT], {
     cwd: PROJECT_ROOT,
     detached: true,
     stdio: ['ignore', outputFd, outputFd],
-    env: {
-      ...process.env,
-      TELEGRAM_BOT_TOKEN,
-      SELF_UPDATE_CHAT_ID: String(chatId),
-      SELF_UPDATE_BRANCH,
-      SELF_UPDATE_REMOTE,
-    },
+    env: childEnv,
   });
 
   child.on('close', (code) => {
