@@ -921,6 +921,16 @@ function startIpcWatcher(): void {
               }
 
               if (events.length > 0) {
+                // Log adapter_stderr events to Pino (visible in dashboard)
+                for (const evt of events) {
+                  if (evt.type === 'adapter_stderr') {
+                    logger.warn(
+                      { module: 'claude-cli', group_folder: sourceGroup },
+                      `[stderr] ${evt.message}`,
+                    );
+                  }
+                }
+
                 // Format status summary
                 const lines: string[] = [];
                 for (const evt of events) {
@@ -945,10 +955,20 @@ function startIpcWatcher(): void {
                 }
               }
             } else {
-              // Not verbose - just clean up status files silently
+              // Not verbose - still log stderr events, then clean up
               for (const file of statusFiles) {
+                const filePath = path.join(statusDir, file);
                 try {
-                  fs.unlinkSync(path.join(statusDir, file));
+                  const evt = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+                  if (evt.type === 'adapter_stderr') {
+                    logger.warn(
+                      { module: 'claude-cli', group_folder: sourceGroup },
+                      `[stderr] ${evt.message}`,
+                    );
+                  }
+                } catch {}
+                try {
+                  fs.unlinkSync(filePath);
                 } catch {}
               }
             }

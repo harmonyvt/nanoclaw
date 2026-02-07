@@ -169,6 +169,41 @@ export const NANOCLAW_TOOLS: NanoTool[] = [
     },
   },
 
+  {
+    name: 'send_voice',
+    description: `Send a voice message to the current chat using text-to-speech. The text will be synthesized into expressive speech and sent as a Telegram voice message.
+
+EMOTION (optional): Control vocal expression. Format: "emotion" or "emotion:intensity" (e.g. "happy", "sad:2", "whisper:3").
+Available emotions:
+- Basic: neutral, happy[1-3], sad[1-3], angry[1-4], fear[1-4], surprise[1-2]
+- Nuanced: shy[1-3], caring[1-3], jealous[1-3], tsun[1-3], embarrassed, lonely, awkward, protective, relieved[1-2], worried[1-2], anxious, annoyed[1-4], frustrated, disappointed, sarcastic, playful[1-3], proud, pout, cold[1-3], awe
+- Special: whisper[1-3], tired[1-2], sleepy, breathy, monotone, firm, mumbling
+Higher numbers = stronger intensity. Auto-detected from text if omitted. Keep text under ~500 chars for best quality.`,
+    schema: z.object({
+      text: z.string().describe('The text to speak as a voice message'),
+      emotion: z
+        .string()
+        .optional()
+        .describe(
+          'Emotion for the voice (e.g. "happy", "sad:2", "whisper:3"). Auto-detected if omitted.',
+        ),
+    }),
+    handler: async (args, ctx): Promise<ToolResult> => {
+      const data = {
+        type: 'voice',
+        chatJid: ctx.chatJid,
+        text: args.text as string,
+        emotion: (args.emotion as string) || null,
+        groupFolder: ctx.groupFolder,
+        timestamp: new Date().toISOString(),
+      };
+
+      const filename = writeIpcFile(MESSAGES_DIR, data);
+
+      return { content: `Voice message queued for delivery (${filename})` };
+    },
+  },
+
   // ── Task Scheduling ─────────────────────────────────────────────────────
 
   {

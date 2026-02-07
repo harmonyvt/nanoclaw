@@ -501,6 +501,16 @@ export function insertLog(log: Omit<LogEntry, 'id'>): number {
   return Number(result.lastInsertRowid);
 }
 
+export function getLogById(id: number): LogEntry | null {
+  return (
+    (db
+      .prepare(
+        'SELECT id, level, time, msg, module, group_folder, raw FROM logs WHERE id = ?',
+      )
+      .get(id) as LogEntry | undefined) ?? null
+  );
+}
+
 export function queryLogs(params: LogQueryParams): LogEntry[] {
   const conditions: string[] = [];
   const values: (string | number)[] = [];

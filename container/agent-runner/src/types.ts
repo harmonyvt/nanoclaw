@@ -37,7 +37,8 @@ export type AgentEvent =
   | { type: 'session_init'; sessionId: string }
   | { type: 'result'; result: string }
   | { type: 'tool_start'; toolName: string; preview: string }
-  | { type: 'tool_progress'; toolName: string; elapsedSeconds?: number };
+  | { type: 'tool_progress'; toolName: string; elapsedSeconds?: number }
+  | { type: 'adapter_stderr'; message: string };
 
 /** Input passed to a provider adapter's run() method */
 export interface AdapterInput {
