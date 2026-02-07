@@ -1,17 +1,32 @@
 import fs from 'fs';
 import path from 'path';
+import { randomBytes } from 'crypto';
 import { GROUPS_DIR } from './config.js';
 import { CuaClient } from './cua-client.js';
 import { logger } from './logger.js';
 import { ensureSandbox, resetIdleTimer } from './sandbox-manager.js';
 
 type PendingWaitForUser = {
+  requestId: string;
   groupFolder: string;
-  resolve: () => void;
+  token: string;
+  createdAt: string;
+  message: string | null;
+  promise: Promise<BrowseResponse>;
+  resolve: (result: BrowseResponse) => void;
 };
 
-// Pending wait-for-user requests: requestId -> group + resolve function
+export type PendingWaitForUserView = {
+  requestId: string;
+  groupFolder: string;
+  token: string;
+  createdAt: string;
+  message: string | null;
+};
+
+// Pending wait-for-user requests: requestId -> metadata + resolver
 const waitingForUser: Map<string, PendingWaitForUser> = new Map();
+const waitingForUserByToken: Map<string, string> = new Map();
 const lastNavigatedUrlByGroup = new Map<string, string>();
 
 type BrowseResponse = {
@@ -29,6 +44,82 @@ type CuaPayload = {
   error?: string;
   message?: string;
 };
+
+function normalizeWaitMessage(message: unknown): string | null {
+  if (typeof message !== 'string') return null;
+  const trimmed = message.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function createWaitToken(): string {
+  return randomBytes(18).toString('base64url');
+}
+
+function toPendingView(pending: PendingWaitForUser): PendingWaitForUserView {
+  return {
+    requestId: pending.requestId,
+    groupFolder: pending.groupFolder,
+    token: pending.token,
+    createdAt: pending.createdAt,
+    message: pending.message,
+  };
+}
+
+function ensurePendingWaitForUser(
+  requestId: string,
+  groupFolder: string,
+  message?: unknown,
+): PendingWaitForUser {
+  const existing = waitingForUser.get(requestId);
+  if (existing) {
+    if (existing.groupFolder !== groupFolder) {
+      logger.warn(
+        {
+          requestId,
+          existingGroup: existing.groupFolder,
+          requestedGroup: groupFolder,
+        },
+        'wait_for_user request already exists for another group',
+      );
+    }
+    const nextMessage = normalizeWaitMessage(message);
+    if (nextMessage) existing.message = nextMessage;
+    return existing;
+  }
+
+  let token = createWaitToken();
+  while (waitingForUserByToken.has(token)) {
+    token = createWaitToken();
+  }
+
+  let resolvePromise!: (value: BrowseResponse) => void;
+  const promise = new Promise<BrowseResponse>((resolve) => {
+    resolvePromise = resolve;
+  });
+
+  const pending: PendingWaitForUser = {
+    requestId,
+    groupFolder,
+    token,
+    createdAt: new Date().toISOString(),
+    message: normalizeWaitMessage(message),
+    promise,
+    resolve: resolvePromise,
+  };
+
+  waitingForUser.set(requestId, pending);
+  waitingForUserByToken.set(token, requestId);
+  return pending;
+}
+
+function completePendingWaitForUser(
+  pending: PendingWaitForUser,
+  result: BrowseResponse,
+): void {
+  waitingForUser.delete(pending.requestId);
+  waitingForUserByToken.delete(pending.token);
+  pending.resolve(result);
+}
 
 function detectImageMimeFromBytes(bytes: Buffer): string | null {
   if (
@@ -913,14 +1004,12 @@ export async function processBrowseRequest(
 
   try {
     if (action === 'wait_for_user') {
-      return new Promise((resolve) => {
-        waitingForUser.set(requestId, {
-          groupFolder,
-          resolve: () => {
-            resolve({ status: 'ok', result: 'User continued' });
-          },
-        });
-      });
+      const pending = ensurePendingWaitForUser(
+        requestId,
+        groupFolder,
+        params.message,
+      );
+      return pending.promise;
     }
 
     return await processCuaRequest(action, params, groupFolder);
@@ -933,6 +1022,58 @@ export async function processBrowseRequest(
   }
 }
 
+export function ensureWaitForUserRequest(
+  requestId: string,
+  groupFolder: string,
+  message?: unknown,
+): PendingWaitForUserView {
+  const pending = ensurePendingWaitForUser(requestId, groupFolder, message);
+  return toPendingView(pending);
+}
+
+export function getWaitForUserRequest(
+  requestId: string,
+): PendingWaitForUserView | null {
+  const pending = waitingForUser.get(requestId);
+  if (!pending) return null;
+  return toPendingView(pending);
+}
+
+export function getOldestWaitForUserRequest(
+  groupFolder?: string,
+): PendingWaitForUserView | null {
+  for (const pending of waitingForUser.values()) {
+    if (groupFolder && pending.groupFolder !== groupFolder) continue;
+    return toPendingView(pending);
+  }
+  return null;
+}
+
+export function getWaitForUserRequestByToken(
+  token: string,
+): PendingWaitForUserView | null {
+  const requestId = waitingForUserByToken.get(token);
+  if (!requestId) return null;
+  return getWaitForUserRequest(requestId);
+}
+
+export function resolveWaitForUserByToken(token: string): boolean {
+  const requestId = waitingForUserByToken.get(token);
+  if (!requestId) return false;
+
+  const pending = waitingForUser.get(requestId);
+  if (!pending) {
+    waitingForUserByToken.delete(token);
+    return false;
+  }
+
+  completePendingWaitForUser(pending, {
+    status: 'ok',
+    result: 'User continued',
+  });
+  return true;
+}
+
 // Called when user sends "continue" in Telegram for a specific chat
 export function resolveWaitForUser(
   groupFolder: string,
@@ -943,16 +1084,20 @@ export function resolveWaitForUser(
     if (!pending || pending.groupFolder !== groupFolder) {
       return false;
     }
-    pending.resolve();
-    waitingForUser.delete(requestId);
+    completePendingWaitForUser(pending, {
+      status: 'ok',
+      result: 'User continued',
+    });
     return true;
   }
 
   // If no specific ID, resolve the oldest waiting request for this group.
-  for (const [id, pending] of waitingForUser.entries()) {
+  for (const pending of waitingForUser.values()) {
     if (pending.groupFolder !== groupFolder) continue;
-    pending.resolve();
-    waitingForUser.delete(id);
+    completePendingWaitForUser(pending, {
+      status: 'ok',
+      result: 'User continued',
+    });
     return true;
   }
   return false;

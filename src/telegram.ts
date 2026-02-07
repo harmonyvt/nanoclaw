@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { Bot, InputFile } from 'grammy';
+import type { LanguageCode } from 'grammy/types';
 
 import {
   GROUPS_DIR,
@@ -17,8 +18,14 @@ import {
   storeMediaMessage,
   storeTextMessage,
 } from './db.js';
+import {
+  ensureWaitForUserRequest,
+  getOldestWaitForUserRequest,
+} from './browse-host.js';
+import { getTakeoverUrl } from './cua-takeover-server.js';
 import { downloadTelegramFile, transcribeAudio } from './media.js';
 import { logger } from './logger.js';
+import { ensureSandbox, getSandboxUrl } from './sandbox-manager.js';
 import { RegisteredGroup } from './types.js';
 
 /**
@@ -33,15 +40,62 @@ export interface SessionManager {
 }
 
 // Read version from package.json at startup
-const pkgPath = path.resolve(import.meta.dir ?? path.dirname(new URL(import.meta.url).pathname), '..', 'package.json');
-const APP_VERSION: string = JSON.parse(fs.readFileSync(pkgPath, 'utf-8')).version;
+const pkgPath = path.resolve(
+  import.meta.dir ?? path.dirname(new URL(import.meta.url).pathname),
+  '..',
+  'package.json',
+);
+const APP_VERSION: string = JSON.parse(
+  fs.readFileSync(pkgPath, 'utf-8'),
+).version;
 
 let bot: Bot | undefined;
 
 const verboseChats = new Set<string>();
-export function isVerbose(chatJid: string): boolean { return verboseChats.has(chatJid); }
+export function isVerbose(chatJid: string): boolean {
+  return verboseChats.has(chatJid);
+}
 
 const TELEGRAM_MAX_LENGTH = 4096;
+
+type SlashCommandSpec = {
+  command: 'new' | 'clear' | 'status' | 'takeover' | 'verbose' | 'help';
+  description: string;
+  help: string;
+};
+
+const TELEGRAM_SLASH_COMMANDS: SlashCommandSpec[] = [
+  {
+    command: 'new',
+    description: 'Start a new conversation thread',
+    help: 'Start a new conversation thread',
+  },
+  {
+    command: 'clear',
+    description: 'Clear conversation history',
+    help: 'Clear conversation history and reset session',
+  },
+  {
+    command: 'status',
+    description: 'Show session info',
+    help: 'Show session info, message count, uptime',
+  },
+  {
+    command: 'takeover',
+    description: 'Force CUA takeover URL',
+    help: 'Force a CUA takeover URL',
+  },
+  {
+    command: 'verbose',
+    description: 'Toggle verbose mode (show agent tool use)',
+    help: 'Toggle verbose mode (show agent tool use)',
+  },
+  {
+    command: 'help',
+    description: 'List commands',
+    help: 'List available commands',
+  },
+];
 
 /**
  * Extract common message metadata from a Telegram context.
@@ -74,6 +128,11 @@ function shouldAccept(ctx: {
   return true;
 }
 
+function toLanguageCode(value?: string): LanguageCode | undefined {
+  if (!value) return undefined;
+  return value as LanguageCode;
+}
+
 /**
  * Get the media directory for a registered group.
  */
@@ -95,28 +154,64 @@ export async function connectTelegram(
   sessionManager?: SessionManager,
 ): Promise<void> {
   bot = new Bot(TELEGRAM_BOT_TOKEN);
+  const apiCommands = TELEGRAM_SLASH_COMMANDS.map((c) => ({
+    command: c.command,
+    description: c.description,
+  }));
+  const syncedCommandScopes = new Set<string>();
+
+  async function syncChatCommandsIfNeeded(
+    chatId: number,
+    languageCode?: LanguageCode,
+  ): Promise<void> {
+    const defaultKey = `${chatId}:default`;
+    const langKey = languageCode ? `${chatId}:${languageCode}` : null;
+    if (
+      syncedCommandScopes.has(defaultKey) &&
+      (!langKey || syncedCommandScopes.has(langKey))
+    ) {
+      return;
+    }
+
+    try {
+      await bot!.api.setMyCommands(apiCommands, {
+        scope: { type: 'chat', chat_id: chatId },
+      });
+      syncedCommandScopes.add(defaultKey);
+
+      if (languageCode && !syncedCommandScopes.has(langKey!)) {
+        await bot!.api.setMyCommands(apiCommands, {
+          scope: { type: 'chat', chat_id: chatId },
+          language_code: languageCode,
+        });
+        syncedCommandScopes.add(langKey!);
+      }
+    } catch (err) {
+      logger.warn(
+        { err, chatId, languageCode },
+        'Failed to sync Telegram commands for chat scope',
+      );
+    }
+  }
 
   // Register slash commands with Telegram immediately so they appear in the command menu.
   // This runs before bot.start() since bot.api only needs the token, not full initialization.
   try {
-    await bot.api.setMyCommands([
-      { command: 'new', description: 'Start a new conversation thread' },
-      { command: 'clear', description: 'Clear conversation history' },
-      { command: 'status', description: 'Show session info' },
-      { command: 'verbose', description: 'Toggle verbose mode (show agent tool use)' },
-      { command: 'help', description: 'List commands' },
-    ]);
+    await bot.api.setMyCommands(apiCommands);
     // Also set commands specifically for private chats so they appear in the / menu
-    await bot.api.setMyCommands(
-      [
-        { command: 'new', description: 'Start a new conversation thread' },
-        { command: 'clear', description: 'Clear conversation history' },
-        { command: 'status', description: 'Show session info' },
-        { command: 'verbose', description: 'Toggle verbose mode (show agent tool use)' },
-        { command: 'help', description: 'List commands' },
-      ],
-      { scope: { type: 'all_private_chats' } },
-    );
+    await bot.api.setMyCommands(apiCommands, {
+      scope: { type: 'all_private_chats' },
+    });
+
+    // Chat-specific scope has higher priority than all_private_chats.
+    // If a stale chat scope exists, this ensures our latest command set is visible.
+    if (TELEGRAM_OWNER_ID) {
+      const ownerChatId = Number(TELEGRAM_OWNER_ID);
+      if (!Number.isNaN(ownerChatId)) {
+        await syncChatCommandsIfNeeded(ownerChatId);
+      }
+    }
+
     logger.info('Bot commands registered with Telegram');
   } catch (err) {
     logger.error({ err }, 'Failed to register bot commands');
@@ -125,7 +220,10 @@ export async function connectTelegram(
   /**
    * Ensure the owner's chat is registered. Auto-registers as "main" on first contact.
    */
-  function ensureRegistered(chatId: string, senderName: string): RegisteredGroup | null {
+  function ensureRegistered(
+    chatId: string,
+    senderName: string,
+  ): RegisteredGroup | null {
     const group = registeredGroups()[chatId];
     if (group) return group;
 
@@ -146,6 +244,16 @@ export async function connectTelegram(
 
   // --- Slash command handlers ---
 
+  bot.use(async (ctx, next) => {
+    if (ctx.chat && shouldAccept({ chat: ctx.chat, from: ctx.from })) {
+      await syncChatCommandsIfNeeded(
+        ctx.chat.id,
+        toLanguageCode(ctx.from?.language_code),
+      );
+    }
+    await next();
+  });
+
   bot.command('new', async (ctx) => {
     if (!shouldAccept(ctx)) return;
     const chatId = makeTelegramChatId(ctx.chat.id);
@@ -164,7 +272,9 @@ export async function connectTelegram(
       sessionManager.clearSession(chatId);
     }
     logger.info({ chatId, deleted }, 'History cleared via /clear command');
-    await ctx.reply(`Cleared ${deleted} message${deleted === 1 ? '' : 's'} and reset session.`);
+    await ctx.reply(
+      `Cleared ${deleted} message${deleted === 1 ? '' : 's'} and reset session.`,
+    );
   });
 
   bot.command('status', async (ctx) => {
@@ -172,7 +282,9 @@ export async function connectTelegram(
     const chatId = makeTelegramChatId(ctx.chat.id);
     const group = registeredGroups()[chatId];
 
-    const sessionId = sessionManager ? sessionManager.getSession(chatId) : undefined;
+    const sessionId = sessionManager
+      ? sessionManager.getSession(chatId)
+      : undefined;
     const messageCount = getMessageCount(chatId);
     const uptimeMs = Date.now() - startTime;
     const uptimeHours = Math.floor(uptimeMs / 3600000);
@@ -191,15 +303,57 @@ export async function connectTelegram(
     await ctx.reply(lines.join('\n'));
   });
 
+  bot.command('takeover', async (ctx) => {
+    if (!shouldAccept(ctx)) return;
+    const chatId = makeTelegramChatId(ctx.chat.id);
+    const senderName = ctx.from
+      ? `${ctx.from.first_name}${ctx.from.last_name ? ` ${ctx.from.last_name}` : ''}`
+      : 'Owner';
+    const group = ensureRegistered(chatId, senderName);
+    if (!group) {
+      await ctx.reply('Could not register this chat for takeover.');
+      return;
+    }
+
+    try {
+      await ensureSandbox();
+    } catch (err) {
+      logger.error({ chatId, err }, 'Failed to start sandbox for /takeover');
+      await ctx.reply(
+        'Failed to start CUA sandbox. Check Docker/sandbox logs.',
+      );
+      return;
+    }
+
+    const existing = getOldestWaitForUserRequest(group.folder);
+    const request =
+      existing ||
+      ensureWaitForUserRequest(
+        `manual-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        group.folder,
+        'Manual forced takeover requested from Telegram command.',
+      );
+
+    const takeoverUrl = getTakeoverUrl(request.token);
+    const sandboxUrl = getSandboxUrl();
+    const takeoverLine = takeoverUrl
+      ? `Take over CUA: ${takeoverUrl}`
+      : 'Takeover URL unavailable (takeover web UI may be disabled).';
+    const noVncLine = sandboxUrl ? `\nDirect noVNC: ${sandboxUrl}` : '';
+    const requestLine = existing
+      ? `\nReusing active request: ${request.requestId}`
+      : `\nCreated request: ${request.requestId}`;
+
+    await ctx.reply(
+      `Forced takeover ready.\n${takeoverLine}${noVncLine}${requestLine}\n\nWhen done, click "Return Control To Agent" in the takeover page.\nFallback: reply "continue ${request.requestId}".`,
+    );
+  });
+
   bot.command('help', async (ctx) => {
     if (!shouldAccept(ctx)) return;
-    const lines = [
-      '/new - Start a new conversation thread',
-      '/clear - Clear conversation history and reset session',
-      '/status - Show session info, message count, uptime',
-      '/verbose - Toggle verbose mode (show agent tool use)',
-      '/help - List available commands',
-    ];
+    const lines = TELEGRAM_SLASH_COMMANDS.map(
+      (c) => `/${c.command} - ${c.help}`,
+    );
     await ctx.reply(lines.join('\n'));
   });
 

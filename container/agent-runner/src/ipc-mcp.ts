@@ -993,12 +993,12 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
 
       tool(
         'browse_wait_for_user',
-        'Ask the user to interact with the sandbox directly (e.g., to log in), then wait for them to reply "continue". Sends a message to the chat with the sandbox URL and your instructions.',
+        'Ask the user to take over the sandbox directly (e.g., to log in), then wait for control to return. Sends a chat message with a takeover web URL (and direct noVNC fallback) plus your instructions.',
         {
           message: z
             .string()
             .describe(
-              'Message to send to the user explaining what they need to do (e.g., "Please log in at the noVNC URL, then reply continue")',
+              'Message to send to the user explaining what they need to do in takeover mode (e.g., "Please log in and click Return Control To Agent when done")',
             ),
         },
         async (args) => {
