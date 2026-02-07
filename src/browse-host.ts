@@ -724,7 +724,7 @@ async function findElementViaVision(
     // Validate coordinates are within screen bounds
     const x = Math.round(parsed.x);
     const y = Math.round(parsed.y);
-    if (x < 0 || x > dimensions.width || y < 0 || y > dimensions.height) {
+    if (x < 0 || x >= dimensions.width || y < 0 || y >= dimensions.height) {
       logger.warn({ x, y, dimensions }, 'Vision fallback: coordinates out of bounds');
       return null;
     }
