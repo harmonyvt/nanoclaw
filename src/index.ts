@@ -35,7 +35,7 @@ import {
   getNewMessages,
   initDatabase,
 } from './db.js';
-import { startSchedulerLoop } from './task-scheduler.js';
+import { runTaskNow, startSchedulerLoop } from './task-scheduler.js';
 import {
   connectTelegram,
   isVerbose,
@@ -44,7 +44,7 @@ import {
   setTelegramTyping,
   stopTelegram,
 } from './telegram.js';
-import type { SessionManager } from './telegram.js';
+import type { SessionManager, TaskActionHandler } from './telegram.js';
 import { NewMessage, RegisteredGroup, Session } from './types.js';
 import { loadJson, saveJson } from './utils.js';
 import { logger } from './logger.js';
@@ -1066,12 +1066,18 @@ async function main(): Promise<void> {
     },
   };
 
-  await connectTelegram(() => registeredGroups, registerGroup, sessionManager);
-  startSchedulerLoop({
+  const schedulerDeps = {
     sendMessage,
     registeredGroups: () => registeredGroups,
     getSessions: () => sessions,
-  });
+  };
+
+  const taskActions: TaskActionHandler = {
+    runTaskNow: (taskId: string) => runTaskNow(taskId, schedulerDeps),
+  };
+
+  await connectTelegram(() => registeredGroups, registerGroup, sessionManager, taskActions);
+  startSchedulerLoop(schedulerDeps);
   startIpcWatcher();
   startIdleWatcher();
   startContainerIdleCleanup();
