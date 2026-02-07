@@ -148,8 +148,8 @@ Per-group IPC directories prevent cross-group access. Non-main groups can only s
 
 - `browse_navigate` -- Go to URL
 - `browse_snapshot` -- Accessibility tree / aria snapshot
-- `browse_click` -- Click using selector/description (CUA resolves via accessibility/element search)
-- `browse_fill` -- Fill form field (element search + typing)
+- `browse_click` -- Click using description text (CSS-like selectors are treated as best-effort hints)
+- `browse_fill` -- Fill form field (description-based element search + typing)
 - `browse_screenshot` -- Capture page (also sent as Telegram photo)
 - `browse_wait_for_user` -- Handoff to user via sandbox live URL, wait for "continue"
 - `browse_go_back` -- Browser back button
@@ -200,28 +200,28 @@ Per-group IPC directories prevent cross-group access. Non-main groups can only s
 
 ### Optional
 
-| Variable                    | Default                     | Purpose                                 |
-| --------------------------- | --------------------------- | --------------------------------------- |
-| `OPENAI_API_KEY`            | --                          | Whisper audio transcription             |
-| `FIRECRAWL_API_KEY`         | --                          | Firecrawl web scraping                  |
-| `ASSISTANT_NAME`            | `Andy`                      | Bot trigger name (`@Name`)              |
-| `CONTAINER_IMAGE`           | `nanoclaw-agent:latest`     | Docker image for agent containers       |
-| `CONTAINER_TIMEOUT`         | `300000` (5 min)            | Container execution timeout (ms)        |
-| `CONTAINER_MAX_OUTPUT_SIZE` | `10485760` (10MB)           | Max container stdout/stderr             |
-| `SANDBOX_IDLE_TIMEOUT_MS`   | `1800000`                   | Sandbox auto-stop timeout               |
-| `SANDBOX_TAILSCALE_ENABLED` | `true`                      | Use Tailscale IP for wait-for-user URLs |
-| `CUA_SANDBOX_IMAGE`         | `trycua/cua-xfce:latest`    | CUA Docker image                        |
-| `CUA_SANDBOX_PLATFORM`      | `linux/amd64`               | Docker platform for CUA image pull/run  |
-| `CUA_SANDBOX_COMMAND_PORT`  | `8000`                      | Host port for CUA `/cmd` API            |
-| `CUA_SANDBOX_VNC_PORT`      | `5901`                      | Host port for CUA VNC                   |
-| `CUA_SANDBOX_NOVNC_PORT`    | `6901`                      | Host port for CUA noVNC live view       |
-| `CUA_SANDBOX_SCREEN_WIDTH`  | `1024`                      | CUA desktop width                       |
-| `CUA_SANDBOX_SCREEN_HEIGHT` | `768`                       | CUA desktop height                      |
-| `CUA_SANDBOX_SCREEN_DEPTH`  | `24`                        | CUA desktop color depth                 |
-| `CUA_SANDBOX_SHM_SIZE`      | `512m`                      | Shared memory for Chromium stability    |
-| `CUA_API_KEY`               | --                          | Optional CUA API key passed to sandbox  |
-| `LOG_LEVEL`                 | `info`                      | Pino log level                          |
-| `TZ`                        | system                      | Timezone for scheduled tasks            |
+| Variable                    | Default                  | Purpose                                 |
+| --------------------------- | ------------------------ | --------------------------------------- |
+| `OPENAI_API_KEY`            | --                       | Whisper audio transcription             |
+| `FIRECRAWL_API_KEY`         | --                       | Firecrawl web scraping                  |
+| `ASSISTANT_NAME`            | `Andy`                   | Bot trigger name (`@Name`)              |
+| `CONTAINER_IMAGE`           | `nanoclaw-agent:latest`  | Docker image for agent containers       |
+| `CONTAINER_TIMEOUT`         | `300000` (5 min)         | Container execution timeout (ms)        |
+| `CONTAINER_MAX_OUTPUT_SIZE` | `10485760` (10MB)        | Max container stdout/stderr             |
+| `SANDBOX_IDLE_TIMEOUT_MS`   | `1800000`                | Sandbox auto-stop timeout               |
+| `SANDBOX_TAILSCALE_ENABLED` | `true`                   | Use Tailscale IP for wait-for-user URLs |
+| `CUA_SANDBOX_IMAGE`         | `trycua/cua-xfce:latest` | CUA Docker image                        |
+| `CUA_SANDBOX_PLATFORM`      | `linux/amd64`            | Docker platform for CUA image pull/run  |
+| `CUA_SANDBOX_COMMAND_PORT`  | `8000`                   | Host port for CUA `/cmd` API            |
+| `CUA_SANDBOX_VNC_PORT`      | `5901`                   | Host port for CUA VNC                   |
+| `CUA_SANDBOX_NOVNC_PORT`    | `6901`                   | Host port for CUA noVNC live view       |
+| `CUA_SANDBOX_SCREEN_WIDTH`  | `1024`                   | CUA desktop width                       |
+| `CUA_SANDBOX_SCREEN_HEIGHT` | `768`                    | CUA desktop height                      |
+| `CUA_SANDBOX_SCREEN_DEPTH`  | `24`                     | CUA desktop color depth                 |
+| `CUA_SANDBOX_SHM_SIZE`      | `512m`                   | Shared memory for Chromium stability    |
+| `CUA_API_KEY`               | --                       | Optional CUA API key passed to sandbox  |
+| `LOG_LEVEL`                 | `info`                   | Pino log level                          |
+| `TZ`                        | system                   | Timezone for scheduled tasks            |
 
 ## Data Directory Structure
 
