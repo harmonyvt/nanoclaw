@@ -26,6 +26,7 @@ import {
 } from './log-sync.js';
 import {
   queryLogs,
+  getLogById,
   getLogStats,
   queryContainerLogs,
   getAllTasks,
@@ -183,6 +184,37 @@ function handleLogsQuery(url: URL): Response {
 
 function handleLogStats(): Response {
   return jsonResponse(getLogStats());
+}
+
+function handleLogDetail(pathname: string): Response {
+  const idStr = pathname.replace('/api/logs/', '');
+  const id = parseInt(idStr, 10);
+  if (isNaN(id)) return jsonResponse({ error: 'invalid id' }, 400);
+
+  const log = getLogById(id);
+  if (!log) return jsonResponse({ error: 'not found' }, 404);
+
+  // Parse raw JSON to extract extra context fields
+  let extra: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(log.raw);
+    const STANDARD_KEYS = new Set([
+      'level', 'time', 'msg', 'module', 'name', 'pid', 'hostname', 'v',
+      'group_folder',
+    ]);
+    for (const [key, value] of Object.entries(parsed)) {
+      if (!STANDARD_KEYS.has(key)) {
+        extra[key] = value;
+      }
+    }
+  } catch {
+    // raw wasn't valid JSON
+  }
+
+  return jsonResponse({
+    ...log,
+    extra,
+  });
 }
 
 function handleContainersList(url: URL): Response {
@@ -1087,8 +1119,36 @@ function renderDashboardPage(): string {
     .log-level-50 { color: var(--level-error); border: 1px solid var(--level-error); background: rgba(239,68,68,0.1); }
     .log-level-60 { color: var(--level-fatal); border: 1px solid var(--level-fatal); background: rgba(220,38,38,0.15); }
     .log-module { color: var(--accent); font-size: 11px; flex-shrink: 0; }
-    .log-msg { word-break: break-word; }
+    .log-group { color: var(--accent-2); font-size: 11px; flex-shrink: 0; }
+    .log-msg { word-break: break-word; flex: 1; min-width: 0; }
     .log-msg.mono { font-size: 12px; }
+    .log-entry { cursor: pointer; }
+    .log-entry.expanded { background: rgba(255,255,255,0.04); }
+    .log-detail {
+      padding: 8px 12px 8px 32px;
+      background: rgba(255,255,255,0.02);
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+      font-size: 11px;
+      line-height: 1.6;
+      display: none;
+    }
+    .log-detail.show { display: block; }
+    .log-detail-row { display: flex; gap: 8px; padding: 1px 0; }
+    .log-detail-key { color: var(--accent); font-weight: 500; min-width: 80px; flex-shrink: 0; }
+    .log-detail-val { color: var(--text); word-break: break-all; }
+    .log-detail-val.muted { color: var(--muted); }
+    .log-detail-raw {
+      margin-top: 6px; padding: 6px 8px;
+      background: var(--bg); border-radius: 6px;
+      font-family: "IBM Plex Mono", monospace; font-size: 11px;
+      white-space: pre-wrap; word-break: break-all;
+      color: var(--muted); max-height: 200px; overflow-y: auto;
+      border: 1px solid rgba(255,255,255,0.06);
+    }
+    .log-detail-toggle {
+      font-size: 11px; color: var(--accent); cursor: pointer;
+      background: none; border: none; padding: 2px 0; margin-top: 4px;
+    }
 
     /* Scroll to bottom button */
     .scroll-btn {
@@ -1123,6 +1183,9 @@ function renderDashboardPage(): string {
     .badge-error { color: var(--danger); border: 1px solid var(--danger); }
     .badge-active { color: var(--accent); border: 1px solid var(--accent); }
     .badge-paused { color: var(--accent-2); border: 1px solid var(--accent-2); }
+    .card { cursor: pointer; transition: background 150ms; }
+    .card:hover { background: var(--panel-2); }
+    .card:active { background: rgba(255,255,255,0.08); }
     .run-list { margin-top: 8px; }
     .run-item {
       display: flex; align-items: center; gap: 8px;
@@ -1131,6 +1194,38 @@ function renderDashboardPage(): string {
       border-top: 1px solid rgba(255,255,255,0.04);
     }
     .run-item:first-child { border-top: none; }
+    .container-log-modal {
+      position: fixed; inset: 0; z-index: 200;
+      background: rgba(0,0,0,0.92);
+      display: flex; flex-direction: column;
+    }
+    .container-log-header {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 10px 16px; background: var(--panel);
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      gap: 8px;
+    }
+    .container-log-header .cl-title { font-size: 14px; font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .container-log-header .cl-close {
+      padding: 6px 12px; border-radius: 8px; border: none;
+      background: var(--panel-2); color: var(--muted);
+      font-size: 12px; cursor: pointer;
+    }
+    .container-log-content {
+      flex: 1; overflow: auto; padding: 12px 16px;
+      font-family: "IBM Plex Mono", monospace; font-size: 12px;
+      line-height: 1.6; white-space: pre-wrap; word-break: break-word;
+      color: var(--text); background: var(--bg);
+    }
+    .container-log-meta {
+      display: flex; flex-wrap: wrap; gap: 12px;
+      padding: 8px 16px;
+      background: var(--panel);
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+      font-size: 12px; color: var(--muted);
+    }
+    .cl-meta-item { display: flex; gap: 4px; }
+    .cl-meta-label { color: var(--accent); font-weight: 500; }
 
     /* Empty state */
     .empty {
@@ -1535,23 +1630,110 @@ function renderDashboardPage(): string {
   }
 
   function appendLogEntry(log) {
+    var wrapper = document.createElement('div');
+    wrapper.className = 'log-wrapper';
+
     var el = document.createElement('div');
     el.className = 'log-entry';
     var level = log.level || 30;
     var levelName = LEVEL_NAMES[level] || 'LOG';
     var timeStr = formatTime(log.time);
     var module = log.module || '';
+    var group = log.group_folder || '';
     var msg = log.msg || '';
     el.innerHTML =
       '<span class="log-time mono">' + timeStr + '</span>' +
       '<span class="log-level log-level-' + level + '">' + levelName + '</span>' +
       (module ? '<span class="log-module mono">' + escapeH(module) + '</span>' : '') +
+      (group ? '<span class="log-group mono">' + escapeH(group) + '</span>' : '') +
       '<span class="log-msg mono">' + escapeH(msg) + '</span>';
-    logContainer.appendChild(el);
+
+    var detail = document.createElement('div');
+    detail.className = 'log-detail';
+    detail.dataset.loaded = 'false';
+    detail.dataset.logId = log.id || '';
+
+    el.addEventListener('click', function() {
+      var isOpen = detail.classList.contains('show');
+      if (isOpen) {
+        detail.classList.remove('show');
+        el.classList.remove('expanded');
+        return;
+      }
+      el.classList.add('expanded');
+      detail.classList.add('show');
+
+      if (detail.dataset.loaded === 'true') return;
+      detail.dataset.loaded = 'true';
+
+      // If we already have extra data from SSE, render it inline
+      if (log.extra && Object.keys(log.extra).length > 0) {
+        renderLogDetail(detail, log, log.extra);
+      } else if (log.id) {
+        // Fetch full detail from API
+        detail.innerHTML = '<span style="color:var(--muted)">Loading...</span>';
+        fetch('/api/logs/' + log.id, { headers: authHeaders() })
+          .then(function(r) { return r.json(); })
+          .then(function(data) {
+            if (data.error) { detail.innerHTML = '<span style="color:var(--danger)">' + escapeH(data.error) + '</span>'; return; }
+            renderLogDetail(detail, data, data.extra || {});
+          })
+          .catch(function() { detail.innerHTML = '<span style="color:var(--danger)">Failed to load</span>'; });
+      } else {
+        detail.innerHTML = '<span style="color:var(--muted)">No additional detail available</span>';
+      }
+    });
+
+    wrapper.appendChild(el);
+    wrapper.appendChild(detail);
+    logContainer.appendChild(wrapper);
     while (logContainer.children.length > MAX_LOG_ENTRIES) {
       logContainer.removeChild(logContainer.firstChild);
     }
     if (autoScroll) { logContainer.scrollTop = logContainer.scrollHeight; }
+  }
+
+  function renderLogDetail(container, log, extra) {
+    var html = '';
+    // Full timestamp
+    var fullTime = new Date(log.time).toLocaleString('en-US', { hour12: false, year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 });
+    html += '<div class="log-detail-row"><span class="log-detail-key">Time</span><span class="log-detail-val">' + escapeH(fullTime) + '</span></div>';
+
+    if (log.group_folder) {
+      html += '<div class="log-detail-row"><span class="log-detail-key">Group</span><span class="log-detail-val">' + escapeH(log.group_folder) + '</span></div>';
+    }
+    if (log.module) {
+      html += '<div class="log-detail-row"><span class="log-detail-key">Module</span><span class="log-detail-val">' + escapeH(log.module) + '</span></div>';
+    }
+
+    // Extra context fields
+    var extraKeys = Object.keys(extra);
+    if (extraKeys.length > 0) {
+      extraKeys.forEach(function(key) {
+        var val = extra[key];
+        var display;
+        if (val === null || val === undefined) {
+          display = '<span class="log-detail-val muted">null</span>';
+        } else if (typeof val === 'object') {
+          display = '<span class="log-detail-val mono">' + escapeH(JSON.stringify(val, null, 2)) + '</span>';
+        } else {
+          display = '<span class="log-detail-val">' + escapeH(String(val)) + '</span>';
+        }
+        html += '<div class="log-detail-row"><span class="log-detail-key">' + escapeH(key) + '</span>' + display + '</div>';
+      });
+    }
+
+    // Raw JSON toggle
+    if (log.raw) {
+      html += '<button class="log-detail-toggle" onclick="var r=this.nextElementSibling;r.style.display=r.style.display===\\'none\\'?\\'block\\':\\'none\\';this.textContent=r.style.display===\\'none\\'?\\'Show raw JSON\\':\\'Hide raw JSON\\'">Show raw JSON</button>';
+      var prettyRaw = log.raw;
+      try { prettyRaw = JSON.stringify(JSON.parse(log.raw), null, 2); } catch(e) {}
+      html += '<div class="log-detail-raw" style="display:none">' + escapeH(prettyRaw) + '</div>';
+    } else if (extraKeys.length === 0) {
+      html += '<div style="color:var(--muted);font-style:italic">No additional context</div>';
+    }
+
+    container.innerHTML = html;
   }
 
   function escapeH(s) {
@@ -1651,15 +1833,68 @@ function renderDashboardPage(): string {
           var dur = c.duration_ms ? (c.duration_ms / 1000).toFixed(1) + 's' : '\\u2014';
           var time = c.timestamp ? timeAgo(c.timestamp) : '\\u2014';
           var size = c.file_size ? formatBytes(c.file_size) : '';
+          var exitInfo = c.exit_code !== null && c.exit_code !== undefined ? 'Exit: ' + c.exit_code + ' \\u00B7 ' : '';
           var card = document.createElement('div');
           card.className = 'card';
           card.innerHTML =
             '<div class="card-header"><span class="card-title">' + escapeH(c.group_folder) + '</span><span class="badge ' + statusClass + '">' + escapeH(statusText) + '</span></div>' +
-            '<div class="card-meta">' + (c.mode ? escapeH(c.mode) + ' \\u00B7 ' : '') + 'Duration: ' + dur + ' \\u00B7 ' + time + (size ? ' \\u00B7 ' + size : '') + '</div>';
+            '<div class="card-meta">' + (c.mode ? escapeH(c.mode) + ' \\u00B7 ' : '') + exitInfo + 'Duration: ' + dur + ' \\u00B7 ' + time + (size ? ' \\u00B7 ' + size : '') + '</div>';
+          card.addEventListener('click', function() {
+            openContainerLog(c);
+          });
           list.appendChild(card);
         });
       })
       .catch(function() { list.innerHTML = '<div class="empty">Failed to load containers</div>'; });
+  }
+
+  function openContainerLog(c) {
+    var existing = document.querySelector('.container-log-modal');
+    if (existing) existing.remove();
+
+    var modal = document.createElement('div');
+    modal.className = 'container-log-modal';
+
+    var statusClass = c.status === 'error' || (c.exit_code && c.exit_code !== 0) ? 'badge-error' : 'badge-ok';
+    var statusText = c.status || (c.exit_code === 0 ? 'ok' : 'unknown');
+    var dur = c.duration_ms ? (c.duration_ms / 1000).toFixed(1) + 's' : '\\u2014';
+    var time = c.timestamp ? new Date(c.timestamp).toLocaleString('en-US', { hour12: false }) : '\\u2014';
+
+    var metaHtml = '';
+    metaHtml += '<span class="cl-meta-item"><span class="cl-meta-label">Status:</span> <span class="badge ' + statusClass + '">' + escapeH(statusText) + '</span></span>';
+    if (c.exit_code !== null && c.exit_code !== undefined) metaHtml += '<span class="cl-meta-item"><span class="cl-meta-label">Exit:</span> ' + c.exit_code + '</span>';
+    if (c.mode) metaHtml += '<span class="cl-meta-item"><span class="cl-meta-label">Mode:</span> ' + escapeH(c.mode) + '</span>';
+    metaHtml += '<span class="cl-meta-item"><span class="cl-meta-label">Duration:</span> ' + dur + '</span>';
+    metaHtml += '<span class="cl-meta-item"><span class="cl-meta-label">Time:</span> ' + time + '</span>';
+    if (c.file_size) metaHtml += '<span class="cl-meta-item"><span class="cl-meta-label">Size:</span> ' + formatBytes(c.file_size) + '</span>';
+
+    modal.innerHTML =
+      '<div class="container-log-header">' +
+        '<span class="cl-title">' + escapeH(c.group_folder) + ' / ' + escapeH(c.filename) + '</span>' +
+        '<button class="cl-close" id="clClose">Close</button>' +
+      '</div>' +
+      '<div class="container-log-meta">' + metaHtml + '</div>' +
+      '<div class="container-log-content" id="clContent"><span style="color:var(--muted)">Loading log...</span></div>';
+
+    document.body.appendChild(modal);
+
+    $('clClose').addEventListener('click', function() { modal.remove(); });
+    modal.addEventListener('click', function(e) { if (e.target === modal) modal.remove(); });
+
+    // Fetch the actual log file content
+    var logUrl = '/api/containers/' + encodeURIComponent(c.group_folder) + '/' + encodeURIComponent(c.filename);
+    if (authToken && authToken !== 'dev') logUrl += '?token=' + encodeURIComponent(authToken);
+    fetch(logUrl, { headers: authHeaders() })
+      .then(function(r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.text();
+      })
+      .then(function(text) {
+        $('clContent').textContent = text || '(empty log)';
+      })
+      .catch(function(err) {
+        $('clContent').innerHTML = '<span style="color:var(--danger)">Failed to load log: ' + escapeH(err.message) + '</span>';
+      });
   }
 
   // ── Tasks Tab ────────────────────────────────────────────────
@@ -2297,6 +2532,7 @@ function handleRequest(req: Request): Response | Promise<Response> {
   if (pathname === '/api/logs/stream') return handleSSEStream(req, url);
   if (pathname === '/api/logs') return handleLogsQuery(url);
   if (pathname === '/api/logs/stats') return handleLogStats();
+  if (pathname.match(/^\/api\/logs\/\d+$/)) return handleLogDetail(pathname);
 
   // Containers
   if (pathname === '/api/containers' && !pathname.includes('/api/containers/'))

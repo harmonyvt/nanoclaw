@@ -21,6 +21,7 @@ export interface StructuredLog {
   msg: string;
   module?: string;
   group_folder?: string;
+  extra?: Record<string, unknown>;
 }
 
 const RING_BUFFER_SIZE = 500;
@@ -51,6 +52,18 @@ function createLogCaptureStream(): Writable {
 
             const id = insertLog(logEntry);
 
+            // Extract extra context fields from raw JSON
+            const STANDARD_KEYS = new Set([
+              'level', 'time', 'msg', 'module', 'name', 'pid', 'hostname', 'v',
+              'group_folder',
+            ]);
+            const extra: Record<string, unknown> = {};
+            for (const [key, value] of Object.entries(parsed)) {
+              if (!STANDARD_KEYS.has(key)) {
+                extra[key] = value;
+              }
+            }
+
             const structured: StructuredLog = {
               id,
               level: logEntry.level,
@@ -58,6 +71,7 @@ function createLogCaptureStream(): Writable {
               msg: logEntry.msg,
               module: logEntry.module ?? undefined,
               group_folder: logEntry.group_folder ?? undefined,
+              extra: Object.keys(extra).length > 0 ? extra : undefined,
             };
 
             // Push to ring buffer

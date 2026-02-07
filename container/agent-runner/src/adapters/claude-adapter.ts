@@ -182,6 +182,7 @@ function createPreCompactHook(assistantName?: string): HookCallback {
 export class ClaudeAdapter implements ProviderAdapter {
   async *run(input: AdapterInput): AsyncGenerator<AgentEvent> {
     const ipcMcp = createIpcMcp(input.ipcContext);
+    const stderrBuffer: string[] = [];
 
     for await (const message of query({
       prompt: input.prompt,
@@ -197,6 +198,13 @@ export class ClaudeAdapter implements ProviderAdapter {
         ],
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
+        stderr: (data: string) => {
+          const trimmed = data.trimEnd();
+          if (trimmed) {
+            log(`[claude-cli stderr] ${trimmed}`);
+            stderrBuffer.push(trimmed);
+          }
+        },
         settingSources: ['project'],
         mcpServers: {
           nanoclaw: ipcMcp,
@@ -240,6 +248,16 @@ export class ClaudeAdapter implements ProviderAdapter {
           elapsedSeconds: (message as { elapsed_time_seconds?: number }).elapsed_time_seconds,
         };
       }
+
+      // Drain any buffered stderr messages
+      while (stderrBuffer.length > 0) {
+        yield { type: 'adapter_stderr', message: stderrBuffer.shift()! };
+      }
+    }
+
+    // Drain any remaining stderr after the query ends
+    while (stderrBuffer.length > 0) {
+      yield { type: 'adapter_stderr', message: stderrBuffer.shift()! };
     }
   }
 }

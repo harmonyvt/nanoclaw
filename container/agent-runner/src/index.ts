@@ -140,6 +140,9 @@ async function runQuery(input: ContainerInput): Promise<ContainerOutput> {
         case 'tool_progress':
           writeStatusEvent({ type: 'tool_progress', tool_name: event.toolName, elapsed_seconds: event.elapsedSeconds });
           break;
+        case 'adapter_stderr':
+          writeStatusEvent({ type: 'adapter_stderr', message: event.message });
+          break;
       }
     }
 
