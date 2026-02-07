@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { randomBytes } from 'crypto';
-import { GROUPS_DIR } from './config.js';
+import { GROUPS_DIR, DATA_DIR } from './config.js';
 import { CuaClient } from './cua-client.js';
 import { logger } from './logger.js';
 import { ensureSandbox, resetIdleTimer } from './sandbox-manager.js';
@@ -586,6 +586,162 @@ type LocatedElement = {
   matchedQuery: string;
 };
 
+// ─── Vision Fallback for Element Finding ────────────────────────────────────
+
+const VISION_MODEL = 'claude-sonnet-4-5-20250929';
+const VISION_RATE_LIMIT_WINDOW_MS = 10_000;
+const VISION_RATE_LIMIT_MAX = 3;
+const VISION_SCREENSHOT_CACHE_MS = 2_000;
+
+const visionCallTimestamps: number[] = [];
+let cachedVisionScreenshot: { base64: string; timestamp: number } | null = null;
+
+function resolveApiKeyForVision(): string | null {
+  // Check process.env first
+  if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY;
+
+  // Fallback: read from data/env/env file (written by container-runner credential resolution)
+  try {
+    const envFilePath = path.join(DATA_DIR, 'env', 'env');
+    if (fs.existsSync(envFilePath)) {
+      const content = fs.readFileSync(envFilePath, 'utf-8');
+      for (const line of content.split('\n')) {
+        const match = line.match(/^ANTHROPIC_API_KEY=(.+)$/);
+        if (match) return match[1].trim();
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  return null;
+}
+
+function isVisionRateLimited(): boolean {
+  const now = Date.now();
+  // Remove timestamps outside the window
+  while (visionCallTimestamps.length > 0 && visionCallTimestamps[0] < now - VISION_RATE_LIMIT_WINDOW_MS) {
+    visionCallTimestamps.shift();
+  }
+  return visionCallTimestamps.length >= VISION_RATE_LIMIT_MAX;
+}
+
+async function findElementViaVision(
+  description: string,
+): Promise<LocatedElement | null> {
+  const apiKey = resolveApiKeyForVision();
+  if (!apiKey) {
+    logger.debug('Vision fallback skipped: no ANTHROPIC_API_KEY available');
+    return null;
+  }
+
+  if (isVisionRateLimited()) {
+    logger.debug('Vision fallback skipped: rate limited');
+    return null;
+  }
+
+  try {
+    // Get screenshot (use cache if recent)
+    let base64: string | null = null;
+    if (cachedVisionScreenshot && Date.now() - cachedVisionScreenshot.timestamp < VISION_SCREENSHOT_CACHE_MS) {
+      base64 = cachedVisionScreenshot.base64;
+    } else {
+      const screenshotContent = await runCuaCommand('screenshot');
+      base64 = extractBase64Png(screenshotContent);
+      if (base64) {
+        cachedVisionScreenshot = { base64, timestamp: Date.now() };
+      }
+    }
+
+    if (!base64) {
+      logger.warn('Vision fallback: could not capture screenshot');
+      return null;
+    }
+
+    const screenshotBytes = Buffer.from(base64, 'base64');
+    const dimensions = getImageDimensionsFromBytes(screenshotBytes)
+      || (await getScreenSizeSafe())
+      || { width: 1024, height: 768 };
+
+    // Record the call for rate limiting
+    visionCallTimestamps.push(Date.now());
+
+    logger.info({ description }, 'Vision fallback: calling Anthropic Messages API');
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: VISION_MODEL,
+        max_tokens: 256,
+        messages: [{
+          role: 'user',
+          content: [
+            {
+              type: 'image',
+              source: { type: 'base64', media_type: 'image/png', data: base64 },
+            },
+            {
+              type: 'text',
+              text: `This screenshot is ${dimensions.width}x${dimensions.height} pixels. Find the UI element matching this description: "${description}". Return ONLY a JSON object with the center pixel coordinates: {"x": number, "y": number}. If not found, return {"x": null, "y": null}. No other text.`,
+            },
+          ],
+        }],
+      }),
+    });
+
+    if (!response.ok) {
+      logger.warn({ status: response.status }, 'Vision fallback: API call failed');
+      return null;
+    }
+
+    const result = await response.json() as {
+      content?: Array<{ type: string; text?: string }>;
+    };
+    const textBlock = result.content?.find((b) => b.type === 'text');
+    if (!textBlock?.text) {
+      logger.warn('Vision fallback: no text in API response');
+      return null;
+    }
+
+    // Extract JSON from the response (may be wrapped in markdown code block)
+    const jsonMatch = textBlock.text.match(/\{[^}]+\}/);
+    if (!jsonMatch) {
+      logger.warn({ text: textBlock.text.slice(0, 200) }, 'Vision fallback: no JSON in response');
+      return null;
+    }
+
+    const parsed = JSON.parse(jsonMatch[0]) as { x: number | null; y: number | null };
+    if (parsed.x == null || parsed.y == null) {
+      logger.info({ description }, 'Vision fallback: element not found in screenshot');
+      return null;
+    }
+
+    // Validate coordinates are within screen bounds
+    const x = Math.round(parsed.x);
+    const y = Math.round(parsed.y);
+    if (x < 0 || x > dimensions.width || y < 0 || y > dimensions.height) {
+      logger.warn({ x, y, dimensions }, 'Vision fallback: coordinates out of bounds');
+      return null;
+    }
+
+    logger.info({ description, x, y }, 'Element found via vision fallback');
+    return { coords: { x, y }, matchedQuery: `vision:${description}` };
+  } catch (err) {
+    logger.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      'Vision fallback: unexpected error',
+    );
+    return null;
+  }
+}
+
+// ─── Element Coordinate Finding ──────────────────────────────────────────────
+
 async function findElementCoordinates(
   queries: string[],
 ): Promise<LocatedElement | null> {
@@ -618,6 +774,10 @@ async function findElementCoordinates(
   // Fallback: parse the accessibility tree ourselves to find the element.
   const treeMatch = await findElementInAccessibilityTree(queries);
   if (treeMatch) return treeMatch;
+
+  // Vision fallback: use Claude's vision API to locate the element in a screenshot.
+  const visionMatch = await findElementViaVision(queries[0]);
+  if (visionMatch) return visionMatch;
 
   return null;
 }
@@ -1329,10 +1489,19 @@ function formatAnalysisSummary(
     lines.push(
       'Labeled elements: none (accessibility tree did not expose element bounds).',
     );
+    lines.push(
+      'IMPORTANT: Use the Read tool on the screenshot path above to visually identify elements, then use browse_click_xy with pixel coordinates.',
+    );
   }
 
   if (analysis.metadataPath) {
     lines.push(`Metadata JSON: ${analysis.metadataPath}`);
+  }
+
+  if (analysis.elements.length > 0) {
+    lines.push(
+      'Tip: If browse_click fails for any element, use browse_click_xy with the center coordinates shown above.',
+    );
   }
 
   return lines.join('\n');
@@ -1536,6 +1705,64 @@ async function processCuaRequest(
       return {
         status: 'ok',
         result: `clicked (${located.coords.x}, ${located.coords.y})${verificationSuffix(verify)}; matched query: ${located.matchedQuery}`,
+      };
+    }
+    case 'click_xy': {
+      const x = Number(params.x);
+      const y = Number(params.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        return {
+          status: 'error',
+          error: 'click_xy requires valid numeric x and y coordinates',
+        };
+      }
+      const beforeSnapshot = await getAccessibilitySnapshotSafe();
+      await runCuaCommand('left_click', { x, y });
+      await sleep(250);
+      const afterSnapshot = await getAccessibilitySnapshotSafe();
+      const changed = didSnapshotChange(beforeSnapshot, afterSnapshot);
+      const verify =
+        changed === true
+          ? 'verified (accessibility tree changed)'
+          : changed === false
+            ? 'not confirmed (no tree change detected)'
+            : 'not confirmed (snapshot unavailable)';
+      return {
+        status: 'ok',
+        result: `clicked (${x}, ${y})${verificationSuffix(verify)}`,
+      };
+    }
+    case 'type_at_xy': {
+      const x = Number(params.x);
+      const y = Number(params.y);
+      const value = String(params.value || '');
+      if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        return {
+          status: 'error',
+          error: 'type_at_xy requires valid numeric x and y coordinates',
+        };
+      }
+      const beforeSnapshot = await getAccessibilitySnapshotSafe();
+      await runCuaCommand('left_click', { x, y });
+      await runCuaCommandWithFallback([
+        { command: 'type', args: { text: value } },
+        { command: 'type_text', args: { text: value } },
+      ]);
+      await sleep(250);
+      const afterSnapshot = await getAccessibilitySnapshotSafe();
+      const changed = didSnapshotChange(beforeSnapshot, afterSnapshot);
+      const valueSeen = snapshotContainsText(afterSnapshot, value);
+      const verify =
+        valueSeen === true
+          ? 'verified (input value observed in accessibility tree)'
+          : changed === true
+            ? 'partially verified (tree changed, value not observed)'
+            : changed === false
+              ? 'not confirmed (no tree change detected)'
+              : 'not confirmed (snapshot unavailable)';
+      return {
+        status: 'ok',
+        result: `typed at (${x}, ${y})${verificationSuffix(verify)}`,
       };
     }
     case 'fill': {

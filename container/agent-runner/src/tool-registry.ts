@@ -902,6 +902,54 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
   },
 
   {
+    name: 'browse_click_xy',
+    description:
+      'Click at exact pixel coordinates on the screen. Use this when browse_click fails to find an element, or when you know the coordinates from a screenshot analysis or visual inspection.',
+    schema: z.object({
+      x: z.number().int().describe('X coordinate in pixels from left edge of screen'),
+      y: z.number().int().describe('Y coordinate in pixels from top edge of screen'),
+    }),
+    handler: async (args): Promise<ToolResult> => {
+      const res = await writeBrowseRequest('click_xy', {
+        x: args.x as number,
+        y: args.y as number,
+      });
+      if (res.status === 'error') {
+        return {
+          content: `Click at (${args.x}, ${args.y}) failed: ${res.error}`,
+          isError: true,
+        };
+      }
+      return { content: `Click result: ${res.result}` };
+    },
+  },
+
+  {
+    name: 'browse_type_at_xy',
+    description:
+      'Click at exact pixel coordinates then type text. Use when browse_fill fails to find the input field. Clicks the coordinates first, then types the value.',
+    schema: z.object({
+      x: z.number().int().describe('X coordinate of the input field in pixels'),
+      y: z.number().int().describe('Y coordinate of the input field in pixels'),
+      value: z.string().describe('The text to type into the field'),
+    }),
+    handler: async (args): Promise<ToolResult> => {
+      const res = await writeBrowseRequest('type_at_xy', {
+        x: args.x as number,
+        y: args.y as number,
+        value: args.value as string,
+      });
+      if (res.status === 'error') {
+        return {
+          content: `Type at (${args.x}, ${args.y}) failed: ${res.error}`,
+          isError: true,
+        };
+      }
+      return { content: `Type result: ${res.result}` };
+    },
+  },
+
+  {
     name: 'browse_fill',
     description:
       'Fill a form field with a value. Finds the target element and types the value.',
@@ -963,7 +1011,7 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
   {
     name: 'browse_screenshot',
     description:
-      'Take a screenshot of the current browser page. Returns the saved image path plus labeled UI elements mapped to grid cells.',
+      'Take a screenshot of the current browser page. Returns the saved image path plus labeled UI elements mapped to grid cells. If the text summary is insufficient or elements are missing, use the Read tool on the screenshot file path to visually inspect the image.',
     schema: z.object({}),
     handler: async (): Promise<ToolResult> => {
       const res = await writeBrowseRequest('screenshot', {});
@@ -977,8 +1025,12 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
         res.analysis && typeof res.analysis.summary === 'string'
           ? res.analysis.summary
           : null;
+      const screenshotPath = typeof res.result === 'string' ? res.result : '';
+      const hint = screenshotPath
+        ? `\n\nTo visually inspect this screenshot, use the Read tool on: ${screenshotPath}`
+        : '';
       return {
-        content: summary || `Screenshot saved: ${res.result}`,
+        content: (summary || `Screenshot saved: ${res.result}`) + hint,
       };
     },
   },
