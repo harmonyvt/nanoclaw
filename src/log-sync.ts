@@ -99,11 +99,20 @@ function indexContainerLogs(): void {
         try {
           const stat = fs.statSync(filePath);
           // Read first 2KB for header metadata
-          const fd = fs.openSync(filePath, 'r');
-          const buf = Buffer.alloc(2048);
-          const bytesRead = fs.readSync(fd, buf, 0, 2048, 0);
-          fs.closeSync(fd);
-          const header = buf.subarray(0, bytesRead).toString('utf8');
+          let fd: number | undefined;
+          try {
+            fd = fs.openSync(filePath, 'r');
+          } catch {
+            continue;
+          }
+          let header: string;
+          try {
+            const buf = Buffer.alloc(2048);
+            const bytesRead = fs.readSync(fd, buf, 0, 2048, 0);
+            header = buf.subarray(0, bytesRead).toString('utf8');
+          } finally {
+            fs.closeSync(fd);
+          }
 
           // Parse metadata from header
           const modeMatch = header.match(/mode:\s*(one-shot|persistent)/i);

@@ -203,6 +203,18 @@ function handleContainerLog(pathname: string): Response {
   if (parts.length !== 2) return jsonResponse({ error: 'invalid path' }, 400);
 
   const [group, filename] = parts;
+
+  // Validate to prevent path traversal
+  if (group.includes('..') || group.includes('/') || group.includes('\\')) {
+    return jsonResponse({ error: 'invalid group' }, 400);
+  }
+  if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+    return jsonResponse({ error: 'invalid filename' }, 400);
+  }
+  if (!filename.endsWith('.log')) {
+    return jsonResponse({ error: 'invalid file type' }, 400);
+  }
+
   const filePath = path.join(GROUPS_DIR, group, 'logs', filename);
 
   try {
