@@ -734,7 +734,7 @@ async function handleCuaFileUpload(req: Request): Promise<Response> {
 
     if (base64Content.length <= CHUNK_SIZE) {
       await runCuaCommand('run_command', {
-        command: `echo '${base64Content}' | base64 -d > ${shellSingleQuote(destPath)}`,
+        command: `printf '%s' ${shellSingleQuote(base64Content)} | base64 -d > ${shellSingleQuote(destPath)}`,
       });
     } else {
       const totalChunks = Math.ceil(base64Content.length / CHUNK_SIZE);
@@ -742,7 +742,7 @@ async function handleCuaFileUpload(req: Request): Promise<Response> {
         const chunk = base64Content.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
         const redirect = i === 0 ? '>' : '>>';
         await runCuaCommand('run_command', {
-          command: `echo '${chunk}' | base64 -d ${redirect} ${shellSingleQuote(destPath)}`,
+          command: `printf '%s' ${shellSingleQuote(chunk)} | base64 -d ${redirect} ${shellSingleQuote(destPath)}`,
         });
       }
     }

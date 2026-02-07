@@ -1957,6 +1957,7 @@ async function processCuaRequest(
       const destPath = path.join(mediaDir, destFilename);
 
       const fileBuffer = Buffer.from(base64Content, 'base64');
+      base64Content = ''; // free base64 string for GC
       fs.writeFileSync(destPath, fileBuffer);
 
       const containerPath = `/workspace/group/media/${destFilename}`;
