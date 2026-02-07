@@ -129,6 +129,7 @@ Media path is translated from host path to container path in the XML prompt (`me
 - **Lazy start**: Sandbox starts on first `browse_*` tool call
 - **Idle timeout**: Stops after 30 min of no browse activity
 - **Live URL in wait-for-user**: takeover URL `http://<tailscale-ip>:<CUA_TAKEOVER_WEB_PORT>/cua/takeover/<token>` (includes embedded noVNC + continue button; fallback `127.0.0.1`)
+- **VNC authentication**: Random VNC password generated on sandbox start (`VNC_PW` env var). Password rotated per-takeover session — each `browse_wait_for_user` gets a fresh password, invalidated when control returns. noVNC iframe receives the password via URL parameter; direct noVNC URLs are never sent to chat.
 - **Screenshot feedback**: `browse_screenshot` always saves to group media and is sent as Telegram photo
 
 ## IPC Patterns
