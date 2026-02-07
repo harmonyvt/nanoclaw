@@ -53,6 +53,7 @@ import {
   resolveWaitForUser,
   hasWaitingRequests,
   disconnectBrowser,
+  ensureWaitForUserRequest,
 } from './browse-host.js';
 import { cleanupOldMedia } from './media.js';
 import {
@@ -61,6 +62,11 @@ import {
   startIdleWatcher,
   getSandboxUrl,
 } from './sandbox-manager.js';
+import {
+  getTakeoverUrl,
+  startCuaTakeoverServer,
+  stopCuaTakeoverServer,
+} from './cua-takeover-server.js';
 
 let lastTimestamp = '';
 let sessions: Session = {};
@@ -308,7 +314,9 @@ async function sendMessage(jid: string, text: string): Promise<void> {
 }
 
 function getChatJidForGroup(groupFolder: string): string | undefined {
-  return Object.entries(registeredGroups).find(([, g]) => g.folder === groupFolder)?.[0];
+  return Object.entries(registeredGroups).find(
+    ([, g]) => g.folder === groupFolder,
+  )?.[0];
 }
 
 function truncateForTelegram(input: string, max = 80): string {
@@ -497,8 +505,14 @@ function startIpcWatcher(): void {
               const browseParams = (params || {}) as Record<string, unknown>;
               const chatJid = getChatJidForGroup(sourceGroup);
 
-              // For wait_for_user, send Telegram notification first
-              if (action === 'wait_for_user' && params?.message) {
+              // For wait_for_user, send takeover details first.
+              if (action === 'wait_for_user') {
+                const waitMessage =
+                  typeof browseParams.message === 'string' &&
+                  browseParams.message.trim().length > 0
+                    ? browseParams.message.trim()
+                    : 'Please take over the CUA browser session, then return control when done.';
+
                 // Ensure sandbox is running so the user gets a usable live URL.
                 try {
                   await ensureSandbox();
@@ -508,14 +522,25 @@ function startIpcWatcher(): void {
                     'Failed to prestart sandbox for wait_for_user',
                   );
                 }
+
+                const waitRequest = ensureWaitForUserRequest(
+                  requestId,
+                  sourceGroup,
+                  waitMessage,
+                );
+
                 if (chatJid) {
+                  const takeoverUrl = getTakeoverUrl(waitRequest.token);
                   const sandboxUrl = getSandboxUrl();
+                  const takeoverPart = takeoverUrl
+                    ? `\nTake over CUA: ${takeoverUrl}`
+                    : '';
                   const urlPart = sandboxUrl
-                    ? `\nSandbox view: ${sandboxUrl}`
+                    ? `\nDirect noVNC: ${sandboxUrl}`
                     : '';
                   await sendMessage(
                     chatJid,
-                    `${params.message}${urlPart}\nRequest ID: ${requestId}\n\nReply "continue ${requestId}" when ready.`,
+                    `${waitMessage}${takeoverPart}${urlPart}\nRequest ID: ${requestId}\n\nWhen done, click "Return Control To Agent" in the takeover page.\nFallback: reply "continue ${requestId}".`,
                   );
                 }
               } else if (chatJid) {
@@ -1071,6 +1096,7 @@ async function main(): Promise<void> {
     registeredGroups: () => registeredGroups,
     getSessions: () => sessions,
   });
+  startCuaTakeoverServer();
   startIpcWatcher();
   startIdleWatcher();
   startContainerIdleCleanup();
@@ -1084,6 +1110,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     stopTelegram();
     killAllContainers();
     await disconnectBrowser();
+    stopCuaTakeoverServer();
     cleanupSandbox();
     process.exit(0);
   });

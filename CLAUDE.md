@@ -109,9 +109,10 @@ Media path is translated from host path to container path in the XML prompt (`me
 - **Command API**: host connects to `/cmd` on port `8000` (mapped by `CUA_SANDBOX_COMMAND_PORT`)
 - **VNC**: `5901` (mapped by `CUA_SANDBOX_VNC_PORT`)
 - **noVNC (browser live view)**: `6901` (mapped by `CUA_SANDBOX_NOVNC_PORT`)
+- **Takeover web UI**: `7788` (mapped by `CUA_TAKEOVER_WEB_PORT`)
 - **Lazy start**: Sandbox starts on first `browse_*` tool call
 - **Idle timeout**: Stops after 30 min of no browse activity
-- **Live URL in wait-for-user**: noVNC URL `http://<tailscale-ip>:<CUA_SANDBOX_NOVNC_PORT>` (fallback `127.0.0.1`)
+- **Live URL in wait-for-user**: takeover URL `http://<tailscale-ip>:<CUA_TAKEOVER_WEB_PORT>/cua/takeover/<token>` (includes embedded noVNC + continue button; fallback `127.0.0.1`)
 - **Screenshot feedback**: `browse_screenshot` always saves to group media and is sent as Telegram photo
 
 ## IPC Patterns
@@ -151,7 +152,7 @@ Per-group IPC directories prevent cross-group access. Non-main groups can only s
 - `browse_click` -- Click using description text (CSS-like selectors are treated as best-effort hints)
 - `browse_fill` -- Fill form field (description-based element search + typing)
 - `browse_screenshot` -- Capture page (also sent as Telegram photo)
-- `browse_wait_for_user` -- Handoff to user via sandbox live URL, wait for "continue"
+- `browse_wait_for_user` -- Handoff to user via takeover web URL, wait until user returns control
 - `browse_go_back` -- Browser back button
 - `browse_evaluate` -- Present for backward compatibility; currently unsupported in CUA mode
 - `browse_close` -- Close browser page
@@ -210,6 +211,8 @@ Per-group IPC directories prevent cross-group access. Non-main groups can only s
 | `CONTAINER_MAX_OUTPUT_SIZE` | `10485760` (10MB)        | Max container stdout/stderr             |
 | `SANDBOX_IDLE_TIMEOUT_MS`   | `1800000`                | Sandbox auto-stop timeout               |
 | `SANDBOX_TAILSCALE_ENABLED` | `true`                   | Use Tailscale IP for wait-for-user URLs |
+| `CUA_TAKEOVER_WEB_ENABLED`  | `true`                   | Enable CUA takeover web UI              |
+| `CUA_TAKEOVER_WEB_PORT`     | `7788`                   | Host port for CUA takeover web UI       |
 | `CUA_SANDBOX_IMAGE`         | `trycua/cua-xfce:latest` | CUA Docker image                        |
 | `CUA_SANDBOX_PLATFORM`      | `linux/amd64`            | Docker platform for CUA image pull/run  |
 | `CUA_SANDBOX_COMMAND_PORT`  | `8000`                   | Host port for CUA `/cmd` API            |
