@@ -42,6 +42,12 @@ export const SANDBOX_IDLE_TIMEOUT_MS = parseInt(
 );
 export const SANDBOX_TAILSCALE_ENABLED =
   process.env.SANDBOX_TAILSCALE_ENABLED !== 'false';
+export const CUA_TAKEOVER_WEB_ENABLED =
+  process.env.CUA_TAKEOVER_WEB_ENABLED !== 'false';
+export const CUA_TAKEOVER_WEB_PORT = parseInt(
+  process.env.CUA_TAKEOVER_WEB_PORT || '7788',
+  10,
+);
 export const CUA_SANDBOX_CONTAINER_NAME =
   process.env.CUA_SANDBOX_CONTAINER_NAME || 'nanoclaw-cua-sandbox';
 const DEFAULT_CUA_SANDBOX_IMAGE = 'trycua/cua-xfce:latest';
@@ -79,8 +85,7 @@ export const CUA_SANDBOX_SCREEN_DEPTH = parseInt(
   process.env.CUA_SANDBOX_SCREEN_DEPTH || '24',
   10,
 );
-export const CUA_SANDBOX_SHM_SIZE =
-  process.env.CUA_SANDBOX_SHM_SIZE || '512m';
+export const CUA_SANDBOX_SHM_SIZE = process.env.CUA_SANDBOX_SHM_SIZE || '512m';
 export const CUA_API_KEY = process.env.CUA_API_KEY || '';
 
 function escapeRegex(str: string): string {
