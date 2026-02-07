@@ -349,19 +349,25 @@ async function checkForServiceUpdate(): Promise<{
   behind: number;
   localHead: string;
   remoteHead: string;
+  localChangeCount: number;
 }> {
   await runGit(['fetch', '--quiet', SELF_UPDATE_REMOTE, SELF_UPDATE_BRANCH]);
   const remoteRef = `${SELF_UPDATE_REMOTE}/${SELF_UPDATE_BRANCH}`;
-  const [localHead, remoteHead, behindRaw] = await Promise.all([
+  const [localHead, remoteHead, behindRaw, statusRaw] = await Promise.all([
     runGit(['rev-parse', 'HEAD']),
     runGit(['rev-parse', remoteRef]),
     runGit(['rev-list', '--count', `HEAD..${remoteRef}`]),
+    runGit(['status', '--porcelain']),
   ]);
   const behind = Number.parseInt(behindRaw, 10);
   if (Number.isNaN(behind)) {
     throw new Error(`Unexpected git rev-list output: ${behindRaw}`);
   }
-  return { behind, localHead, remoteHead };
+  const localChangeCount = statusRaw
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0).length;
+  return { behind, localHead, remoteHead, localChangeCount };
 }
 
 function startSelfUpdateProcess(chatId: number): void {
@@ -382,25 +388,39 @@ function startSelfUpdateProcess(chatId: number): void {
     stdio: ['ignore', outputFd, outputFd],
     env: {
       ...process.env,
+      TELEGRAM_BOT_TOKEN,
+      SELF_UPDATE_CHAT_ID: String(chatId),
       SELF_UPDATE_BRANCH,
       SELF_UPDATE_REMOTE,
     },
   });
 
   child.on('close', (code) => {
-    if (code !== 0 && bot) {
-      const tail = fs
-        .readFileSync(SELF_UPDATE_LOG, 'utf-8')
-        .split('\n')
-        .slice(-15)
-        .join('\n');
+    if (!bot) return;
+
+    if (code === 0) {
       bot.api
         .sendMessage(
           chatId,
-          `Self-update failed (exit code ${code}).\n\nLast log lines:\n${tail}`,
+          'Self-update script finished successfully. Service restart may briefly interrupt this chat.',
         )
-        .catch((err) => logger.error({ err }, 'Failed to send update failure message'));
+        .catch((err) =>
+          logger.error({ err }, 'Failed to send update success message'),
+        );
+      return;
     }
+
+    const tail = fs
+      .readFileSync(SELF_UPDATE_LOG, 'utf-8')
+      .split('\n')
+      .slice(-15)
+      .join('\n');
+    bot.api
+      .sendMessage(
+        chatId,
+        `Self-update failed (exit code ${code}).\n\nLast log lines:\n${tail}`,
+      )
+      .catch((err) => logger.error({ err }, 'Failed to send update failure message'));
   });
 
   child.unref();
@@ -701,7 +721,7 @@ export async function connectTelegram(
 
       pendingUpdatesByChat.delete(chatId);
       await ctx.reply(
-        `Starting update now. I will pull latest code, rebuild, and restart the service.\nIf anything fails, check ${SELF_UPDATE_LOG}.`,
+        `Starting update now. I will post progress updates in this chat as each step runs.\nI will also write detailed logs to ${SELF_UPDATE_LOG}.`,
       );
 
       try {
@@ -731,7 +751,8 @@ export async function connectTelegram(
     }
 
     try {
-      const { behind, localHead, remoteHead } = await checkForServiceUpdate();
+      const { behind, localHead, remoteHead, localChangeCount } =
+        await checkForServiceUpdate();
       if (behind <= 0) {
         pendingUpdatesByChat.delete(chatId);
         await ctx.reply(
@@ -750,6 +771,9 @@ export async function connectTelegram(
       const lines = [
         `Update available on ${SELF_UPDATE_REMOTE}/${SELF_UPDATE_BRANCH}.`,
         `Behind by ${behind} commit${behind === 1 ? '' : 's'}.`,
+        localChangeCount > 0
+          ? `Local changes detected: ${localChangeCount} file(s). Update will reset the working tree to HEAD first.`
+          : 'Local changes detected: none.',
         `Current: ${localHead.slice(0, 8)}`,
         `Latest: ${remoteHead.slice(0, 8)}`,
         'Reply /update confirm within 5 minutes to apply it.',
