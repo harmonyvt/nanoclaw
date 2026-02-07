@@ -23,7 +23,6 @@ fi
 
 echo "[nanoclaw] resetting local changes"
 git reset --hard HEAD
-git clean -fd
 
 echo "[nanoclaw] fetching ${REMOTE}/${BRANCH}"
 git fetch --quiet "$REMOTE" "$BRANCH"
