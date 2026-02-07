@@ -21,10 +21,12 @@ if [[ ! -d .git ]]; then
   exit 1
 fi
 
-if ! git diff --quiet || ! git diff --cached --quiet; then
-  echo "[nanoclaw] ERROR: repository has uncommitted tracked changes; refusing self-update" >&2
-  exit 1
+DIRTY="$(git diff --stat)"
+if [[ -n "$DIRTY" ]]; then
+  echo "[nanoclaw] discarding local changes:"
+  echo "$DIRTY"
 fi
+git reset --hard HEAD
 
 echo "[nanoclaw] fetching ${REMOTE}/${BRANCH}"
 git fetch --quiet "$REMOTE" "$BRANCH"
@@ -36,8 +38,8 @@ if [[ "$BEHIND" == "0" ]]; then
   exit 0
 fi
 
-echo "[nanoclaw] pulling latest (${BEHIND} commit(s) behind)"
-git pull --ff-only "$REMOTE" "$BRANCH"
+echo "[nanoclaw] updating to ${REMOTE_REF} (${BEHIND} commit(s) behind)"
+git reset --hard "${REMOTE_REF}"
 
 echo "[nanoclaw] installing dependencies"
 if ! "$BUN_PATH" install --frozen-lockfile; then

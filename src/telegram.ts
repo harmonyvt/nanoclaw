@@ -356,7 +356,7 @@ async function checkForServiceUpdate(): Promise<{
   return { behind, localHead, remoteHead };
 }
 
-function startSelfUpdateProcess(): void {
+function startSelfUpdateProcess(chatId: number): void {
   if (!fs.existsSync(SELF_UPDATE_SCRIPT)) {
     throw new Error(`Self-update script is missing: ${SELF_UPDATE_SCRIPT}`);
   }
@@ -378,6 +378,23 @@ function startSelfUpdateProcess(): void {
       SELF_UPDATE_REMOTE,
     },
   });
+
+  child.on('close', (code) => {
+    if (code !== 0 && bot) {
+      const tail = fs
+        .readFileSync(SELF_UPDATE_LOG, 'utf-8')
+        .split('\n')
+        .slice(-15)
+        .join('\n');
+      bot.api
+        .sendMessage(
+          chatId,
+          `Self-update failed (exit code ${code}).\n\nLast log lines:\n${tail}`,
+        )
+        .catch((err) => logger.error({ err }, 'Failed to send update failure message'));
+    }
+  });
+
   child.unref();
   fs.closeSync(outputFd);
 }
@@ -640,7 +657,7 @@ export async function connectTelegram(
       );
 
       try {
-        startSelfUpdateProcess();
+        startSelfUpdateProcess(ctx.chat.id);
       } catch (err) {
         logger.error({ err }, 'Failed to start self-update process');
         await ctx.reply('Failed to start update. Check logs and try again.');
