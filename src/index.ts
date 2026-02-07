@@ -43,11 +43,19 @@ import {
   isVerbose,
   sendTelegramMessage,
   sendTelegramPhoto,
+  sendTelegramVoice,
   setTelegramTyping,
   stopTelegram,
 } from './telegram.js';
 import type { SessionManager, TaskActionHandler } from './telegram.js';
 import { NewMessage, RegisteredGroup, Session } from './types.js';
+import {
+  detectEmotionFromText,
+  formatFreyaText,
+  isFreyaEnabled,
+  parseEmotion,
+  synthesizeSpeech,
+} from './tts.js';
 import { loadJson, saveJson } from './utils.js';
 import { logger } from './logger.js';
 import {
@@ -469,6 +477,74 @@ function startIpcWatcher(): void {
                   logger.warn(
                     { chatJid: data.chatJid, sourceGroup },
                     'Unauthorized IPC message attempt blocked',
+                  );
+                }
+              } else if (
+                data.type === 'voice' &&
+                data.chatJid &&
+                data.text
+              ) {
+                // Voice message via Freya TTS
+                const targetGroup = registeredGroups[data.chatJid];
+                if (
+                  isMain ||
+                  (targetGroup && targetGroup.folder === sourceGroup)
+                ) {
+                  if (isFreyaEnabled()) {
+                    try {
+                      // Resolve emotion: agent-specified or keyword fallback
+                      let emotion;
+                      if (data.emotion) {
+                        const parsed = parseEmotion(data.emotion);
+                        if ('error' in parsed) {
+                          logger.warn(
+                            { emotion: data.emotion, error: parsed.error },
+                            'Invalid emotion from agent, auto-detecting',
+                          );
+                          emotion = detectEmotionFromText(data.text);
+                        } else {
+                          emotion = parsed;
+                        }
+                      } else {
+                        emotion = detectEmotionFromText(data.text);
+                      }
+                      const markedText = formatFreyaText(data.text, emotion);
+                      const mediaDir = path.join(
+                        GROUPS_DIR,
+                        sourceGroup,
+                        'media',
+                      );
+                      const oggPath = await synthesizeSpeech(
+                        markedText,
+                        mediaDir,
+                      );
+                      await sendTelegramVoice(data.chatJid, oggPath);
+                      logger.info(
+                        {
+                          chatJid: data.chatJid,
+                          sourceGroup,
+                          emotion: emotion.name,
+                        },
+                        'IPC voice message sent',
+                      );
+                    } catch (err) {
+                      logger.error(
+                        { err, chatJid: data.chatJid },
+                        'TTS failed, falling back to text',
+                      );
+                      await sendMessage(data.chatJid, data.text);
+                    }
+                  } else {
+                    logger.warn(
+                      { sourceGroup },
+                      'send_voice used but FREYA_API_KEY not set, sending as text',
+                    );
+                    await sendMessage(data.chatJid, data.text);
+                  }
+                } else {
+                  logger.warn(
+                    { chatJid: data.chatJid, sourceGroup },
+                    'Unauthorized IPC voice message attempt blocked',
                   );
                 }
               }

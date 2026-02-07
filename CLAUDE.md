@@ -150,6 +150,7 @@ Per-group IPC directories prevent cross-group access. Non-main groups can only s
 ### Communication
 
 - `send_message` -- Send message to current chat
+- `send_voice` -- Send a voice message using Freya TTS (text-to-speech with emotion support)
 
 ### Task Scheduling
 
@@ -240,6 +241,9 @@ Requires `SUPERMEMORY_API_KEY`. When enabled, memories are also automatically re
 | `SUPERMEMORY_API_KEY`       | --                       | Supermemory long-term memory (preferred) |
 | `SUPERMEMORY_OPENCLAW_API_KEY` | --                    | Supermemory key alias (accepted fallback) |
 | `SUPERMEMORY_CC_API_KEY`    | --                       | Supermemory key alias (accepted fallback) |
+| `FREYA_API_KEY`             | --                       | Freya TTS voice synthesis               |
+| `FREYA_CHARACTER_ID`        | `Amika2`                 | Freya TTS character voice               |
+| `FREYA_LANGUAGE`            | `English`                | Freya TTS language                      |
 | `ASSISTANT_NAME`            | `Andy`                   | Bot trigger name (`@Name`)              |
 | `CONTAINER_IMAGE`           | `nanoclaw-agent:latest`  | Docker image for agent containers       |
 | `CONTAINER_TIMEOUT`         | `300000` (5 min)         | Container execution timeout (ms)        |
