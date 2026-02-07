@@ -1,5 +1,8 @@
 # NanoClaw Agent Container
 # Runs Claude Agent SDK in isolated Linux VM with browser automation
+# Supports two modes:
+# - One-shot (stdin): receives JSON via stdin, processes, outputs to stdout, exits
+# - Persistent (NANOCLAW_PERSISTENT=1): watches IPC dir for input files, loops
 
 FROM oven/bun:1-debian
 
@@ -50,12 +53,15 @@ COPY agent-runner/ ./
 # Build TypeScript
 RUN bun run build
 
-# Create workspace directories
-RUN mkdir -p /workspace/group /workspace/global /workspace/extra /workspace/ipc/messages /workspace/ipc/tasks
+# Create workspace directories (including persistent mode IPC dirs)
+RUN mkdir -p /workspace/group /workspace/global /workspace/extra \
+    /workspace/ipc/messages /workspace/ipc/tasks /workspace/ipc/browse \
+    /workspace/ipc/agent-input /workspace/ipc/agent-output
 
-# Create entrypoint script
-# Sources env from mounted /workspace/env-dir/env if it exists (workaround for Apple Container -i bug)
-RUN printf '#!/bin/bash\nset -e\nif [ -f /workspace/env-dir/env ]; then\n  set -a\n  source /workspace/env-dir/env\n  set +a\nfi\ncat > /tmp/input.json\nbun /app/dist/index.js < /tmp/input.json\n' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
+# Create entrypoint script that supports both modes:
+# - If NANOCLAW_PERSISTENT=1: run agent-runner directly (it will enter persistent mode)
+# - Otherwise: pipe stdin to agent-runner (one-shot mode, backward compatible)
+RUN printf '#!/bin/bash\nset -e\nif [ -f /workspace/env-dir/env ]; then\n  set -a\n  source /workspace/env-dir/env\n  set +a\nfi\nif [ "${NANOCLAW_PERSISTENT}" = "1" ]; then\n  exec bun /app/dist/index.js\nelse\n  cat > /tmp/input.json\n  bun /app/dist/index.js < /tmp/input.json\nfi\n' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 
 # Set ownership to bun user (non-root) for writable directories
 RUN chown -R bun:bun /workspace
@@ -66,5 +72,5 @@ USER bun
 # Set working directory to group workspace
 WORKDIR /workspace/group
 
-# Entry point reads JSON from stdin, outputs JSON to stdout
+# Entry point handles both one-shot (stdin) and persistent (file-watching) modes
 ENTRYPOINT ["/app/entrypoint.sh"]

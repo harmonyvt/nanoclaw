@@ -12,6 +12,7 @@ import { CronExpressionParser } from 'cron-parser';
 const IPC_DIR = '/workspace/ipc';
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
 const TASKS_DIR = path.join(IPC_DIR, 'tasks');
+const BROWSE_DIR = path.join(IPC_DIR, 'browse');
 
 export interface IpcMcpContext {
   chatJid: string;
@@ -31,6 +32,42 @@ function writeIpcFile(dir: string, data: object): string {
   fs.renameSync(tempPath, filepath);
 
   return filename;
+}
+
+async function writeBrowseRequest(
+  action: string,
+  params: Record<string, unknown>,
+  timeoutMs = 60000,
+): Promise<{ status: string; result?: unknown; error?: string }> {
+  fs.mkdirSync(BROWSE_DIR, { recursive: true });
+
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const reqFile = path.join(BROWSE_DIR, `req-${id}.json`);
+  const resFile = path.join(BROWSE_DIR, `res-${id}.json`);
+
+  // Atomic write request
+  const tempReq = `${reqFile}.tmp`;
+  fs.writeFileSync(tempReq, JSON.stringify({ id, action, params }));
+  fs.renameSync(tempReq, reqFile);
+
+  // Poll for response
+  const pollInterval = 500;
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, pollInterval));
+    if (fs.existsSync(resFile)) {
+      const data = JSON.parse(fs.readFileSync(resFile, 'utf-8'));
+      // Clean up both files
+      try { fs.unlinkSync(reqFile); } catch {}
+      try { fs.unlinkSync(resFile); } catch {}
+      return data;
+    }
+  }
+
+  // Timeout - clean up request file
+  try { fs.unlinkSync(reqFile); } catch {}
+  return { status: 'error', error: `Browse request timed out after ${timeoutMs / 1000}s` };
 }
 
 export function createIpcMcp(ctx: IpcMcpContext) {
@@ -314,6 +351,402 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
               text: `Group "${args.name}" registered. It will start receiving messages immediately.`
             }]
           };
+        }
+      ),
+
+      // --- Firecrawl tools (direct API calls, no IPC needed) ---
+
+      tool(
+        'firecrawl_scrape',
+        'Scrape a single URL and return its content as markdown. Useful for reading web pages, articles, documentation, etc.',
+        {
+          url: z.string().describe('The URL to scrape'),
+          formats: z.array(z.string()).optional().describe('Output formats (default: ["markdown"])')
+        },
+        async (args) => {
+          const apiKey = process.env.FIRECRAWL_API_KEY;
+          if (!apiKey) {
+            return {
+              content: [{ type: 'text', text: 'FIRECRAWL_API_KEY is not set. Ask the admin to configure the Firecrawl API key.' }],
+              isError: true
+            };
+          }
+
+          try {
+            const res = await fetch('https://api.firecrawl.dev/v1/scrape', {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${apiKey}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                url: args.url,
+                formats: args.formats ?? ['markdown']
+              })
+            });
+
+            if (res.status === 429) {
+              return {
+                content: [{ type: 'text', text: 'Firecrawl rate limit exceeded. Please wait a moment and try again.' }],
+                isError: true
+              };
+            }
+
+            if (!res.ok) {
+              const body = await res.text();
+              return {
+                content: [{ type: 'text', text: `Firecrawl scrape failed (HTTP ${res.status}): ${body.slice(0, 500)}` }],
+                isError: true
+              };
+            }
+
+            const json = await res.json() as { success: boolean; data?: { markdown?: string } };
+            if (!json.success || !json.data?.markdown) {
+              return {
+                content: [{ type: 'text', text: `Firecrawl scrape returned no markdown content. Response: ${JSON.stringify(json).slice(0, 500)}` }],
+                isError: true
+              };
+            }
+
+            const MAX_SIZE = 50 * 1024; // 50KB
+            let markdown = json.data.markdown;
+            if (markdown.length > MAX_SIZE) {
+              markdown = markdown.slice(0, MAX_SIZE) + '\n\n[Content truncated at 50KB]';
+            }
+
+            return {
+              content: [{ type: 'text', text: markdown }]
+            };
+          } catch (err) {
+            return {
+              content: [{ type: 'text', text: `Firecrawl scrape error: ${err instanceof Error ? err.message : String(err)}` }],
+              isError: true
+            };
+          }
+        }
+      ),
+
+      tool(
+        'firecrawl_crawl',
+        'Crawl a website starting from a URL, following links up to a depth limit. Returns markdown content for each page found. Useful for indexing documentation sites or exploring a domain.',
+        {
+          url: z.string().describe('The starting URL to crawl'),
+          limit: z.number().optional().describe('Max number of pages to crawl (default: 10)'),
+          maxDepth: z.number().optional().describe('Max link depth to follow (default: 2)')
+        },
+        async (args) => {
+          const apiKey = process.env.FIRECRAWL_API_KEY;
+          if (!apiKey) {
+            return {
+              content: [{ type: 'text', text: 'FIRECRAWL_API_KEY is not set. Ask the admin to configure the Firecrawl API key.' }],
+              isError: true
+            };
+          }
+
+          try {
+            // Start the crawl job
+            const startRes = await fetch('https://api.firecrawl.dev/v1/crawl', {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${apiKey}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                url: args.url,
+                limit: args.limit ?? 10,
+                maxDepth: args.maxDepth ?? 2
+              })
+            });
+
+            if (startRes.status === 429) {
+              return {
+                content: [{ type: 'text', text: 'Firecrawl rate limit exceeded. Please wait a moment and try again.' }],
+                isError: true
+              };
+            }
+
+            if (!startRes.ok) {
+              const body = await startRes.text();
+              return {
+                content: [{ type: 'text', text: `Firecrawl crawl failed to start (HTTP ${startRes.status}): ${body.slice(0, 500)}` }],
+                isError: true
+              };
+            }
+
+            const startJson = await startRes.json() as { success: boolean; id?: string };
+            if (!startJson.success || !startJson.id) {
+              return {
+                content: [{ type: 'text', text: `Firecrawl crawl failed to start. Response: ${JSON.stringify(startJson).slice(0, 500)}` }],
+                isError: true
+              };
+            }
+
+            const jobId = startJson.id;
+            const POLL_INTERVAL = 5000;
+            const TIMEOUT = 120_000;
+            const startTime = Date.now();
+
+            // Poll for completion
+            while (Date.now() - startTime < TIMEOUT) {
+              await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL));
+
+              const pollRes = await fetch(`https://api.firecrawl.dev/v1/crawl/${jobId}`, {
+                headers: { 'Authorization': `Bearer ${apiKey}` }
+              });
+
+              if (pollRes.status === 429) {
+                // Wait longer on rate limit during polling
+                await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL));
+                continue;
+              }
+
+              if (!pollRes.ok) {
+                const body = await pollRes.text();
+                return {
+                  content: [{ type: 'text', text: `Firecrawl crawl poll failed (HTTP ${pollRes.status}): ${body.slice(0, 500)}` }],
+                  isError: true
+                };
+              }
+
+              const pollJson = await pollRes.json() as {
+                status: string;
+                data?: Array<{ metadata?: { sourceURL?: string }; markdown?: string }>;
+              };
+
+              if (pollJson.status === 'completed') {
+                const results = (pollJson.data ?? []).map(page => ({
+                  url: page.metadata?.sourceURL ?? 'unknown',
+                  markdown: page.markdown ?? ''
+                }));
+
+                const MAX_SIZE = 100 * 1024; // 100KB
+                let output = JSON.stringify(results, null, 2);
+                if (output.length > MAX_SIZE) {
+                  // Truncate by removing pages from the end until under limit
+                  while (output.length > MAX_SIZE && results.length > 1) {
+                    results.pop();
+                    output = JSON.stringify(results, null, 2);
+                  }
+                  if (output.length > MAX_SIZE) {
+                    output = output.slice(0, MAX_SIZE) + '\n\n[Content truncated at 100KB]';
+                  }
+                }
+
+                return {
+                  content: [{ type: 'text', text: `Crawled ${pollJson.data?.length ?? 0} pages:\n\n${output}` }]
+                };
+              }
+
+              if (pollJson.status === 'failed') {
+                return {
+                  content: [{ type: 'text', text: 'Firecrawl crawl job failed.' }],
+                  isError: true
+                };
+              }
+
+              // Status is 'scraping' or similar — keep polling
+            }
+
+            return {
+              content: [{ type: 'text', text: `Firecrawl crawl timed out after ${TIMEOUT / 1000}s. Job ID: ${jobId}` }],
+              isError: true
+            };
+          } catch (err) {
+            return {
+              content: [{ type: 'text', text: `Firecrawl crawl error: ${err instanceof Error ? err.message : String(err)}` }],
+              isError: true
+            };
+          }
+        }
+      ),
+
+      tool(
+        'firecrawl_map',
+        'Discover all URLs on a website. Returns a list of URLs found on the domain. Useful for understanding site structure before crawling or scraping specific pages.',
+        {
+          url: z.string().describe('The URL to map')
+        },
+        async (args) => {
+          const apiKey = process.env.FIRECRAWL_API_KEY;
+          if (!apiKey) {
+            return {
+              content: [{ type: 'text', text: 'FIRECRAWL_API_KEY is not set. Ask the admin to configure the Firecrawl API key.' }],
+              isError: true
+            };
+          }
+
+          try {
+            const res = await fetch('https://api.firecrawl.dev/v1/map', {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${apiKey}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({ url: args.url })
+            });
+
+            if (res.status === 429) {
+              return {
+                content: [{ type: 'text', text: 'Firecrawl rate limit exceeded. Please wait a moment and try again.' }],
+                isError: true
+              };
+            }
+
+            if (!res.ok) {
+              const body = await res.text();
+              return {
+                content: [{ type: 'text', text: `Firecrawl map failed (HTTP ${res.status}): ${body.slice(0, 500)}` }],
+                isError: true
+              };
+            }
+
+            const json = await res.json() as { success: boolean; links?: string[] };
+            if (!json.success || !json.links) {
+              return {
+                content: [{ type: 'text', text: `Firecrawl map returned no links. Response: ${JSON.stringify(json).slice(0, 500)}` }],
+                isError: true
+              };
+            }
+
+            return {
+              content: [{ type: 'text', text: `Found ${json.links.length} URLs:\n\n${json.links.join('\n')}` }]
+            };
+          } catch (err) {
+            return {
+              content: [{ type: 'text', text: `Firecrawl map error: ${err instanceof Error ? err.message : String(err)}` }],
+              isError: true
+            };
+          }
+        }
+      ),
+
+      // --- Browser automation tools (IPC request/response to host) ---
+
+      tool(
+        'browse_navigate',
+        'Navigate the browser to a URL. The browser runs in a sandbox sidecar container. Returns the page title after navigation.',
+        {
+          url: z.string().describe('The URL to navigate to')
+        },
+        async (args) => {
+          const res = await writeBrowseRequest('navigate', { url: args.url });
+          if (res.status === 'error') {
+            return { content: [{ type: 'text', text: `Navigation failed: ${res.error}` }], isError: true };
+          }
+          return { content: [{ type: 'text', text: `Navigated to page: ${res.result}` }] };
+        }
+      ),
+
+      tool(
+        'browse_snapshot',
+        'Get an accessibility tree / simplified DOM snapshot of the current page. Useful for understanding page structure and finding elements to interact with.',
+        {},
+        async () => {
+          const res = await writeBrowseRequest('snapshot', {});
+          if (res.status === 'error') {
+            return { content: [{ type: 'text', text: `Snapshot failed: ${res.error}` }], isError: true };
+          }
+          return { content: [{ type: 'text', text: String(res.result) }] };
+        }
+      ),
+
+      tool(
+        'browse_click',
+        'Click an element on the page by CSS selector or visible text.',
+        {
+          selector: z.string().describe('CSS selector or text content to click (e.g., "button.submit", "text=Sign In")')
+        },
+        async (args) => {
+          const res = await writeBrowseRequest('click', { selector: args.selector });
+          if (res.status === 'error') {
+            return { content: [{ type: 'text', text: `Click failed: ${res.error}` }], isError: true };
+          }
+          return { content: [{ type: 'text', text: `Clicked: ${args.selector}` }] };
+        }
+      ),
+
+      tool(
+        'browse_fill',
+        'Fill a form field with a value. Finds the element by CSS selector and types the value.',
+        {
+          selector: z.string().describe('CSS selector of the input field (e.g., "input[name=email]", "#password")'),
+          value: z.string().describe('The value to type into the field')
+        },
+        async (args) => {
+          const res = await writeBrowseRequest('fill', { selector: args.selector, value: args.value });
+          if (res.status === 'error') {
+            return { content: [{ type: 'text', text: `Fill failed: ${res.error}` }], isError: true };
+          }
+          return { content: [{ type: 'text', text: `Filled ${args.selector}` }] };
+        }
+      ),
+
+      tool(
+        'browse_screenshot',
+        'Take a screenshot of the current browser page. The image is saved to the group media directory and the path is returned.',
+        {},
+        async () => {
+          const res = await writeBrowseRequest('screenshot', {});
+          if (res.status === 'error') {
+            return { content: [{ type: 'text', text: `Screenshot failed: ${res.error}` }], isError: true };
+          }
+          return { content: [{ type: 'text', text: `Screenshot saved: ${res.result}` }] };
+        }
+      ),
+
+      tool(
+        'browse_wait_for_user',
+        'Ask the user to interact with the browser directly (e.g., to log in), then wait for them to reply "continue". Sends a message to the chat with the noVNC URL and your instructions.',
+        {
+          message: z.string().describe('Message to send to the user explaining what they need to do (e.g., "Please log in at the noVNC URL, then reply continue")')
+        },
+        async (args) => {
+          const res = await writeBrowseRequest('wait_for_user', { message: args.message }, 120000);
+          if (res.status === 'error') {
+            return { content: [{ type: 'text', text: `Wait for user failed: ${res.error}` }], isError: true };
+          }
+          return { content: [{ type: 'text', text: 'User has continued.' }] };
+        }
+      ),
+
+      tool(
+        'browse_go_back',
+        'Navigate back in browser history (like clicking the back button).',
+        {},
+        async () => {
+          const res = await writeBrowseRequest('go_back', {});
+          if (res.status === 'error') {
+            return { content: [{ type: 'text', text: `Go back failed: ${res.error}` }], isError: true };
+          }
+          return { content: [{ type: 'text', text: `Navigated back to: ${res.result}` }] };
+        }
+      ),
+
+      tool(
+        'browse_evaluate',
+        'Execute a JavaScript expression on the current page and return the result. Useful for extracting data not in the accessibility tree, reading JS variables, or triggering client-side actions.',
+        {
+          expression: z.string().describe('JavaScript expression to evaluate (e.g., "document.title", "window.location.href", "document.querySelectorAll(\'a\').length")')
+        },
+        async (args) => {
+          const res = await writeBrowseRequest('evaluate', { expression: args.expression });
+          if (res.status === 'error') {
+            return { content: [{ type: 'text', text: `Evaluate failed: ${res.error}` }], isError: true };
+          }
+          return { content: [{ type: 'text', text: String(res.result) }] };
+        }
+      ),
+
+      tool(
+        'browse_close',
+        'Close the current browser page/tab.',
+        {},
+        async () => {
+          const res = await writeBrowseRequest('close', {});
+          if (res.status === 'error') {
+            return { content: [{ type: 'text', text: `Close failed: ${res.error}` }], isError: true };
+          }
+          return { content: [{ type: 'text', text: 'Browser page closed.' }] };
         }
       )
     ]
