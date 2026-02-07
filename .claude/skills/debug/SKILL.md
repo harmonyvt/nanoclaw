@@ -9,7 +9,7 @@ description: Debug NanoClaw runtime issues across Docker containers, CUA sandbox
 
 - Host process: `src/index.ts`
 - Agent runtime: Docker containers from `nanoclaw-agent:latest`
-- Browser runtime: CUA sandbox container (`trycua/cua-sandbox:latest`)
+- Browser runtime: CUA sandbox container (`trycua/cua-xfce:latest`)
 - Service managers:
   - macOS: launchd (`com.nanoclaw`)
   - Linux: systemd user service (`com.nanoclaw.service`)
@@ -74,7 +74,7 @@ If image missing:
 docker ps --filter "name=nanoclaw-cua-sandbox"
 
 # Is CUA command server reachable?
-curl -sf http://localhost:8000/ >/dev/null && echo "CUA API OK" || echo "CUA API NOT REACHABLE"
+if curl -sf http://localhost:8000/health >/dev/null || curl -sf http://localhost:8000/ >/dev/null; then echo "CUA API OK"; else echo "CUA API NOT REACHABLE"; fi
 
 # View sandbox logs
 docker logs --tail 100 nanoclaw-cua-sandbox
@@ -91,7 +91,7 @@ docker rm nanoclaw-cua-sandbox 2>/dev/null || true
 If image missing:
 
 ```bash
-docker pull trycua/cua-sandbox:latest
+docker pull --platform linux/amd64 trycua/cua-xfce:latest
 ```
 
 ## 6. Common Failure Patterns

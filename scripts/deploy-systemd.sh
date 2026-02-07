@@ -5,7 +5,16 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 UNIT_TEMPLATE="$ROOT_DIR/systemd/com.nanoclaw.service"
 UNIT_DIR="$HOME/.config/systemd/user"
 UNIT_DEST="$UNIT_DIR/com.nanoclaw.service"
-BUN_PATH="$(command -v bun)"
+
+if command -v bun >/dev/null 2>&1; then
+  BUN_PATH="$(command -v bun)"
+elif [[ -x "$HOME/.bun/bin/bun" ]]; then
+  BUN_PATH="$HOME/.bun/bin/bun"
+else
+  echo "[nanoclaw] ERROR: bun not found in PATH or at $HOME/.bun/bin/bun" >&2
+  echo "[nanoclaw] Install Bun: https://bun.sh" >&2
+  exit 1
+fi
 
 if [[ "$(uname -s)" != "Linux" ]]; then
   echo "[nanoclaw] ERROR: deploy-systemd.sh is Linux-only." >&2

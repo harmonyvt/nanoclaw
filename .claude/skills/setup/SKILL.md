@@ -26,7 +26,7 @@ This verifies:
 - Docker CLI installed
 - Docker daemon running
 - Agent image exists (`CONTAINER_IMAGE` / `nanoclaw-agent:latest`)
-- CUA sandbox image exists or is pulled (`CUA_SANDBOX_IMAGE` / `trycua/cua-sandbox:latest`)
+- CUA sandbox image exists or is pulled (`CUA_SANDBOX_IMAGE` / `trycua/cua-xfce:latest`)
 
 If this fails, help the user install/start Docker and rerun the command.
 
@@ -61,11 +61,14 @@ Ensure these are set:
 Optional CUA tuning:
 
 - `CUA_SANDBOX_IMAGE`
+- `CUA_SANDBOX_PLATFORM`
 - `CUA_SANDBOX_COMMAND_PORT`
 - `CUA_SANDBOX_VNC_PORT`
+- `CUA_SANDBOX_NOVNC_PORT`
 - `CUA_SANDBOX_SCREEN_WIDTH`
 - `CUA_SANDBOX_SCREEN_HEIGHT`
 - `CUA_SANDBOX_SCREEN_DEPTH`
+- `CUA_SANDBOX_SHM_SIZE`
 - `CUA_API_KEY`
 
 ## 5. Configure Assistant Name (optional)
@@ -150,11 +153,12 @@ This runs Docker checks, builds TypeScript, writes a user-level systemd unit, th
 2. `tail -f logs/nanoclaw.log`
 3. Send `@ASSISTANT_NAME hello` in Telegram
 4. Test browser flow with `browse_screenshot` and confirm Telegram image arrives
+5. Test `browse_wait_for_user` and confirm the returned URL opens noVNC
 
 ## Troubleshooting
 
 - Docker daemon unavailable: start Docker Desktop (macOS) or `sudo systemctl start docker` (Linux)
 - Agent image missing: `./container/build.sh`
-- CUA image missing: `docker pull trycua/cua-sandbox:latest`
+- CUA image missing: `docker pull --platform linux/amd64 trycua/cua-xfce:latest`
 - Service not running: check `logs/nanoclaw.error.log`
 - No Telegram responses: validate `.env` values and `data/registered_groups.json`

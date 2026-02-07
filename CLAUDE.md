@@ -105,12 +105,13 @@ Media path is translated from host path to container path in the XML prompt (`me
 
 ## Browser Sandbox
 
-- **Sandbox image**: `trycua/cua-sandbox:latest` (configurable by `CUA_SANDBOX_IMAGE`)
+- **Sandbox image**: `trycua/cua-xfce:latest` (configurable by `CUA_SANDBOX_IMAGE`)
 - **Command API**: host connects to `/cmd` on port `8000` (mapped by `CUA_SANDBOX_COMMAND_PORT`)
-- **VNC**: `5900` (mapped by `CUA_SANDBOX_VNC_PORT`)
+- **VNC**: `5901` (mapped by `CUA_SANDBOX_VNC_PORT`)
+- **noVNC (browser live view)**: `6901` (mapped by `CUA_SANDBOX_NOVNC_PORT`)
 - **Lazy start**: Sandbox starts on first `browse_*` tool call
 - **Idle timeout**: Stops after 30 min of no browse activity
-- **Live URL in wait-for-user**: `http://<tailscale-ip>:<sandbox-port>` (fallback `127.0.0.1`)
+- **Live URL in wait-for-user**: noVNC URL `http://<tailscale-ip>:<CUA_SANDBOX_NOVNC_PORT>` (fallback `127.0.0.1`)
 - **Screenshot feedback**: `browse_screenshot` always saves to group media and is sent as Telegram photo
 
 ## IPC Patterns
@@ -209,12 +210,15 @@ Per-group IPC directories prevent cross-group access. Non-main groups can only s
 | `CONTAINER_MAX_OUTPUT_SIZE` | `10485760` (10MB)           | Max container stdout/stderr             |
 | `SANDBOX_IDLE_TIMEOUT_MS`   | `1800000`                   | Sandbox auto-stop timeout               |
 | `SANDBOX_TAILSCALE_ENABLED` | `true`                      | Use Tailscale IP for wait-for-user URLs |
-| `CUA_SANDBOX_IMAGE`         | `trycua/cua-sandbox:latest` | CUA Docker image                        |
+| `CUA_SANDBOX_IMAGE`         | `trycua/cua-xfce:latest`    | CUA Docker image                        |
+| `CUA_SANDBOX_PLATFORM`      | `linux/amd64`               | Docker platform for CUA image pull/run  |
 | `CUA_SANDBOX_COMMAND_PORT`  | `8000`                      | Host port for CUA `/cmd` API            |
-| `CUA_SANDBOX_VNC_PORT`      | `5900`                      | Host port for CUA VNC                   |
+| `CUA_SANDBOX_VNC_PORT`      | `5901`                      | Host port for CUA VNC                   |
+| `CUA_SANDBOX_NOVNC_PORT`    | `6901`                      | Host port for CUA noVNC live view       |
 | `CUA_SANDBOX_SCREEN_WIDTH`  | `1024`                      | CUA desktop width                       |
 | `CUA_SANDBOX_SCREEN_HEIGHT` | `768`                       | CUA desktop height                      |
 | `CUA_SANDBOX_SCREEN_DEPTH`  | `24`                        | CUA desktop color depth                 |
+| `CUA_SANDBOX_SHM_SIZE`      | `512m`                      | Shared memory for Chromium stability    |
 | `CUA_API_KEY`               | --                          | Optional CUA API key passed to sandbox  |
 | `LOG_LEVEL`                 | `info`                      | Pino log level                          |
 | `TZ`                        | system                      | Timezone for scheduled tasks            |
@@ -256,7 +260,7 @@ Run commands directly -- don't tell the user to run them.
 bun dev                      # Run with hot reload (--watch)
 bun run build                # Compile TypeScript
 ./container/build.sh         # Rebuild agent container
-docker pull trycua/cua-sandbox:latest # Pull/update CUA sandbox image
+docker pull --platform linux/amd64 trycua/cua-xfce:latest # Pull/update CUA sandbox image
 ```
 
 Service management (production via launchd):

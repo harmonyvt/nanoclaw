@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory={{PROJECT_ROOT}}
 Environment=HOME={{HOME}}
-Environment=PATH={{HOME}}/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH={{HOME}}/.bun/bin:{{HOME}}/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart={{BUN_PATH}} {{PROJECT_ROOT}}/dist/index.js
 Restart=always
 RestartSec=5

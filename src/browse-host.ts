@@ -13,6 +13,42 @@ type BrowseResponse = {
   error?: string;
 };
 
+type CuaPayload = {
+  status?: string;
+  content?: unknown;
+  result?: unknown;
+  error?: string;
+  message?: string;
+};
+
+function parseSsePayload(raw: string): unknown {
+  const dataLines = raw
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('data:'))
+    .map((line) => line.slice(5).trim())
+    .filter((line) => line && line !== '[DONE]');
+
+  if (dataLines.length === 0) return {};
+
+  let last: unknown = {};
+  for (const entry of dataLines) {
+    try {
+      const parsed = JSON.parse(entry) as Record<string, unknown>;
+      if (Object.prototype.hasOwnProperty.call(parsed, 'result')) {
+        last = parsed.result;
+      } else if (Object.prototype.hasOwnProperty.call(parsed, 'content')) {
+        last = parsed.content;
+      } else {
+        last = parsed;
+      }
+    } catch {
+      last = entry;
+    }
+  }
+  return last;
+}
+
 async function runCuaCommand(
   command: string,
   args: Record<string, unknown> = {},
@@ -22,23 +58,36 @@ async function runCuaCommand(
   const response = await fetch(sandbox.commandUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ command, args }),
+    // `params` is the current computer-server schema; keep `args` for
+    // compatibility with older sandbox images.
+    body: JSON.stringify({ command, params: args, args }),
   });
 
+  const rawBody = await response.text();
+
   if (!response.ok) {
-    const body = await response.text();
     throw new Error(
-      `CUA command HTTP ${response.status}: ${body.slice(0, 500)}`,
+      `CUA command HTTP ${response.status}: ${rawBody.slice(0, 500)}`,
     );
   }
 
-  const payload = (await response.json()) as {
-    status?: string;
-    content?: unknown;
-    result?: unknown;
-    error?: string;
-    message?: string;
-  };
+  const contentType = (response.headers.get('content-type') || '').toLowerCase();
+
+  let payload: CuaPayload;
+
+  if (contentType.includes('text/event-stream')) {
+    const streamed = parseSsePayload(rawBody);
+    payload =
+      streamed && typeof streamed === 'object'
+        ? (streamed as CuaPayload)
+        : { content: streamed };
+  } else {
+    try {
+      payload = JSON.parse(rawBody) as CuaPayload;
+    } catch {
+      payload = { content: rawBody };
+    }
+  }
 
   if (
     payload.status &&

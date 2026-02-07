@@ -4,9 +4,12 @@ import {
   CUA_SANDBOX_COMMAND_PORT,
   CUA_SANDBOX_CONTAINER_NAME,
   CUA_SANDBOX_IMAGE,
+  CUA_SANDBOX_NOVNC_PORT,
+  CUA_SANDBOX_PLATFORM,
   CUA_SANDBOX_SCREEN_DEPTH,
   CUA_SANDBOX_SCREEN_HEIGHT,
   CUA_SANDBOX_SCREEN_WIDTH,
+  CUA_SANDBOX_SHM_SIZE,
   CUA_SANDBOX_VNC_PORT,
   SANDBOX_IDLE_TIMEOUT_MS,
   SANDBOX_TAILSCALE_ENABLED,
@@ -48,7 +51,12 @@ function removeContainerIfPresent(name: string): void {
 
 function startCuaSandbox(): void {
   logger.info('Starting CUA desktop sandbox container');
+  const resolution = `${CUA_SANDBOX_SCREEN_WIDTH}x${CUA_SANDBOX_SCREEN_HEIGHT}`;
   const envArgs = [
+    // Preferred vars for trycua/cua-xfce.
+    `-e VNC_RESOLUTION=${resolution}`,
+    `-e VNC_COL_DEPTH=${CUA_SANDBOX_SCREEN_DEPTH}`,
+    // Backward-compatible vars for older CUA images.
     `-e SCREEN_WIDTH=${CUA_SANDBOX_SCREEN_WIDTH}`,
     `-e SCREEN_HEIGHT=${CUA_SANDBOX_SCREEN_HEIGHT}`,
     `-e SCREEN_DEPTH=${CUA_SANDBOX_SCREEN_DEPTH}`,
@@ -59,7 +67,7 @@ function startCuaSandbox(): void {
 
   try {
     execSync(
-      `docker run -d --name ${CUA_SANDBOX_CONTAINER_NAME} -p ${CUA_SANDBOX_COMMAND_PORT}:8000 -p ${CUA_SANDBOX_VNC_PORT}:5900 ${envArgs.join(' ')} ${CUA_SANDBOX_IMAGE}`,
+      `docker run -d --name ${CUA_SANDBOX_CONTAINER_NAME} --platform ${CUA_SANDBOX_PLATFORM} --shm-size ${CUA_SANDBOX_SHM_SIZE} -p ${CUA_SANDBOX_COMMAND_PORT}:8000 -p ${CUA_SANDBOX_VNC_PORT}:5901 -p ${CUA_SANDBOX_NOVNC_PORT}:6901 ${envArgs.join(' ')} ${CUA_SANDBOX_IMAGE}`,
       { stdio: 'pipe' },
     );
     logger.info('CUA desktop sandbox started');
@@ -86,10 +94,13 @@ export function isSandboxRunning(): boolean {
 function waitForCuaReady(): void {
   for (let i = 0; i < 20; i++) {
     try {
-      execSync(`curl -sf http://localhost:${CUA_SANDBOX_COMMAND_PORT}/`, {
-        stdio: 'pipe',
-        timeout: 3000,
-      });
+      execSync(
+        `curl -sf http://localhost:${CUA_SANDBOX_COMMAND_PORT}/health || curl -sf http://localhost:${CUA_SANDBOX_COMMAND_PORT}/`,
+        {
+          stdio: 'pipe',
+          timeout: 3000,
+        },
+      );
       logger.info('CUA sandbox command server is reachable from host');
       return;
     } catch {
@@ -120,7 +131,7 @@ export async function ensureSandbox(): Promise<SandboxConnection> {
 export function getSandboxUrl(): string | null {
   if (!isSandboxRunning()) return null;
   const ip = getSandboxHostIp();
-  return `http://${ip}:${CUA_SANDBOX_COMMAND_PORT}`;
+  return `http://${ip}:${CUA_SANDBOX_NOVNC_PORT}`;
 }
 
 function getSandboxHostIp(): string {

@@ -6,6 +6,8 @@ import {
   ASSISTANT_NAME,
   CONTAINER_IMAGE,
   CUA_SANDBOX_IMAGE,
+  CUA_SANDBOX_IMAGE_IS_LEGACY,
+  CUA_SANDBOX_PLATFORM,
   DATA_DIR,
   DEBUG_THREADS,
   GROUPS_DIR,
@@ -857,6 +859,16 @@ function ensureContainerSystemRunning(): void {
 }
 
 function ensureDockerImageRequirements(): void {
+  if (CUA_SANDBOX_IMAGE_IS_LEGACY) {
+    logger.warn(
+      {
+        configuredImage: 'trycua/cua-sandbox:latest',
+        effectiveImage: CUA_SANDBOX_IMAGE,
+      },
+      'CUA_SANDBOX_IMAGE uses deprecated image name; falling back to trycua/cua-xfce:latest',
+    );
+  }
+
   try {
     execSync(`docker image inspect ${CONTAINER_IMAGE}`, { stdio: 'pipe' });
     logger.debug({ image: CONTAINER_IMAGE }, 'Agent image is available');
@@ -876,15 +888,25 @@ function ensureDockerImageRequirements(): void {
     );
   } catch {
     logger.info(
-      { image: CUA_SANDBOX_IMAGE },
+      { image: CUA_SANDBOX_IMAGE, platform: CUA_SANDBOX_PLATFORM },
       'CUA sandbox image missing, pulling now',
     );
     try {
-      execSync(`docker pull ${CUA_SANDBOX_IMAGE}`, { stdio: 'pipe' });
-      logger.info({ image: CUA_SANDBOX_IMAGE }, 'CUA sandbox image pulled');
+      execSync(
+        `docker pull --platform ${CUA_SANDBOX_PLATFORM} ${CUA_SANDBOX_IMAGE}`,
+        { stdio: 'pipe' },
+      );
+      logger.info(
+        { image: CUA_SANDBOX_IMAGE, platform: CUA_SANDBOX_PLATFORM },
+        'CUA sandbox image pulled',
+      );
     } catch (pullErr) {
       logger.error(
-        { image: CUA_SANDBOX_IMAGE, err: pullErr },
+        {
+          image: CUA_SANDBOX_IMAGE,
+          platform: CUA_SANDBOX_PLATFORM,
+          err: pullErr,
+        },
         'Failed to pull CUA sandbox image',
       );
       throw new Error(`Failed to pull Docker image: ${CUA_SANDBOX_IMAGE}`);

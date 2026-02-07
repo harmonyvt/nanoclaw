@@ -45,7 +45,8 @@ Use AskUserQuestion for ambiguous product decisions. Then implement directly in 
 
 - Keep actions in `src/browse-host.ts` command-based (`/cmd`).
 - Preserve screenshot feedback path to Telegram.
-- Ensure `wait_for_user` always sends a usable sandbox URL.
+- Ensure `wait_for_user` always sends a usable noVNC URL.
+- Keep `browse_evaluate` explicitly unsupported unless you also add safe JS-eval support in the CUA bridge.
 
 ### Deployment/Runtime Changes
 

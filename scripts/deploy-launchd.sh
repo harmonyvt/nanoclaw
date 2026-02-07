@@ -4,7 +4,16 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PLIST_TEMPLATE="$ROOT_DIR/launchd/com.nanoclaw.plist"
 PLIST_DEST="$HOME/Library/LaunchAgents/com.nanoclaw.plist"
-BUN_PATH="$(command -v bun)"
+
+if command -v bun >/dev/null 2>&1; then
+  BUN_PATH="$(command -v bun)"
+elif [[ -x "$HOME/.bun/bin/bun" ]]; then
+  BUN_PATH="$HOME/.bun/bin/bun"
+else
+  echo "[nanoclaw] ERROR: bun not found in PATH or at $HOME/.bun/bin/bun" >&2
+  echo "[nanoclaw] Install Bun: https://bun.sh" >&2
+  exit 1
+fi
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "[nanoclaw] ERROR: deploy-launchd.sh is macOS-only." >&2

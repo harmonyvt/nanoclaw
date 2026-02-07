@@ -74,7 +74,7 @@ systemctl --user status com.nanoclaw.service --no-pager
 
 - Docker daemon down: start Docker and rerun deploy.
 - Missing agent image: run `./container/build.sh`.
-- Missing CUA image: run `docker pull trycua/cua-sandbox:latest`.
+- Missing CUA image: run `docker pull --platform linux/amd64 trycua/cua-xfce:latest`.
 - Linux user service not starting: inspect journal logs and ensure user systemd is active.
 
 Linux logs:

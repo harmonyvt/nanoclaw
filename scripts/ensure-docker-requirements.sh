@@ -3,7 +3,9 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 AGENT_IMAGE="${CONTAINER_IMAGE:-nanoclaw-agent:latest}"
-CUA_IMAGE="${CUA_SANDBOX_IMAGE:-trycua/cua-sandbox:latest}"
+CUA_IMAGE_CONFIGURED="${CUA_SANDBOX_IMAGE:-trycua/cua-xfce:latest}"
+CUA_PLATFORM="${CUA_SANDBOX_PLATFORM:-linux/amd64}"
+CUA_IMAGE="$CUA_IMAGE_CONFIGURED"
 
 cd "$ROOT_DIR"
 
@@ -30,10 +32,16 @@ else
   echo "[nanoclaw] agent image present: $AGENT_IMAGE"
 fi
 
+if [[ "$CUA_IMAGE_CONFIGURED" == "trycua/cua-sandbox:latest" ]]; then
+  echo "[nanoclaw] WARNING: CUA_SANDBOX_IMAGE is set to deprecated image $CUA_IMAGE" >&2
+  echo "[nanoclaw] Falling back to trycua/cua-xfce:latest. Update .env to silence this warning." >&2
+  CUA_IMAGE="trycua/cua-xfce:latest"
+fi
+
 if ! docker image inspect "$CUA_IMAGE" >/dev/null 2>&1; then
   echo "[nanoclaw] CUA sandbox image not found: $CUA_IMAGE"
-  echo "[nanoclaw] pulling CUA image"
-  docker pull "$CUA_IMAGE"
+  echo "[nanoclaw] pulling CUA image for platform $CUA_PLATFORM"
+  docker pull --platform "$CUA_PLATFORM" "$CUA_IMAGE"
 else
   echo "[nanoclaw] CUA sandbox image present: $CUA_IMAGE"
 fi
