@@ -33,12 +33,18 @@ export interface ContainerConfig {
   env?: Record<string, string>;
 }
 
+export interface ProviderConfig {
+  provider: 'anthropic' | 'openai';
+  model?: string; // e.g. "gpt-4o", "claude-sonnet-4-5-20250929"
+}
+
 export interface RegisteredGroup {
   name: string;
   folder: string;
   trigger: string;
   added_at: string;
   containerConfig?: ContainerConfig;
+  providerConfig?: ProviderConfig; // defaults to anthropic if absent
 }
 
 export interface Session {

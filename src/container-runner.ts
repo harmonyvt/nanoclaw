@@ -49,6 +49,8 @@ export interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   assistantName?: string;
+  provider?: string;
+  model?: string;
 }
 
 export interface ContainerOutput {

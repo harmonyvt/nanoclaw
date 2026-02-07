@@ -4,13 +4,15 @@ Personal Claude assistant. See [README.md](README.md) for philosophy and setup. 
 
 ## Architecture
 
-Single Bun process (host) connects to Telegram, stores messages in SQLite, and spawns ephemeral Docker containers per message. Each container runs the Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`) with an IPC-based MCP server for tools. Browse automation runs in a CUA desktop sandbox sidecar.
+Single Bun process (host) connects to Telegram, stores messages in SQLite, and spawns ephemeral Docker containers per message. Each container uses an adapter pattern to dispatch to either the Claude Agent SDK or OpenAI chat completions based on per-group `providerConfig`. Browse automation runs in a CUA desktop sandbox sidecar.
 
 ```
 Telegram <-> Host (Bun) <-> SQLite
                 |
                 +-- Docker containers (ephemeral, per-message)
-                |     \-- Claude Agent SDK + IPC MCP tools
+                |     \-- Adapter dispatch (per-group provider/model)
+                |           +-- ClaudeAdapter (Claude Agent SDK + MCP tools)
+                |           +-- OpenAIAdapter (chat completions + function calling)
                 |
                 +-- CUA desktop sandbox (persistent sidecar)
                       \-- /cmd API + screenshot transport
@@ -39,12 +41,19 @@ Telegram <-> Host (Bun) <-> SQLite
 
 ### Agent Container
 
-| File                                    | Purpose                                                                       |
-| --------------------------------------- | ----------------------------------------------------------------------------- |
-| `container/Dockerfile`                  | Agent image: `oven/bun:1-debian` + Chromium + claude-code                     |
-| `container/build.sh`                    | Build script for agent image (`nanoclaw-agent:latest`)                        |
-| `container/agent-runner/src/index.ts`   | Reads JSON from stdin, runs `query()` from Agent SDK, writes result to stdout |
-| `container/agent-runner/src/ipc-mcp.ts` | MCP server exposing all IPC tools to the agent                                |
+| File                                                  | Purpose                                                             |
+| ----------------------------------------------------- | ------------------------------------------------------------------- |
+| `container/Dockerfile`                                | Agent image: `oven/bun:1-debian` + Chromium + claude-code           |
+| `container/build.sh`                                  | Build script for agent image (`nanoclaw-agent:latest`)              |
+| `container/agent-runner/src/index.ts`                 | Reads JSON from stdin, dispatches to adapter, writes result to stdout |
+| `container/agent-runner/src/types.ts`                 | Shared adapter interfaces (`ProviderAdapter`, `AdapterInput`, etc.) |
+| `container/agent-runner/src/tool-registry.ts`         | Provider-agnostic tool definitions (22 tools with Zod schemas)      |
+| `container/agent-runner/src/ipc-mcp.ts`               | Thin Claude SDK wrapper that maps tool-registry into MCP server     |
+| `container/agent-runner/src/adapters/index.ts`        | `createAdapter()` factory: dispatches to Claude or OpenAI           |
+| `container/agent-runner/src/adapters/claude-adapter.ts`| Claude Agent SDK `query()` with PreCompact hooks                   |
+| `container/agent-runner/src/adapters/openai-adapter.ts`| OpenAI chat completions with function-calling loop (max 50 iter)   |
+| `container/agent-runner/src/adapters/openai-session.ts`| OpenAI conversation history persistence (JSON files, auto-trim)    |
+| `container/agent-runner/src/adapters/openai-tools.ts` | Zod-to-JSON Schema bridge for OpenAI function calling               |
 
 ### Per-Group
 
@@ -150,7 +159,7 @@ Per-group IPC directories prevent cross-group access. Non-main groups can only s
 
 ### Group Management
 
-- `register_group` -- Register new Telegram chat (main only)
+- `register_group` -- Register new Telegram chat (main only). Accepts optional `provider` (`anthropic`/`openai`) and `model` params for per-group AI configuration.
 
 ### Browser Automation
 
@@ -177,9 +186,11 @@ Per-group IPC directories prevent cross-group access. Non-main groups can only s
 
 Requires `SUPERMEMORY_API_KEY`. When enabled, memories are also automatically retrieved before each agent invocation and stored after each response.
 
-### Built-in Claude Tools
+### Built-in Claude Tools (Anthropic provider only)
 
 - `Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, `WebSearch`, `WebFetch`
+
+**Note:** When using the OpenAI provider, agents have access to IPC tools only (send_message, browse_*, firecrawl_*, memory_*, schedule_task, etc.) via function calling. Filesystem tools (Bash, Read, Write, Edit, etc.) are Claude Agent SDK-specific and not available with OpenAI.
 
 ## Skills
 
@@ -213,11 +224,18 @@ Requires `SUPERMEMORY_API_KEY`. When enabled, memories are also automatically re
 | `ANTHROPIC_API_KEY`       | Standard API key from console.anthropic.com        |
 | `CLAUDE_CODE_OAUTH_TOKEN` | OAuth token (auto-detected from keychain if empty) |
 
+### AI Provider Defaults
+
+| Variable           | Default      | Purpose                                                                 |
+| ------------------ | ------------ | ----------------------------------------------------------------------- |
+| `DEFAULT_PROVIDER` | `anthropic`  | Default provider for groups without explicit `providerConfig`            |
+| `DEFAULT_MODEL`    | (empty)      | Default model override (e.g. `claude-sonnet-4-5-20250929`, `gpt-4o`)    |
+
 ### Optional
 
-| Variable                    | Default                  | Purpose                                 |
-| --------------------------- | ------------------------ | --------------------------------------- |
-| `OPENAI_API_KEY`            | --                       | Whisper audio transcription             |
+| Variable                    | Default                  | Purpose                                         |
+| --------------------------- | ------------------------ | ------------------------------------------------ |
+| `OPENAI_API_KEY`            | --                       | Whisper transcription + OpenAI provider API key  |
 | `FIRECRAWL_API_KEY`         | --                       | Firecrawl web scraping                  |
 | `SUPERMEMORY_API_KEY`       | --                       | Supermemory long-term memory (preferred) |
 | `SUPERMEMORY_OPENCLAW_API_KEY` | --                    | Supermemory key alias (accepted fallback) |

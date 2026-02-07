@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  My personal Claude assistant that runs securely in containers. Lightweight and built to be understood and customized for your own needs.
+  My personal AI assistant that runs securely in containers. Supports Anthropic (Claude) and OpenAI (GPT-4o, o3) with per-group provider selection. Lightweight and built to be understood and customized for your own needs.
 </p>
 
 ## Why I Built This
@@ -44,11 +44,12 @@ bun run deploy:linux          # build + install/reload systemd user service
 
 **Skills over features.** Contributors shouldn't add features (e.g. support for Slack) to the codebase. Instead, they contribute [claude code skills](https://code.claude.com/docs/en/skills) like `/add-slack` that transform your fork. You end up with clean code that does exactly what you need.
 
-**Best harness, best model.** This runs on Claude Agent SDK, which means you're running Claude Code directly. The harness matters. A bad harness makes even smart models seem dumb, a good harness gives them superpowers. Claude Code is (IMO) the best harness available.
+**Best harness, best model.** The default provider runs on Claude Agent SDK, which means you're running Claude Code directly. The harness matters. A bad harness makes even smart models seem dumb, a good harness gives them superpowers. Claude Code is (IMO) the best harness available. OpenAI models are also supported for groups that benefit from different capabilities.
 
 ## What It Supports
 
-- **Telegram I/O** - Message Claude from your phone
+- **Multi-provider** - Anthropic (Claude) and OpenAI (GPT-4o, o3, etc.) with per-group provider/model selection
+- **Telegram I/O** - Message your assistant from your phone
 - **Isolated group context** - Each group has its own `CLAUDE.md` memory, isolated filesystem, and runs in its own container sandbox with only that filesystem mounted
 - **Main channel** - Your private channel (self-chat) for admin control; every other group is completely isolated
 - **Scheduled tasks** - Recurring jobs that run Claude and can message you back
@@ -127,18 +128,23 @@ Skills we'd love to see:
 ## Architecture
 
 ```
-Telegram (grammY) --> SQLite --> Polling loop --> Container (Claude Agent SDK) --> Response
+Telegram (grammY) --> SQLite --> Polling loop --> Container (Adapter) --> Response
+                                                    |
+                                          ClaudeAdapter (Claude Agent SDK)
+                                          OpenAIAdapter (chat completions + function calling)
 ```
 
-Single Bun process. Agents execute in isolated Linux containers with mounted directories. IPC via filesystem. No daemons, no queues, no complexity.
+Single Bun process. Agents execute in isolated Linux containers with mounted directories. The container uses an adapter pattern to dispatch to either the Claude Agent SDK or OpenAI chat completions based on per-group provider configuration. IPC via filesystem. No daemons, no queues, no complexity.
 
 Key files:
 
-- `src/index.ts` - Main app: message routing, IPC
+- `src/index.ts` - Main app: message routing, IPC, provider resolution
 - `src/cua-takeover-server.ts` - Browser takeover web UI for CUA handoff
-- `src/container-runner.ts` - Spawns agent containers
+- `src/container-runner.ts` - Spawns agent containers (passes provider/model)
 - `src/task-scheduler.ts` - Runs scheduled tasks
 - `src/db.ts` - SQLite operations
+- `container/agent-runner/src/adapters/` - Provider adapters (Claude, OpenAI)
+- `container/agent-runner/src/tool-registry.ts` - Provider-agnostic tool definitions
 - `groups/*/CLAUDE.md` - Per-group memory
 
 ## FAQ

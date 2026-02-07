@@ -10,6 +10,8 @@ import {
   CUA_SANDBOX_PLATFORM,
   DATA_DIR,
   DEBUG_THREADS,
+  DEFAULT_MODEL,
+  DEFAULT_PROVIDER,
   GROUPS_DIR,
   IPC_POLL_INTERVAL,
   MAIN_GROUP_FOLDER,
@@ -302,6 +304,9 @@ async function runAgent(
     new Set(Object.keys(registeredGroups)),
   );
 
+  const provider = group.providerConfig?.provider || DEFAULT_PROVIDER;
+  const model = group.providerConfig?.model || DEFAULT_MODEL || undefined;
+
   try {
     const output = await runContainerAgent(group, {
       prompt,
@@ -310,6 +315,8 @@ async function runAgent(
       chatJid,
       isMain,
       assistantName: ASSISTANT_NAME,
+      provider,
+      model,
     });
 
     if (output.newSessionId) {
@@ -771,6 +778,7 @@ async function processTaskIpc(
     folder?: string;
     trigger?: string;
     containerConfig?: RegisteredGroup['containerConfig'];
+    providerConfig?: RegisteredGroup['providerConfig'];
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -947,6 +955,7 @@ async function processTaskIpc(
           trigger: data.trigger,
           added_at: new Date().toISOString(),
           containerConfig: data.containerConfig,
+          providerConfig: data.providerConfig,
         });
       } else {
         logger.warn(

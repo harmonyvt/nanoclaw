@@ -30,7 +30,7 @@ This verifies:
 
 If this fails, help the user install/start Docker and rerun the command.
 
-## 3. Configure Claude Authentication
+## 3. Configure Authentication
 
 Check if Claude Code credentials exist:
 
@@ -38,7 +38,7 @@ Check if Claude Code credentials exist:
 [ -f ~/.claude/.credentials.json ] && echo "FOUND" || echo "NOT_FOUND"
 ```
 
-If found, explain NanoClaw auto-detects Claude OAuth tokens.
+If found, explain NanoClaw auto-detects Claude OAuth tokens for the Anthropic provider.
 
 If not found, ask user whether to use:
 
@@ -58,7 +58,24 @@ Ensure these are set:
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_OWNER_ID`
 
-Optional CUA tuning:
+### AI Provider Configuration
+
+Ask if they want to use a non-default AI provider or model. NanoClaw supports two providers:
+
+- **Anthropic** (default) -- Uses Claude Agent SDK. Full tool access including Bash, Read, Write, Edit, Glob, Grep, WebSearch, WebFetch, plus all IPC tools.
+- **OpenAI** -- Uses chat completions with function calling. Access to IPC tools only (send_message, browse_*, firecrawl_*, memory_*, schedule_task, etc.).
+
+Optional provider settings:
+
+- `DEFAULT_PROVIDER` -- `anthropic` (default) or `openai`
+- `DEFAULT_MODEL` -- Model override. Examples:
+  - Anthropic: `claude-sonnet-4-5-20250929`, `claude-opus-4-20250514`, `claude-haiku-4-5-20251001`
+  - OpenAI: `gpt-4o`, `o3`, `gpt-4o-mini`
+- `OPENAI_API_KEY` -- Required if using OpenAI provider or Whisper transcription
+
+Per-group provider/model can also be configured later when registering groups (the `register_group` tool accepts optional `provider` and `model` params).
+
+### Optional CUA tuning
 
 - `CUA_SANDBOX_IMAGE`
 - `CUA_SANDBOX_PLATFORM`
