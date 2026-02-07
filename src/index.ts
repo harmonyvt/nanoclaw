@@ -4,6 +4,8 @@ import path from 'path';
 
 import {
   ASSISTANT_NAME,
+  CONTAINER_IMAGE,
+  CUA_SANDBOX_IMAGE,
   DATA_DIR,
   DEBUG_THREADS,
   GROUPS_DIR,
@@ -52,6 +54,7 @@ import {
 import { cleanupOldMedia } from './media.js';
 import {
   cleanupSandbox,
+  ensureSandbox,
   startIdleWatcher,
   getSandboxUrl,
 } from './sandbox-manager.js';
@@ -135,7 +138,10 @@ async function processMessage(msg: NewMessage): Promise<void> {
   if (/^continue$/i.test(content) && hasWaitingRequests()) {
     const resolved = resolveWaitForUser();
     if (resolved) {
-      logger.info({ chatJid: msg.chat_jid }, 'Browse wait_for_user resolved by user');
+      logger.info(
+        { chatJid: msg.chat_jid },
+        'Browse wait_for_user resolved by user',
+      );
       return;
     }
   }
@@ -310,10 +316,7 @@ function startIpcWatcher(): void {
                   isMain ||
                   (targetGroup && targetGroup.folder === sourceGroup)
                 ) {
-                  await sendMessage(
-                    data.chatJid,
-                    data.text,
-                  );
+                  await sendMessage(data.chatJid, data.text);
                   logger.info(
                     { chatJid: data.chatJid, sourceGroup },
                     'IPC message sent',
@@ -393,12 +396,23 @@ function startIpcWatcher(): void {
 
               // For wait_for_user, send Telegram notification first
               if (action === 'wait_for_user' && params?.message) {
+                // Ensure sandbox is running so the user gets a usable live URL.
+                try {
+                  await ensureSandbox();
+                } catch (err) {
+                  logger.warn(
+                    { err, sourceGroup },
+                    'Failed to prestart sandbox for wait_for_user',
+                  );
+                }
                 const chatJid = Object.entries(registeredGroups).find(
                   ([, g]) => g.folder === sourceGroup,
                 )?.[0];
                 if (chatJid) {
                   const sandboxUrl = getSandboxUrl();
-                  const urlPart = sandboxUrl ? `\nBrowser: ${sandboxUrl}` : '';
+                  const urlPart = sandboxUrl
+                    ? `\nSandbox view: ${sandboxUrl}`
+                    : '';
                   await sendMessage(
                     chatJid,
                     `${params.message}${urlPart}\n\nReply "continue" when ready.`,
@@ -516,7 +530,9 @@ function startIpcWatcher(): void {
                 try {
                   events.push(JSON.parse(fs.readFileSync(filePath, 'utf-8')));
                 } catch {}
-                try { fs.unlinkSync(filePath); } catch {}
+                try {
+                  fs.unlinkSync(filePath);
+                } catch {}
               }
 
               if (events.length > 0) {
@@ -524,8 +540,12 @@ function startIpcWatcher(): void {
                 const lines: string[] = [];
                 for (const evt of events) {
                   if (evt.type === 'tool_start') {
-                    const preview = evt.preview ? String(evt.preview).slice(0, 100) : '';
-                    lines.push(`> ${evt.tool_name}${preview ? ': ' + preview : ''}`);
+                    const preview = evt.preview
+                      ? String(evt.preview).slice(0, 100)
+                      : '';
+                    lines.push(
+                      `> ${evt.tool_name}${preview ? ': ' + preview : ''}`,
+                    );
                   } else if (evt.type === 'tool_progress') {
                     lines.push(`> ${evt.tool_name} (${evt.elapsed_seconds}s)`);
                   }
@@ -542,13 +562,18 @@ function startIpcWatcher(): void {
             } else {
               // Not verbose - just clean up status files silently
               for (const file of statusFiles) {
-                try { fs.unlinkSync(path.join(statusDir, file)); } catch {}
+                try {
+                  fs.unlinkSync(path.join(statusDir, file));
+                } catch {}
               }
             }
           }
         }
       } catch (err) {
-        logger.debug({ err, sourceGroup }, 'Error reading IPC status directory');
+        logger.debug(
+          { err, sourceGroup },
+          'Error reading IPC status directory',
+        );
       }
     }
 
@@ -831,6 +856,42 @@ function ensureContainerSystemRunning(): void {
   }
 }
 
+function ensureDockerImageRequirements(): void {
+  try {
+    execSync(`docker image inspect ${CONTAINER_IMAGE}`, { stdio: 'pipe' });
+    logger.debug({ image: CONTAINER_IMAGE }, 'Agent image is available');
+  } catch {
+    logger.error(
+      { image: CONTAINER_IMAGE },
+      'Agent Docker image is missing. Build it with ./container/build.sh',
+    );
+    throw new Error(`Missing Docker image: ${CONTAINER_IMAGE}`);
+  }
+
+  try {
+    execSync(`docker image inspect ${CUA_SANDBOX_IMAGE}`, { stdio: 'pipe' });
+    logger.debug(
+      { image: CUA_SANDBOX_IMAGE },
+      'CUA sandbox image is available',
+    );
+  } catch {
+    logger.info(
+      { image: CUA_SANDBOX_IMAGE },
+      'CUA sandbox image missing, pulling now',
+    );
+    try {
+      execSync(`docker pull ${CUA_SANDBOX_IMAGE}`, { stdio: 'pipe' });
+      logger.info({ image: CUA_SANDBOX_IMAGE }, 'CUA sandbox image pulled');
+    } catch (pullErr) {
+      logger.error(
+        { image: CUA_SANDBOX_IMAGE, err: pullErr },
+        'Failed to pull CUA sandbox image',
+      );
+      throw new Error(`Failed to pull Docker image: ${CUA_SANDBOX_IMAGE}`);
+    }
+  }
+}
+
 async function main(): Promise<void> {
   if (!TELEGRAM_BOT_TOKEN) {
     logger.error('TELEGRAM_BOT_TOKEN is required');
@@ -841,6 +902,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   ensureContainerSystemRunning();
+  ensureDockerImageRequirements();
   initDatabase();
   logger.info('Database initialized');
   loadState();

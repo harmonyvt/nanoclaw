@@ -1,48 +1,46 @@
 ---
 name: restart
-description: Restart the NanoClaw background service. Unloads and reloads the launchd plist. Use when user says "restart", "restart service", "reload", or "bounce the service".
+description: Restart NanoClaw background service on macOS (launchd) or Linux (systemd user service). Use when user asks to restart/reload/bounce the service.
 ---
 
 # Restart NanoClaw Service
 
-## 1. Check Current Status
-
-```bash
-launchctl list | grep com.nanoclaw
-```
-
-If the service is not loaded, skip the unload step.
-
-## 2. Rebuild (if needed)
-
-If there are uncommitted TypeScript changes or the user just made code changes, build first:
+## 1. Build if code changed
 
 ```bash
 bun run build
 ```
 
-Only rebuild if source files changed since the last build. Check with:
+## 2. Restart by platform
+
+### macOS (launchd)
 
 ```bash
-ls -lt src/*.ts dist/index.js 2>/dev/null | head -5
-```
-
-## 3. Restart
-
-```bash
-launchctl unload ~/Library/LaunchAgents/com.nanoclaw.plist
+launchctl unload ~/Library/LaunchAgents/com.nanoclaw.plist 2>/dev/null || true
 launchctl load ~/Library/LaunchAgents/com.nanoclaw.plist
-```
-
-## 4. Verify
-
-Wait a couple seconds, then confirm it's running:
-
-```bash
 sleep 2
 launchctl list | grep com.nanoclaw
 ```
 
-A `0` exit status in the output means it's running. A non-zero status or missing entry means it failed to start — check logs with `/logs`.
+### Linux (systemd user service)
 
-Report the result to the user.
+```bash
+systemctl --user restart com.nanoclaw.service
+sleep 2
+systemctl --user status com.nanoclaw.service --no-pager
+```
+
+## 3. If Linux service missing
+
+Deploy it first:
+
+```bash
+bun run deploy:linux
+```
+
+## 4. Report status
+
+- Running: confirm success
+- Failed: show relevant logs and next fix
+  - macOS: `tail -100 logs/nanoclaw.error.log`
+  - Linux: `journalctl --user -u com.nanoclaw.service -n 100 --no-pager`

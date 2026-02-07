@@ -1,22 +1,34 @@
 import { execSync } from 'child_process';
+import {
+  CUA_API_KEY,
+  CUA_SANDBOX_COMMAND_PORT,
+  CUA_SANDBOX_CONTAINER_NAME,
+  CUA_SANDBOX_IMAGE,
+  CUA_SANDBOX_SCREEN_DEPTH,
+  CUA_SANDBOX_SCREEN_HEIGHT,
+  CUA_SANDBOX_SCREEN_WIDTH,
+  CUA_SANDBOX_VNC_PORT,
+  SANDBOX_IDLE_TIMEOUT_MS,
+  SANDBOX_TAILSCALE_ENABLED,
+} from './config.js';
 import { logger } from './logger.js';
-
-const SANDBOX_CONTAINER_NAME = 'nanoclaw-sandbox';
-const SANDBOX_IMAGE = 'nanoclaw-sandbox:latest';
-const CDP_PORT = 9222;
-const NOVNC_PORT = 6080;
-const IDLE_TIMEOUT = 30 * 60 * 1000; // 30 minutes
-const SANDBOX_VOLUME = 'nanoclaw-sandbox-profile';
 
 let lastBrowseActivity = 0;
 let idleWatcherInterval: ReturnType<typeof setInterval> | null = null;
 let cachedTailscaleIp: string | null = null;
 
-export function isSandboxRunning(): boolean {
+export interface SandboxConnection {
+  commandUrl: string;
+  liveViewUrl: string | null;
+}
+
+function isContainerRunning(name: string): boolean {
   try {
     const result = execSync(
-      `docker inspect --format '{{.State.Running}}' ${SANDBOX_CONTAINER_NAME}`,
-      { stdio: 'pipe' },
+      `docker inspect --format '{{.State.Running}}' ${name}`,
+      {
+        stdio: 'pipe',
+      },
     )
       .toString()
       .trim();
@@ -26,70 +38,97 @@ export function isSandboxRunning(): boolean {
   }
 }
 
-export function startSandbox(): void {
-  logger.info('Starting sandbox container');
+function removeContainerIfPresent(name: string): void {
+  try {
+    execSync(`docker rm ${name}`, { stdio: 'pipe' });
+  } catch {
+    // Container may not exist
+  }
+}
+
+function startCuaSandbox(): void {
+  logger.info('Starting CUA desktop sandbox container');
+  const envArgs = [
+    `-e SCREEN_WIDTH=${CUA_SANDBOX_SCREEN_WIDTH}`,
+    `-e SCREEN_HEIGHT=${CUA_SANDBOX_SCREEN_HEIGHT}`,
+    `-e SCREEN_DEPTH=${CUA_SANDBOX_SCREEN_DEPTH}`,
+  ];
+  if (CUA_API_KEY) {
+    envArgs.push(`-e CUA_API_KEY=${CUA_API_KEY}`);
+  }
+
   try {
     execSync(
-      `docker run -d --name ${SANDBOX_CONTAINER_NAME} -p ${CDP_PORT}:${CDP_PORT} -p ${NOVNC_PORT}:${NOVNC_PORT} -v ${SANDBOX_VOLUME}:/data/chrome-profile ${SANDBOX_IMAGE}`,
+      `docker run -d --name ${CUA_SANDBOX_CONTAINER_NAME} -p ${CUA_SANDBOX_COMMAND_PORT}:8000 -p ${CUA_SANDBOX_VNC_PORT}:5900 ${envArgs.join(' ')} ${CUA_SANDBOX_IMAGE}`,
       { stdio: 'pipe' },
     );
-    logger.info('Sandbox container started');
+    logger.info('CUA desktop sandbox started');
   } catch (err) {
-    logger.error({ err }, 'Failed to start sandbox container');
+    logger.error({ err }, 'Failed to start CUA desktop sandbox');
     throw err;
   }
 }
 
-export function stopSandbox(): void {
-  logger.info('Stopping sandbox container');
+function stopCuaSandbox(): void {
+  logger.info('Stopping CUA desktop sandbox');
   try {
-    execSync(`docker stop ${SANDBOX_CONTAINER_NAME}`, { stdio: 'pipe' });
+    execSync(`docker stop ${CUA_SANDBOX_CONTAINER_NAME}`, { stdio: 'pipe' });
   } catch {
     // Container may not be running
   }
-  try {
-    execSync(`docker rm ${SANDBOX_CONTAINER_NAME}`, { stdio: 'pipe' });
-  } catch {
-    // Container may not exist
-  }
-  logger.info('Sandbox container stopped');
+  removeContainerIfPresent(CUA_SANDBOX_CONTAINER_NAME);
 }
 
-export async function ensureSandbox(): Promise<string> {
-  if (!isSandboxRunning()) {
-    // Remove stale container if it exists but isn't running
-    try {
-      execSync(`docker rm ${SANDBOX_CONTAINER_NAME}`, { stdio: 'pipe' });
-    } catch {
-      // No stale container
-    }
-    startSandbox();
+export function isSandboxRunning(): boolean {
+  return isContainerRunning(CUA_SANDBOX_CONTAINER_NAME);
+}
 
-    // Wait for CDP to be reachable from host
-    for (let i = 0; i < 15; i++) {
-      try {
-        execSync('curl -sf http://localhost:9222/json/version', { stdio: 'pipe', timeout: 3000 });
-        logger.info('Sandbox CDP is reachable from host');
-        break;
-      } catch {
-        if (i === 14) {
-          logger.warn('Sandbox CDP not reachable after 15 attempts, proceeding anyway');
-        }
-        await new Promise(resolve => setTimeout(resolve, 1000));
+function waitForCuaReady(): void {
+  for (let i = 0; i < 20; i++) {
+    try {
+      execSync(`curl -sf http://localhost:${CUA_SANDBOX_COMMAND_PORT}/`, {
+        stdio: 'pipe',
+        timeout: 3000,
+      });
+      logger.info('CUA sandbox command server is reachable from host');
+      return;
+    } catch {
+      if (i === 19) {
+        logger.warn(
+          'CUA sandbox server not reachable after 20 attempts, proceeding anyway',
+        );
       }
+      execSync('sleep 1', { stdio: 'pipe' });
     }
   }
+}
+
+export async function ensureSandbox(): Promise<SandboxConnection> {
+  if (!isSandboxRunning()) {
+    removeContainerIfPresent(CUA_SANDBOX_CONTAINER_NAME);
+    startCuaSandbox();
+    waitForCuaReady();
+  }
+
   resetIdleTimer();
-  return `http://localhost:${CDP_PORT}`;
+  return {
+    commandUrl: `http://localhost:${CUA_SANDBOX_COMMAND_PORT}/cmd`,
+    liveViewUrl: getSandboxUrl(),
+  };
 }
 
 export function getSandboxUrl(): string | null {
   if (!isSandboxRunning()) return null;
-  const ip = getTailscaleIp();
-  return `http://${ip}:${NOVNC_PORT}`;
+  const ip = getSandboxHostIp();
+  return `http://${ip}:${CUA_SANDBOX_COMMAND_PORT}`;
 }
 
-export function getTailscaleIp(): string {
+function getSandboxHostIp(): string {
+  if (!SANDBOX_TAILSCALE_ENABLED) return '127.0.0.1';
+  return getTailscaleIp();
+}
+
+function getTailscaleIp(): string {
   if (cachedTailscaleIp) return cachedTailscaleIp;
   try {
     cachedTailscaleIp = execSync('tailscale ip -4', { stdio: 'pipe' })
@@ -112,15 +151,15 @@ export function startIdleWatcher(): void {
   idleWatcherInterval = setInterval(() => {
     if (
       lastBrowseActivity > 0 &&
-      Date.now() - lastBrowseActivity > IDLE_TIMEOUT &&
+      Date.now() - lastBrowseActivity > SANDBOX_IDLE_TIMEOUT_MS &&
       isSandboxRunning()
     ) {
-      logger.info('Sandbox idle timeout reached, stopping');
-      stopSandbox();
+      logger.info('Sandbox idle timeout reached, stopping CUA desktop sandbox');
+      stopCuaSandbox();
       lastBrowseActivity = 0;
     }
-  }, 60_000); // Check every minute
-  logger.info('Sandbox idle watcher started');
+  }, 60_000);
+  logger.info('Sandbox idle watcher started (CUA mode)');
 }
 
 export function cleanupSandbox(): void {
@@ -129,6 +168,6 @@ export function cleanupSandbox(): void {
     idleWatcherInterval = null;
   }
   if (isSandboxRunning()) {
-    stopSandbox();
+    stopCuaSandbox();
   }
 }

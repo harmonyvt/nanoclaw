@@ -59,15 +59,24 @@ async function writeBrowseRequest(
     if (fs.existsSync(resFile)) {
       const data = JSON.parse(fs.readFileSync(resFile, 'utf-8'));
       // Clean up both files
-      try { fs.unlinkSync(reqFile); } catch {}
-      try { fs.unlinkSync(resFile); } catch {}
+      try {
+        fs.unlinkSync(reqFile);
+      } catch {}
+      try {
+        fs.unlinkSync(resFile);
+      } catch {}
       return data;
     }
   }
 
   // Timeout - clean up request file
-  try { fs.unlinkSync(reqFile); } catch {}
-  return { status: 'error', error: `Browse request timed out after ${timeoutMs / 1000}s` };
+  try {
+    fs.unlinkSync(reqFile);
+  } catch {}
+  return {
+    status: 'error',
+    error: `Browse request timed out after ${timeoutMs / 1000}s`,
+  };
 }
 
 export function createIpcMcp(ctx: IpcMcpContext) {
@@ -81,7 +90,7 @@ export function createIpcMcp(ctx: IpcMcpContext) {
         'send_message',
         'Send a message to the current chat. Use this to proactively share information or updates.',
         {
-          text: z.string().describe('The message text to send')
+          text: z.string().describe('The message text to send'),
         },
         async (args) => {
           const data = {
@@ -89,18 +98,20 @@ export function createIpcMcp(ctx: IpcMcpContext) {
             chatJid,
             text: args.text,
             groupFolder,
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
           };
 
           const filename = writeIpcFile(MESSAGES_DIR, data);
 
           return {
-            content: [{
-              type: 'text',
-              text: `Message queued for delivery (${filename})`
-            }]
+            content: [
+              {
+                type: 'text',
+                text: `Message queued for delivery (${filename})`,
+              },
+            ],
           };
-        }
+        },
       ),
 
       tool(
@@ -122,11 +133,33 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
 • interval: Milliseconds between runs (e.g., "300000" for 5 minutes, "3600000" for 1 hour)
 • once: Local time WITHOUT "Z" suffix (e.g., "2026-02-01T15:30:00"). Do NOT use UTC/Z suffix.`,
         {
-          prompt: z.string().describe('What the agent should do when the task runs. For isolated mode, include all necessary context here.'),
-          schedule_type: z.enum(['cron', 'interval', 'once']).describe('cron=recurring at specific times, interval=recurring every N ms, once=run once at specific time'),
-          schedule_value: z.string().describe('cron: "*/5 * * * *" | interval: milliseconds like "300000" | once: local timestamp like "2026-02-01T15:30:00" (no Z suffix!)'),
-          context_mode: z.enum(['group', 'isolated']).default('group').describe('group=runs with chat history and memory, isolated=fresh session (include context in prompt)'),
-          target_group: z.string().optional().describe('Target group folder (main only, defaults to current group)')
+          prompt: z
+            .string()
+            .describe(
+              'What the agent should do when the task runs. For isolated mode, include all necessary context here.',
+            ),
+          schedule_type: z
+            .enum(['cron', 'interval', 'once'])
+            .describe(
+              'cron=recurring at specific times, interval=recurring every N ms, once=run once at specific time',
+            ),
+          schedule_value: z
+            .string()
+            .describe(
+              'cron: "*/5 * * * *" | interval: milliseconds like "300000" | once: local timestamp like "2026-02-01T15:30:00" (no Z suffix!)',
+            ),
+          context_mode: z
+            .enum(['group', 'isolated'])
+            .default('group')
+            .describe(
+              'group=runs with chat history and memory, isolated=fresh session (include context in prompt)',
+            ),
+          target_group: z
+            .string()
+            .optional()
+            .describe(
+              'Target group folder (main only, defaults to current group)',
+            ),
         },
         async (args) => {
           // Validate schedule_value before writing IPC
@@ -135,30 +168,46 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
               CronExpressionParser.parse(args.schedule_value);
             } catch (err) {
               return {
-                content: [{ type: 'text', text: `Invalid cron: "${args.schedule_value}". Use format like "0 9 * * *" (daily 9am) or "*/5 * * * *" (every 5 min).` }],
-                isError: true
+                content: [
+                  {
+                    type: 'text',
+                    text: `Invalid cron: "${args.schedule_value}". Use format like "0 9 * * *" (daily 9am) or "*/5 * * * *" (every 5 min).`,
+                  },
+                ],
+                isError: true,
               };
             }
           } else if (args.schedule_type === 'interval') {
             const ms = parseInt(args.schedule_value, 10);
             if (isNaN(ms) || ms <= 0) {
               return {
-                content: [{ type: 'text', text: `Invalid interval: "${args.schedule_value}". Must be positive milliseconds (e.g., "300000" for 5 min).` }],
-                isError: true
+                content: [
+                  {
+                    type: 'text',
+                    text: `Invalid interval: "${args.schedule_value}". Must be positive milliseconds (e.g., "300000" for 5 min).`,
+                  },
+                ],
+                isError: true,
               };
             }
           } else if (args.schedule_type === 'once') {
             const date = new Date(args.schedule_value);
             if (isNaN(date.getTime())) {
               return {
-                content: [{ type: 'text', text: `Invalid timestamp: "${args.schedule_value}". Use ISO 8601 format like "2026-02-01T15:30:00.000Z".` }],
-                isError: true
+                content: [
+                  {
+                    type: 'text',
+                    text: `Invalid timestamp: "${args.schedule_value}". Use ISO 8601 format like "2026-02-01T15:30:00.000Z".`,
+                  },
+                ],
+                isError: true,
               };
             }
           }
 
           // Non-main groups can only schedule for themselves
-          const targetGroup = isMain && args.target_group ? args.target_group : groupFolder;
+          const targetGroup =
+            isMain && args.target_group ? args.target_group : groupFolder;
 
           const data = {
             type: 'schedule_task',
@@ -169,24 +218,26 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
             groupFolder: targetGroup,
             chatJid,
             createdBy: groupFolder,
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
           };
 
           const filename = writeIpcFile(TASKS_DIR, data);
 
           return {
-            content: [{
-              type: 'text',
-              text: `Task scheduled (${filename}): ${args.schedule_type} - ${args.schedule_value}`
-            }]
+            content: [
+              {
+                type: 'text',
+                text: `Task scheduled (${filename}): ${args.schedule_type} - ${args.schedule_value}`,
+              },
+            ],
           };
-        }
+        },
       ),
 
       // Reads from current_tasks.json which host keeps updated
       tool(
         'list_tasks',
-        'List all scheduled tasks. From main: shows all tasks. From other groups: shows only that group\'s tasks.',
+        "List all scheduled tasks. From main: shows all tasks. From other groups: shows only that group's tasks.",
         {},
         async () => {
           const tasksFile = path.join(IPC_DIR, 'current_tasks.json');
@@ -194,10 +245,12 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
           try {
             if (!fs.existsSync(tasksFile)) {
               return {
-                content: [{
-                  type: 'text',
-                  text: 'No scheduled tasks found.'
-                }]
+                content: [
+                  {
+                    type: 'text',
+                    text: 'No scheduled tasks found.',
+                  },
+                ],
               };
             }
 
@@ -205,43 +258,61 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
 
             const tasks = isMain
               ? allTasks
-              : allTasks.filter((t: { groupFolder: string }) => t.groupFolder === groupFolder);
+              : allTasks.filter(
+                  (t: { groupFolder: string }) => t.groupFolder === groupFolder,
+                );
 
             if (tasks.length === 0) {
               return {
-                content: [{
-                  type: 'text',
-                  text: 'No scheduled tasks found.'
-                }]
+                content: [
+                  {
+                    type: 'text',
+                    text: 'No scheduled tasks found.',
+                  },
+                ],
               };
             }
 
-            const formatted = tasks.map((t: { id: string; prompt: string; schedule_type: string; schedule_value: string; status: string; next_run: string }) =>
-              `- [${t.id}] ${t.prompt.slice(0, 50)}... (${t.schedule_type}: ${t.schedule_value}) - ${t.status}, next: ${t.next_run || 'N/A'}`
-            ).join('\n');
+            const formatted = tasks
+              .map(
+                (t: {
+                  id: string;
+                  prompt: string;
+                  schedule_type: string;
+                  schedule_value: string;
+                  status: string;
+                  next_run: string;
+                }) =>
+                  `- [${t.id}] ${t.prompt.slice(0, 50)}... (${t.schedule_type}: ${t.schedule_value}) - ${t.status}, next: ${t.next_run || 'N/A'}`,
+              )
+              .join('\n');
 
             return {
-              content: [{
-                type: 'text',
-                text: `Scheduled tasks:\n${formatted}`
-              }]
+              content: [
+                {
+                  type: 'text',
+                  text: `Scheduled tasks:\n${formatted}`,
+                },
+              ],
             };
           } catch (err) {
             return {
-              content: [{
-                type: 'text',
-                text: `Error reading tasks: ${err instanceof Error ? err.message : String(err)}`
-              }]
+              content: [
+                {
+                  type: 'text',
+                  text: `Error reading tasks: ${err instanceof Error ? err.message : String(err)}`,
+                },
+              ],
             };
           }
-        }
+        },
       ),
 
       tool(
         'pause_task',
         'Pause a scheduled task. It will not run until resumed.',
         {
-          task_id: z.string().describe('The task ID to pause')
+          task_id: z.string().describe('The task ID to pause'),
         },
         async (args) => {
           const data = {
@@ -249,25 +320,27 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
             taskId: args.task_id,
             groupFolder,
             isMain,
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
           };
 
           writeIpcFile(TASKS_DIR, data);
 
           return {
-            content: [{
-              type: 'text',
-              text: `Task ${args.task_id} pause requested.`
-            }]
+            content: [
+              {
+                type: 'text',
+                text: `Task ${args.task_id} pause requested.`,
+              },
+            ],
           };
-        }
+        },
       ),
 
       tool(
         'resume_task',
         'Resume a paused task.',
         {
-          task_id: z.string().describe('The task ID to resume')
+          task_id: z.string().describe('The task ID to resume'),
         },
         async (args) => {
           const data = {
@@ -275,25 +348,27 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
             taskId: args.task_id,
             groupFolder,
             isMain,
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
           };
 
           writeIpcFile(TASKS_DIR, data);
 
           return {
-            content: [{
-              type: 'text',
-              text: `Task ${args.task_id} resume requested.`
-            }]
+            content: [
+              {
+                type: 'text',
+                text: `Task ${args.task_id} resume requested.`,
+              },
+            ],
           };
-        }
+        },
       ),
 
       tool(
         'cancel_task',
         'Cancel and delete a scheduled task.',
         {
-          task_id: z.string().describe('The task ID to cancel')
+          task_id: z.string().describe('The task ID to cancel'),
         },
         async (args) => {
           const data = {
@@ -301,18 +376,20 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
             taskId: args.task_id,
             groupFolder,
             isMain,
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
           };
 
           writeIpcFile(TASKS_DIR, data);
 
           return {
-            content: [{
-              type: 'text',
-              text: `Task ${args.task_id} cancellation requested.`
-            }]
+            content: [
+              {
+                type: 'text',
+                text: `Task ${args.task_id} cancellation requested.`,
+              },
+            ],
           };
-        }
+        },
       ),
 
       tool(
@@ -321,16 +398,27 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
 
 Use available_groups.json to find the chat ID. The folder name should be lowercase with hyphens (e.g., "family-chat").`,
         {
-          jid: z.string().describe('The chat identifier (e.g., "tg:-1001234567890")'),
+          jid: z
+            .string()
+            .describe('The chat identifier (e.g., "tg:-1001234567890")'),
           name: z.string().describe('Display name for the group'),
-          folder: z.string().describe('Folder name for group files (lowercase, hyphens, e.g., "family-chat")'),
-          trigger: z.string().describe('Trigger word (e.g., "@Andy")')
+          folder: z
+            .string()
+            .describe(
+              'Folder name for group files (lowercase, hyphens, e.g., "family-chat")',
+            ),
+          trigger: z.string().describe('Trigger word (e.g., "@Andy")'),
         },
         async (args) => {
           if (!isMain) {
             return {
-              content: [{ type: 'text', text: 'Only the main group can register new groups.' }],
-              isError: true
+              content: [
+                {
+                  type: 'text',
+                  text: 'Only the main group can register new groups.',
+                },
+              ],
+              isError: true,
             };
           }
 
@@ -340,18 +428,20 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
             name: args.name,
             folder: args.folder,
             trigger: args.trigger,
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
           };
 
           writeIpcFile(TASKS_DIR, data);
 
           return {
-            content: [{
-              type: 'text',
-              text: `Group "${args.name}" registered. It will start receiving messages immediately.`
-            }]
+            content: [
+              {
+                type: 'text',
+                text: `Group "${args.name}" registered. It will start receiving messages immediately.`,
+              },
+            ],
           };
-        }
+        },
       ),
 
       // --- Firecrawl tools (direct API calls, no IPC needed) ---
@@ -361,14 +451,22 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
         'Scrape a single URL and return its content as markdown. Useful for reading web pages, articles, documentation, etc.',
         {
           url: z.string().describe('The URL to scrape'),
-          formats: z.array(z.string()).optional().describe('Output formats (default: ["markdown"])')
+          formats: z
+            .array(z.string())
+            .optional()
+            .describe('Output formats (default: ["markdown"])'),
         },
         async (args) => {
           const apiKey = process.env.FIRECRAWL_API_KEY;
           if (!apiKey) {
             return {
-              content: [{ type: 'text', text: 'FIRECRAWL_API_KEY is not set. Ask the admin to configure the Firecrawl API key.' }],
-              isError: true
+              content: [
+                {
+                  type: 'text',
+                  text: 'FIRECRAWL_API_KEY is not set. Ask the admin to configure the Firecrawl API key.',
+                },
+              ],
+              isError: true,
             };
           }
 
@@ -376,54 +474,78 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
             const res = await fetch('https://api.firecrawl.dev/v1/scrape', {
               method: 'POST',
               headers: {
-                'Authorization': `Bearer ${apiKey}`,
-                'Content-Type': 'application/json'
+                Authorization: `Bearer ${apiKey}`,
+                'Content-Type': 'application/json',
               },
               body: JSON.stringify({
                 url: args.url,
-                formats: args.formats ?? ['markdown']
-              })
+                formats: args.formats ?? ['markdown'],
+              }),
             });
 
             if (res.status === 429) {
               return {
-                content: [{ type: 'text', text: 'Firecrawl rate limit exceeded. Please wait a moment and try again.' }],
-                isError: true
+                content: [
+                  {
+                    type: 'text',
+                    text: 'Firecrawl rate limit exceeded. Please wait a moment and try again.',
+                  },
+                ],
+                isError: true,
               };
             }
 
             if (!res.ok) {
               const body = await res.text();
               return {
-                content: [{ type: 'text', text: `Firecrawl scrape failed (HTTP ${res.status}): ${body.slice(0, 500)}` }],
-                isError: true
+                content: [
+                  {
+                    type: 'text',
+                    text: `Firecrawl scrape failed (HTTP ${res.status}): ${body.slice(0, 500)}`,
+                  },
+                ],
+                isError: true,
               };
             }
 
-            const json = await res.json() as { success: boolean; data?: { markdown?: string } };
+            const json = (await res.json()) as {
+              success: boolean;
+              data?: { markdown?: string };
+            };
             if (!json.success || !json.data?.markdown) {
               return {
-                content: [{ type: 'text', text: `Firecrawl scrape returned no markdown content. Response: ${JSON.stringify(json).slice(0, 500)}` }],
-                isError: true
+                content: [
+                  {
+                    type: 'text',
+                    text: `Firecrawl scrape returned no markdown content. Response: ${JSON.stringify(json).slice(0, 500)}`,
+                  },
+                ],
+                isError: true,
               };
             }
 
             const MAX_SIZE = 50 * 1024; // 50KB
             let markdown = json.data.markdown;
             if (markdown.length > MAX_SIZE) {
-              markdown = markdown.slice(0, MAX_SIZE) + '\n\n[Content truncated at 50KB]';
+              markdown =
+                markdown.slice(0, MAX_SIZE) + '\n\n[Content truncated at 50KB]';
             }
 
             return {
-              content: [{ type: 'text', text: markdown }]
+              content: [{ type: 'text', text: markdown }],
             };
           } catch (err) {
             return {
-              content: [{ type: 'text', text: `Firecrawl scrape error: ${err instanceof Error ? err.message : String(err)}` }],
-              isError: true
+              content: [
+                {
+                  type: 'text',
+                  text: `Firecrawl scrape error: ${err instanceof Error ? err.message : String(err)}`,
+                },
+              ],
+              isError: true,
             };
           }
-        }
+        },
       ),
 
       tool(
@@ -431,15 +553,26 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
         'Crawl a website starting from a URL, following links up to a depth limit. Returns markdown content for each page found. Useful for indexing documentation sites or exploring a domain.',
         {
           url: z.string().describe('The starting URL to crawl'),
-          limit: z.number().optional().describe('Max number of pages to crawl (default: 10)'),
-          maxDepth: z.number().optional().describe('Max link depth to follow (default: 2)')
+          limit: z
+            .number()
+            .optional()
+            .describe('Max number of pages to crawl (default: 10)'),
+          maxDepth: z
+            .number()
+            .optional()
+            .describe('Max link depth to follow (default: 2)'),
         },
         async (args) => {
           const apiKey = process.env.FIRECRAWL_API_KEY;
           if (!apiKey) {
             return {
-              content: [{ type: 'text', text: 'FIRECRAWL_API_KEY is not set. Ask the admin to configure the Firecrawl API key.' }],
-              isError: true
+              content: [
+                {
+                  type: 'text',
+                  text: 'FIRECRAWL_API_KEY is not set. Ask the admin to configure the Firecrawl API key.',
+                },
+              ],
+              isError: true,
             };
           }
 
@@ -448,36 +581,54 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
             const startRes = await fetch('https://api.firecrawl.dev/v1/crawl', {
               method: 'POST',
               headers: {
-                'Authorization': `Bearer ${apiKey}`,
-                'Content-Type': 'application/json'
+                Authorization: `Bearer ${apiKey}`,
+                'Content-Type': 'application/json',
               },
               body: JSON.stringify({
                 url: args.url,
                 limit: args.limit ?? 10,
-                maxDepth: args.maxDepth ?? 2
-              })
+                maxDepth: args.maxDepth ?? 2,
+              }),
             });
 
             if (startRes.status === 429) {
               return {
-                content: [{ type: 'text', text: 'Firecrawl rate limit exceeded. Please wait a moment and try again.' }],
-                isError: true
+                content: [
+                  {
+                    type: 'text',
+                    text: 'Firecrawl rate limit exceeded. Please wait a moment and try again.',
+                  },
+                ],
+                isError: true,
               };
             }
 
             if (!startRes.ok) {
               const body = await startRes.text();
               return {
-                content: [{ type: 'text', text: `Firecrawl crawl failed to start (HTTP ${startRes.status}): ${body.slice(0, 500)}` }],
-                isError: true
+                content: [
+                  {
+                    type: 'text',
+                    text: `Firecrawl crawl failed to start (HTTP ${startRes.status}): ${body.slice(0, 500)}`,
+                  },
+                ],
+                isError: true,
               };
             }
 
-            const startJson = await startRes.json() as { success: boolean; id?: string };
+            const startJson = (await startRes.json()) as {
+              success: boolean;
+              id?: string;
+            };
             if (!startJson.success || !startJson.id) {
               return {
-                content: [{ type: 'text', text: `Firecrawl crawl failed to start. Response: ${JSON.stringify(startJson).slice(0, 500)}` }],
-                isError: true
+                content: [
+                  {
+                    type: 'text',
+                    text: `Firecrawl crawl failed to start. Response: ${JSON.stringify(startJson).slice(0, 500)}`,
+                  },
+                ],
+                isError: true,
               };
             }
 
@@ -488,35 +639,50 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
 
             // Poll for completion
             while (Date.now() - startTime < TIMEOUT) {
-              await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL));
+              await new Promise((resolve) =>
+                setTimeout(resolve, POLL_INTERVAL),
+              );
 
-              const pollRes = await fetch(`https://api.firecrawl.dev/v1/crawl/${jobId}`, {
-                headers: { 'Authorization': `Bearer ${apiKey}` }
-              });
+              const pollRes = await fetch(
+                `https://api.firecrawl.dev/v1/crawl/${jobId}`,
+                {
+                  headers: { Authorization: `Bearer ${apiKey}` },
+                },
+              );
 
               if (pollRes.status === 429) {
                 // Wait longer on rate limit during polling
-                await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL));
+                await new Promise((resolve) =>
+                  setTimeout(resolve, POLL_INTERVAL),
+                );
                 continue;
               }
 
               if (!pollRes.ok) {
                 const body = await pollRes.text();
                 return {
-                  content: [{ type: 'text', text: `Firecrawl crawl poll failed (HTTP ${pollRes.status}): ${body.slice(0, 500)}` }],
-                  isError: true
+                  content: [
+                    {
+                      type: 'text',
+                      text: `Firecrawl crawl poll failed (HTTP ${pollRes.status}): ${body.slice(0, 500)}`,
+                    },
+                  ],
+                  isError: true,
                 };
               }
 
-              const pollJson = await pollRes.json() as {
+              const pollJson = (await pollRes.json()) as {
                 status: string;
-                data?: Array<{ metadata?: { sourceURL?: string }; markdown?: string }>;
+                data?: Array<{
+                  metadata?: { sourceURL?: string };
+                  markdown?: string;
+                }>;
               };
 
               if (pollJson.status === 'completed') {
-                const results = (pollJson.data ?? []).map(page => ({
+                const results = (pollJson.data ?? []).map((page) => ({
                   url: page.metadata?.sourceURL ?? 'unknown',
-                  markdown: page.markdown ?? ''
+                  markdown: page.markdown ?? '',
                 }));
 
                 const MAX_SIZE = 100 * 1024; // 100KB
@@ -528,19 +694,28 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
                     output = JSON.stringify(results, null, 2);
                   }
                   if (output.length > MAX_SIZE) {
-                    output = output.slice(0, MAX_SIZE) + '\n\n[Content truncated at 100KB]';
+                    output =
+                      output.slice(0, MAX_SIZE) +
+                      '\n\n[Content truncated at 100KB]';
                   }
                 }
 
                 return {
-                  content: [{ type: 'text', text: `Crawled ${pollJson.data?.length ?? 0} pages:\n\n${output}` }]
+                  content: [
+                    {
+                      type: 'text',
+                      text: `Crawled ${pollJson.data?.length ?? 0} pages:\n\n${output}`,
+                    },
+                  ],
                 };
               }
 
               if (pollJson.status === 'failed') {
                 return {
-                  content: [{ type: 'text', text: 'Firecrawl crawl job failed.' }],
-                  isError: true
+                  content: [
+                    { type: 'text', text: 'Firecrawl crawl job failed.' },
+                  ],
+                  isError: true,
                 };
               }
 
@@ -548,30 +723,45 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
             }
 
             return {
-              content: [{ type: 'text', text: `Firecrawl crawl timed out after ${TIMEOUT / 1000}s. Job ID: ${jobId}` }],
-              isError: true
+              content: [
+                {
+                  type: 'text',
+                  text: `Firecrawl crawl timed out after ${TIMEOUT / 1000}s. Job ID: ${jobId}`,
+                },
+              ],
+              isError: true,
             };
           } catch (err) {
             return {
-              content: [{ type: 'text', text: `Firecrawl crawl error: ${err instanceof Error ? err.message : String(err)}` }],
-              isError: true
+              content: [
+                {
+                  type: 'text',
+                  text: `Firecrawl crawl error: ${err instanceof Error ? err.message : String(err)}`,
+                },
+              ],
+              isError: true,
             };
           }
-        }
+        },
       ),
 
       tool(
         'firecrawl_map',
         'Discover all URLs on a website. Returns a list of URLs found on the domain. Useful for understanding site structure before crawling or scraping specific pages.',
         {
-          url: z.string().describe('The URL to map')
+          url: z.string().describe('The URL to map'),
         },
         async (args) => {
           const apiKey = process.env.FIRECRAWL_API_KEY;
           if (!apiKey) {
             return {
-              content: [{ type: 'text', text: 'FIRECRAWL_API_KEY is not set. Ask the admin to configure the Firecrawl API key.' }],
-              isError: true
+              content: [
+                {
+                  type: 'text',
+                  text: 'FIRECRAWL_API_KEY is not set. Ask the admin to configure the Firecrawl API key.',
+                },
+              ],
+              isError: true,
             };
           }
 
@@ -579,106 +769,171 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
             const res = await fetch('https://api.firecrawl.dev/v1/map', {
               method: 'POST',
               headers: {
-                'Authorization': `Bearer ${apiKey}`,
-                'Content-Type': 'application/json'
+                Authorization: `Bearer ${apiKey}`,
+                'Content-Type': 'application/json',
               },
-              body: JSON.stringify({ url: args.url })
+              body: JSON.stringify({ url: args.url }),
             });
 
             if (res.status === 429) {
               return {
-                content: [{ type: 'text', text: 'Firecrawl rate limit exceeded. Please wait a moment and try again.' }],
-                isError: true
+                content: [
+                  {
+                    type: 'text',
+                    text: 'Firecrawl rate limit exceeded. Please wait a moment and try again.',
+                  },
+                ],
+                isError: true,
               };
             }
 
             if (!res.ok) {
               const body = await res.text();
               return {
-                content: [{ type: 'text', text: `Firecrawl map failed (HTTP ${res.status}): ${body.slice(0, 500)}` }],
-                isError: true
+                content: [
+                  {
+                    type: 'text',
+                    text: `Firecrawl map failed (HTTP ${res.status}): ${body.slice(0, 500)}`,
+                  },
+                ],
+                isError: true,
               };
             }
 
-            const json = await res.json() as { success: boolean; links?: string[] };
+            const json = (await res.json()) as {
+              success: boolean;
+              links?: string[];
+            };
             if (!json.success || !json.links) {
               return {
-                content: [{ type: 'text', text: `Firecrawl map returned no links. Response: ${JSON.stringify(json).slice(0, 500)}` }],
-                isError: true
+                content: [
+                  {
+                    type: 'text',
+                    text: `Firecrawl map returned no links. Response: ${JSON.stringify(json).slice(0, 500)}`,
+                  },
+                ],
+                isError: true,
               };
             }
 
             return {
-              content: [{ type: 'text', text: `Found ${json.links.length} URLs:\n\n${json.links.join('\n')}` }]
+              content: [
+                {
+                  type: 'text',
+                  text: `Found ${json.links.length} URLs:\n\n${json.links.join('\n')}`,
+                },
+              ],
             };
           } catch (err) {
             return {
-              content: [{ type: 'text', text: `Firecrawl map error: ${err instanceof Error ? err.message : String(err)}` }],
-              isError: true
+              content: [
+                {
+                  type: 'text',
+                  text: `Firecrawl map error: ${err instanceof Error ? err.message : String(err)}`,
+                },
+              ],
+              isError: true,
             };
           }
-        }
+        },
       ),
 
       // --- Browser automation tools (IPC request/response to host) ---
 
       tool(
         'browse_navigate',
-        'Navigate the browser to a URL. The browser runs in a sandbox sidecar container. Returns the page title after navigation.',
+        'Navigate the sandboxed browser/desktop to a URL. Returns a short navigation result.',
         {
-          url: z.string().describe('The URL to navigate to')
+          url: z.string().describe('The URL to navigate to'),
         },
         async (args) => {
           const res = await writeBrowseRequest('navigate', { url: args.url });
           if (res.status === 'error') {
-            return { content: [{ type: 'text', text: `Navigation failed: ${res.error}` }], isError: true };
+            return {
+              content: [
+                { type: 'text', text: `Navigation failed: ${res.error}` },
+              ],
+              isError: true,
+            };
           }
-          return { content: [{ type: 'text', text: `Navigated to page: ${res.result}` }] };
-        }
+          return {
+            content: [
+              { type: 'text', text: `Navigated to page: ${res.result}` },
+            ],
+          };
+        },
       ),
 
       tool(
         'browse_snapshot',
-        'Get an accessibility tree / simplified DOM snapshot of the current page. Useful for understanding page structure and finding elements to interact with.',
+        'Get an accessibility tree / simplified snapshot of the current page or desktop UI. Useful for understanding visible structure and finding elements to interact with.',
         {},
         async () => {
           const res = await writeBrowseRequest('snapshot', {});
           if (res.status === 'error') {
-            return { content: [{ type: 'text', text: `Snapshot failed: ${res.error}` }], isError: true };
+            return {
+              content: [
+                { type: 'text', text: `Snapshot failed: ${res.error}` },
+              ],
+              isError: true,
+            };
           }
           return { content: [{ type: 'text', text: String(res.result) }] };
-        }
+        },
       ),
 
       tool(
         'browse_click',
-        'Click an element on the page by CSS selector or visible text.',
+        'Click an element by selector or description text.',
         {
-          selector: z.string().describe('CSS selector or text content to click (e.g., "button.submit", "text=Sign In")')
+          selector: z
+            .string()
+            .describe(
+              'CSS selector or text content to click (e.g., "button.submit", "text=Sign In")',
+            ),
         },
         async (args) => {
-          const res = await writeBrowseRequest('click', { selector: args.selector });
+          const res = await writeBrowseRequest('click', {
+            selector: args.selector,
+          });
           if (res.status === 'error') {
-            return { content: [{ type: 'text', text: `Click failed: ${res.error}` }], isError: true };
+            return {
+              content: [{ type: 'text', text: `Click failed: ${res.error}` }],
+              isError: true,
+            };
           }
-          return { content: [{ type: 'text', text: `Clicked: ${args.selector}` }] };
-        }
+          return {
+            content: [{ type: 'text', text: `Clicked: ${args.selector}` }],
+          };
+        },
       ),
 
       tool(
         'browse_fill',
-        'Fill a form field with a value. Finds the element by CSS selector and types the value.',
+        'Fill a form field with a value. Finds the target element and types the value.',
         {
-          selector: z.string().describe('CSS selector of the input field (e.g., "input[name=email]", "#password")'),
-          value: z.string().describe('The value to type into the field')
+          selector: z
+            .string()
+            .describe(
+              'CSS selector of the input field (e.g., "input[name=email]", "#password")',
+            ),
+          value: z.string().describe('The value to type into the field'),
         },
         async (args) => {
-          const res = await writeBrowseRequest('fill', { selector: args.selector, value: args.value });
+          const res = await writeBrowseRequest('fill', {
+            selector: args.selector,
+            value: args.value,
+          });
           if (res.status === 'error') {
-            return { content: [{ type: 'text', text: `Fill failed: ${res.error}` }], isError: true };
+            return {
+              content: [{ type: 'text', text: `Fill failed: ${res.error}` }],
+              isError: true,
+            };
           }
-          return { content: [{ type: 'text', text: `Filled ${args.selector}` }] };
-        }
+          return {
+            content: [{ type: 'text', text: `Filled ${args.selector}` }],
+          };
+        },
       ),
 
       tool(
@@ -688,25 +943,47 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
         async () => {
           const res = await writeBrowseRequest('screenshot', {});
           if (res.status === 'error') {
-            return { content: [{ type: 'text', text: `Screenshot failed: ${res.error}` }], isError: true };
+            return {
+              content: [
+                { type: 'text', text: `Screenshot failed: ${res.error}` },
+              ],
+              isError: true,
+            };
           }
-          return { content: [{ type: 'text', text: `Screenshot saved: ${res.result}` }] };
-        }
+          return {
+            content: [
+              { type: 'text', text: `Screenshot saved: ${res.result}` },
+            ],
+          };
+        },
       ),
 
       tool(
         'browse_wait_for_user',
-        'Ask the user to interact with the browser directly (e.g., to log in), then wait for them to reply "continue". Sends a message to the chat with the noVNC URL and your instructions.',
+        'Ask the user to interact with the sandbox directly (e.g., to log in), then wait for them to reply "continue". Sends a message to the chat with the sandbox URL and your instructions.',
         {
-          message: z.string().describe('Message to send to the user explaining what they need to do (e.g., "Please log in at the noVNC URL, then reply continue")')
+          message: z
+            .string()
+            .describe(
+              'Message to send to the user explaining what they need to do (e.g., "Please log in at the noVNC URL, then reply continue")',
+            ),
         },
         async (args) => {
-          const res = await writeBrowseRequest('wait_for_user', { message: args.message }, 120000);
+          const res = await writeBrowseRequest(
+            'wait_for_user',
+            { message: args.message },
+            120000,
+          );
           if (res.status === 'error') {
-            return { content: [{ type: 'text', text: `Wait for user failed: ${res.error}` }], isError: true };
+            return {
+              content: [
+                { type: 'text', text: `Wait for user failed: ${res.error}` },
+              ],
+              isError: true,
+            };
           }
           return { content: [{ type: 'text', text: 'User has continued.' }] };
-        }
+        },
       ),
 
       tool(
@@ -716,25 +993,43 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
         async () => {
           const res = await writeBrowseRequest('go_back', {});
           if (res.status === 'error') {
-            return { content: [{ type: 'text', text: `Go back failed: ${res.error}` }], isError: true };
+            return {
+              content: [{ type: 'text', text: `Go back failed: ${res.error}` }],
+              isError: true,
+            };
           }
-          return { content: [{ type: 'text', text: `Navigated back to: ${res.result}` }] };
-        }
+          return {
+            content: [
+              { type: 'text', text: `Navigated back to: ${res.result}` },
+            ],
+          };
+        },
       ),
 
       tool(
         'browse_evaluate',
-        'Execute a JavaScript expression on the current page and return the result. Useful for extracting data not in the accessibility tree, reading JS variables, or triggering client-side actions.',
+        'Execute a JavaScript expression on the current page and return the result. Currently unsupported in CUA sandbox mode and returns an error.',
         {
-          expression: z.string().describe('JavaScript expression to evaluate (e.g., "document.title", "window.location.href", "document.querySelectorAll(\'a\').length")')
+          expression: z
+            .string()
+            .describe(
+              'JavaScript expression to evaluate (e.g., "document.title", "window.location.href", "document.querySelectorAll(\'a\').length")',
+            ),
         },
         async (args) => {
-          const res = await writeBrowseRequest('evaluate', { expression: args.expression });
+          const res = await writeBrowseRequest('evaluate', {
+            expression: args.expression,
+          });
           if (res.status === 'error') {
-            return { content: [{ type: 'text', text: `Evaluate failed: ${res.error}` }], isError: true };
+            return {
+              content: [
+                { type: 'text', text: `Evaluate failed: ${res.error}` },
+              ],
+              isError: true,
+            };
           }
           return { content: [{ type: 'text', text: String(res.result) }] };
-        }
+        },
       ),
 
       tool(
@@ -744,11 +1039,14 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
         async () => {
           const res = await writeBrowseRequest('close', {});
           if (res.status === 'error') {
-            return { content: [{ type: 'text', text: `Close failed: ${res.error}` }], isError: true };
+            return {
+              content: [{ type: 'text', text: `Close failed: ${res.error}` }],
+              isError: true,
+            };
           }
           return { content: [{ type: 'text', text: 'Browser page closed.' }] };
-        }
-      )
-    ]
+        },
+      ),
+    ],
   });
 }

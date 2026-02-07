@@ -4,7 +4,7 @@ Personal Claude assistant. See [README.md](README.md) for philosophy and setup. 
 
 ## Architecture
 
-Single Bun process (host) connects to Telegram, stores messages in SQLite, and spawns ephemeral Docker containers per message. Each container runs the Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`) with an IPC-based MCP server for tools. A persistent browser sandbox sidecar provides web automation via Playwright CDP.
+Single Bun process (host) connects to Telegram, stores messages in SQLite, and spawns ephemeral Docker containers per message. Each container runs the Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`) with an IPC-based MCP server for tools. Browse automation runs in a CUA desktop sandbox sidecar.
 
 ```
 Telegram <-> Host (Bun) <-> SQLite
@@ -12,58 +12,49 @@ Telegram <-> Host (Bun) <-> SQLite
                 +-- Docker containers (ephemeral, per-message)
                 |     \-- Claude Agent SDK + IPC MCP tools
                 |
-                +-- Browser sandbox (persistent sidecar)
-                      \-- Xvfb + Chromium + x11vnc + noVNC
-                      \-- Host connects via Playwright CDP (localhost:9222)
+                +-- CUA desktop sandbox (persistent sidecar)
+                      \-- /cmd API + screenshot transport
 ```
 
 ## Key Files
 
 ### Host Process
 
-| File | Purpose |
-|------|---------|
-| `src/index.ts` | Main app: message routing, IPC watcher (messages/tasks/browse) |
-| `src/config.ts` | Constants, trigger pattern, paths, Telegram helpers |
-| `src/container-runner.ts` | Spawns Docker containers, credential resolution, volume mounts |
-| `src/task-scheduler.ts` | Polls for due tasks, runs them in containers |
-| `src/db.ts` | SQLite operations (bun:sqlite): messages, chats, tasks, run logs |
-| `src/telegram.ts` | grammY bot: text, voice, audio, photo, document handlers |
-| `src/media.ts` | File download (Telegram API), Whisper transcription, media cleanup |
-| `src/browse-host.ts` | Host-side Playwright bridge: processes browse IPC requests via CDP |
-| `src/sandbox-manager.ts` | Browser sandbox lifecycle: start/stop/idle timeout (Docker) |
-| `src/mount-security.ts` | Validates additional mounts against external allowlist |
-| `src/types.ts` | Shared TypeScript interfaces |
-| `src/logger.ts` | Pino logger with pino-pretty |
-| `src/utils.ts` | `loadJson` / `saveJson` helpers |
+| File                      | Purpose                                                            |
+| ------------------------- | ------------------------------------------------------------------ |
+| `src/index.ts`            | Main app: message routing, IPC watcher (messages/tasks/browse)     |
+| `src/config.ts`           | Constants, trigger pattern, paths, Telegram helpers                |
+| `src/container-runner.ts` | Spawns Docker containers, credential resolution, volume mounts     |
+| `src/task-scheduler.ts`   | Polls for due tasks, runs them in containers                       |
+| `src/db.ts`               | SQLite operations (bun:sqlite): messages, chats, tasks, run logs   |
+| `src/telegram.ts`         | grammY bot: text, voice, audio, photo, document handlers           |
+| `src/media.ts`            | File download (Telegram API), Whisper transcription, media cleanup |
+| `src/browse-host.ts`      | Host-side browse bridge for CUA `/cmd` actions                     |
+| `src/sandbox-manager.ts`  | CUA sandbox lifecycle: start/stop/idle timeout (Docker)            |
+| `src/mount-security.ts`   | Validates additional mounts against external allowlist             |
+| `src/types.ts`            | Shared TypeScript interfaces                                       |
+| `src/logger.ts`           | Pino logger with pino-pretty                                       |
+| `src/utils.ts`            | `loadJson` / `saveJson` helpers                                    |
 
 ### Agent Container
 
-| File | Purpose |
-|------|---------|
-| `container/Dockerfile` | Agent image: `oven/bun:1-debian` + Chromium + claude-code |
-| `container/build.sh` | Build script for agent image (`nanoclaw-agent:latest`) |
-| `container/agent-runner/src/index.ts` | Reads JSON from stdin, runs `query()` from Agent SDK, writes result to stdout |
-| `container/agent-runner/src/ipc-mcp.ts` | MCP server exposing all IPC tools to the agent |
-
-### Browser Sandbox
-
-| File | Purpose |
-|------|---------|
-| `container/sandbox/Dockerfile` | Sandbox image: Xvfb + Chromium + x11vnc + noVNC + socat |
-| `container/sandbox/start.sh` | Starts all sandbox services, CDP port forwarding via socat |
-| `container/sandbox/build.sh` | Build script for sandbox image (`nanoclaw-sandbox:latest`) |
+| File                                    | Purpose                                                                       |
+| --------------------------------------- | ----------------------------------------------------------------------------- |
+| `container/Dockerfile`                  | Agent image: `oven/bun:1-debian` + Chromium + claude-code                     |
+| `container/build.sh`                    | Build script for agent image (`nanoclaw-agent:latest`)                        |
+| `container/agent-runner/src/index.ts`   | Reads JSON from stdin, runs `query()` from Agent SDK, writes result to stdout |
+| `container/agent-runner/src/ipc-mcp.ts` | MCP server exposing all IPC tools to the agent                                |
 
 ### Per-Group
 
-| File | Purpose |
-|------|---------|
-| `groups/{name}/CLAUDE.md` | Per-group agent instructions and memory |
-| `groups/{name}/SOUL.md` | Per-group personality/behavior (optional) |
-| `groups/{name}/media/` | Downloaded photos, voice, docs, screenshots |
+| File                           | Purpose                                             |
+| ------------------------------ | --------------------------------------------------- |
+| `groups/{name}/CLAUDE.md`      | Per-group agent instructions and memory             |
+| `groups/{name}/SOUL.md`        | Per-group personality/behavior (optional)           |
+| `groups/{name}/media/`         | Downloaded photos, voice, docs, screenshots         |
 | `groups/{name}/conversations/` | Archived conversation transcripts (PreCompact hook) |
-| `groups/{name}/logs/` | Per-container run logs |
-| `groups/global/CLAUDE.md` | Global memory shared read-only to non-main groups |
+| `groups/{name}/logs/`          | Per-container run logs                              |
+| `groups/global/CLAUDE.md`      | Global memory shared read-only to non-main groups   |
 
 ## Credential Flow
 
@@ -92,15 +83,15 @@ Uses **Docker CLI** (`docker run -i --rm`). The codebase was originally written 
 
 ### Volume Mounts
 
-| Mount | Container Path | Notes |
-|-------|---------------|-------|
-| `groups/{folder}/` | `/workspace/group` | Working directory |
-| `groups/global/` | `/workspace/global` | Read-only (non-main only) |
-| Project root | `/workspace/project` | Main group only |
-| `data/sessions/{folder}/.claude/` | `/home/bun/.claude` | Per-group session isolation |
-| `data/ipc/{folder}/` | `/workspace/ipc` | Per-group IPC namespace |
-| `data/env/` | `/workspace/env-dir` | Read-only credentials |
-| Additional mounts | `/workspace/extra/{name}` | Validated against allowlist |
+| Mount                             | Container Path            | Notes                       |
+| --------------------------------- | ------------------------- | --------------------------- |
+| `groups/{folder}/`                | `/workspace/group`        | Working directory           |
+| `groups/global/`                  | `/workspace/global`       | Read-only (non-main only)   |
+| Project root                      | `/workspace/project`      | Main group only             |
+| `data/sessions/{folder}/.claude/` | `/home/bun/.claude`       | Per-group session isolation |
+| `data/ipc/{folder}/`              | `/workspace/ipc`          | Per-group IPC namespace     |
+| `data/env/`                       | `/workspace/env-dir`      | Read-only credentials       |
+| Additional mounts                 | `/workspace/extra/{name}` | Validated against allowlist |
 
 ## Multimodal Input
 
@@ -114,101 +105,119 @@ Media path is translated from host path to container path in the XML prompt (`me
 
 ## Browser Sandbox
 
-Persistent Chromium sidecar on a virtual display, accessible via noVNC.
-
-- **Container**: `nanoclaw-sandbox:latest`, named `nanoclaw-sandbox`
-- **Ports**: CDP on 9222, noVNC on 6080
+- **Sandbox image**: `trycua/cua-sandbox:latest` (configurable by `CUA_SANDBOX_IMAGE`)
+- **Command API**: host connects to `/cmd` on port `8000` (mapped by `CUA_SANDBOX_COMMAND_PORT`)
+- **VNC**: `5900` (mapped by `CUA_SANDBOX_VNC_PORT`)
 - **Lazy start**: Sandbox starts on first `browse_*` tool call
 - **Idle timeout**: Stops after 30 min of no browse activity
-- **Persistent profile**: Docker volume `nanoclaw-sandbox-profile` at `/data/chrome-profile`
-- **noVNC URL**: `http://<tailscale-ip>:6080` (falls back to 127.0.0.1)
-- **CDP connection**: Host uses `playwright-core` to connect via `chromium.connectOverCDP()` with retry/backoff
-- **Build**: `./container/sandbox/build.sh`
+- **Live URL in wait-for-user**: `http://<tailscale-ip>:<sandbox-port>` (fallback `127.0.0.1`)
+- **Screenshot feedback**: `browse_screenshot` always saves to group media and is sent as Telegram photo
 
 ## IPC Patterns
 
 ### Fire-and-forget (messages, tasks)
+
 Agent writes JSON to `/workspace/ipc/messages/` or `/workspace/ipc/tasks/`. Host polls every 1s, processes, deletes.
 
 ### Request/Response (browse)
+
 Agent writes `req-{id}.json` to `/workspace/ipc/browse/`, polls for `res-{id}.json`. Host processes request, writes response (atomic: temp+rename). Agent cleans up both files.
 
 ### Authorization
+
 Per-group IPC directories prevent cross-group access. Non-main groups can only send messages to their own chat and schedule tasks for themselves. Main group has full access.
 
 ## MCP Tools (available to agent)
 
 ### Communication
+
 - `send_message` -- Send message to current chat
 
 ### Task Scheduling
+
 - `schedule_task` -- Create cron/interval/once task (with context_mode: group or isolated)
 - `list_tasks` -- List scheduled tasks (main sees all, others see own)
 - `pause_task` / `resume_task` / `cancel_task` -- Task lifecycle
 
 ### Group Management
+
 - `register_group` -- Register new Telegram chat (main only)
 
 ### Browser Automation
+
 - `browse_navigate` -- Go to URL
 - `browse_snapshot` -- Accessibility tree / aria snapshot
-- `browse_click` -- Click by CSS selector
-- `browse_fill` -- Fill form field
+- `browse_click` -- Click using selector/description (CUA resolves via accessibility/element search)
+- `browse_fill` -- Fill form field (element search + typing)
 - `browse_screenshot` -- Capture page (also sent as Telegram photo)
-- `browse_wait_for_user` -- Handoff to user via noVNC, wait for "continue"
+- `browse_wait_for_user` -- Handoff to user via sandbox live URL, wait for "continue"
 - `browse_go_back` -- Browser back button
-- `browse_evaluate` -- Execute JavaScript on page
+- `browse_evaluate` -- Present for backward compatibility; currently unsupported in CUA mode
 - `browse_close` -- Close browser page
 
 ### Web Crawling (Firecrawl)
+
 - `firecrawl_scrape` -- Single page to markdown (50KB max)
 - `firecrawl_crawl` -- Multi-page crawl with depth/limit (100KB max)
 - `firecrawl_map` -- Discover all URLs on a domain
 
 ### Built-in Claude Tools
+
 - `Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, `WebSearch`, `WebFetch`
 
 ## Skills
 
-| Skill | When to Use |
-|-------|-------------|
-| `/setup` | First-time installation, authentication, service configuration |
-| `/customize` | Adding channels, integrations, changing behavior |
-| `/commit` | Commit/push with secret scanning and co-author credits |
-| `/pr` | Create a pull request (branches off main if needed) |
-| `/restart` | Restart the NanoClaw background service |
-| `/logs` | View recent logs, errors, or follow live output |
-| `/debug` | Container issues, logs, troubleshooting |
-| `/add-gmail` | Add Gmail integration to a group |
-| `/add-parallel` | Add Parallel AI integration |
-| `/convert-to-docker` | Migrate from Apple Container to Docker (historical, migration complete) |
-| `/x-integration` | X (Twitter) integration |
+| Skill            | When to Use                                                    |
+| ---------------- | -------------------------------------------------------------- |
+| `/setup`         | First-time installation, authentication, service configuration |
+| `/deploy`        | Deploy NanoClaw service on macOS (launchd) or Linux (systemd)  |
+| `/customize`     | Adding channels, integrations, changing behavior               |
+| `/commit`        | Commit/push with secret scanning and co-author credits         |
+| `/pr`            | Create a pull request (branches off main if needed)            |
+| `/restart`       | Restart the NanoClaw background service                        |
+| `/logs`          | View recent logs, errors, or follow live output                |
+| `/debug`         | Container issues, logs, troubleshooting                        |
+| `/add-gmail`     | Add Gmail integration to a group                               |
+| `/add-parallel`  | Add Parallel AI integration                                    |
+| `/x-integration` | X (Twitter) integration                                        |
 
 ## Environment Variables
 
 ### Required
-| Variable | Purpose |
-|----------|---------|
-| `TELEGRAM_BOT_TOKEN` | Bot token from @BotFather |
-| `TELEGRAM_OWNER_ID` | Your numeric Telegram user ID |
+
+| Variable             | Purpose                       |
+| -------------------- | ----------------------------- |
+| `TELEGRAM_BOT_TOKEN` | Bot token from @BotFather     |
+| `TELEGRAM_OWNER_ID`  | Your numeric Telegram user ID |
 
 ### AI Auth (choose one, or leave empty for keychain auto-detect)
-| Variable | Purpose |
-|----------|---------|
-| `ANTHROPIC_API_KEY` | Standard API key from console.anthropic.com |
+
+| Variable                  | Purpose                                            |
+| ------------------------- | -------------------------------------------------- |
+| `ANTHROPIC_API_KEY`       | Standard API key from console.anthropic.com        |
 | `CLAUDE_CODE_OAUTH_TOKEN` | OAuth token (auto-detected from keychain if empty) |
 
 ### Optional
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `OPENAI_API_KEY` | -- | Whisper audio transcription |
-| `FIRECRAWL_API_KEY` | -- | Firecrawl web scraping |
-| `ASSISTANT_NAME` | `Andy` | Bot trigger name (`@Name`) |
-| `CONTAINER_IMAGE` | `nanoclaw-agent:latest` | Docker image for agent containers |
-| `CONTAINER_TIMEOUT` | `300000` (5 min) | Container execution timeout (ms) |
-| `CONTAINER_MAX_OUTPUT_SIZE` | `10485760` (10MB) | Max container stdout/stderr |
-| `LOG_LEVEL` | `info` | Pino log level |
-| `TZ` | system | Timezone for scheduled tasks |
+
+| Variable                    | Default                     | Purpose                                 |
+| --------------------------- | --------------------------- | --------------------------------------- |
+| `OPENAI_API_KEY`            | --                          | Whisper audio transcription             |
+| `FIRECRAWL_API_KEY`         | --                          | Firecrawl web scraping                  |
+| `ASSISTANT_NAME`            | `Andy`                      | Bot trigger name (`@Name`)              |
+| `CONTAINER_IMAGE`           | `nanoclaw-agent:latest`     | Docker image for agent containers       |
+| `CONTAINER_TIMEOUT`         | `300000` (5 min)            | Container execution timeout (ms)        |
+| `CONTAINER_MAX_OUTPUT_SIZE` | `10485760` (10MB)           | Max container stdout/stderr             |
+| `SANDBOX_IDLE_TIMEOUT_MS`   | `1800000`                   | Sandbox auto-stop timeout               |
+| `SANDBOX_TAILSCALE_ENABLED` | `true`                      | Use Tailscale IP for wait-for-user URLs |
+| `CUA_SANDBOX_IMAGE`         | `trycua/cua-sandbox:latest` | CUA Docker image                        |
+| `CUA_SANDBOX_COMMAND_PORT`  | `8000`                      | Host port for CUA `/cmd` API            |
+| `CUA_SANDBOX_VNC_PORT`      | `5900`                      | Host port for CUA VNC                   |
+| `CUA_SANDBOX_SCREEN_WIDTH`  | `1024`                      | CUA desktop width                       |
+| `CUA_SANDBOX_SCREEN_HEIGHT` | `768`                       | CUA desktop height                      |
+| `CUA_SANDBOX_SCREEN_DEPTH`  | `24`                        | CUA desktop color depth                 |
+| `CUA_API_KEY`               | --                          | Optional CUA API key passed to sandbox  |
+| `LOG_LEVEL`                 | `info`                      | Pino log level                          |
+| `TZ`                        | system                      | Timezone for scheduled tasks            |
 
 ## Data Directory Structure
 
@@ -247,10 +256,11 @@ Run commands directly -- don't tell the user to run them.
 bun dev                      # Run with hot reload (--watch)
 bun run build                # Compile TypeScript
 ./container/build.sh         # Rebuild agent container
-./container/sandbox/build.sh # Rebuild sandbox container
+docker pull trycua/cua-sandbox:latest # Pull/update CUA sandbox image
 ```
 
 Service management (production via launchd):
+
 ```bash
 # Template at launchd/com.nanoclaw.plist (replace {{placeholders}})
 # Install to ~/Library/LaunchAgents/com.nanoclaw.plist
@@ -261,6 +271,7 @@ launchctl unload ~/Library/LaunchAgents/com.nanoclaw.plist
 ## Message Format
 
 Messages are formatted as XML for the agent prompt:
+
 ```xml
 <messages>
 <message sender="Name" time="2026-02-07T..." media_type="photo" media_path="/workspace/group/media/file.jpg">content</message>

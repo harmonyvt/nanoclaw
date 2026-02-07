@@ -1,48 +1,251 @@
-import { chromium, type Browser, type Page } from 'playwright-core';
 import fs from 'fs';
 import path from 'path';
 import { GROUPS_DIR } from './config.js';
 import { logger } from './logger.js';
 import { ensureSandbox, resetIdleTimer } from './sandbox-manager.js';
 
-let browser: Browser | null = null;
-let page: Page | null = null;
-
 // Pending wait-for-user requests: requestId -> resolve function
 const waitingForUser: Map<string, () => void> = new Map();
 
-async function getPage(): Promise<Page> {
-  if (page && !page.isClosed()) return page;
+type BrowseResponse = {
+  status: 'ok' | 'error';
+  result?: unknown;
+  error?: string;
+};
 
-  const cdpUrl = await ensureSandbox();
+async function runCuaCommand(
+  command: string,
+  args: Record<string, unknown> = {},
+): Promise<unknown> {
+  const sandbox = await ensureSandbox();
 
-  // Retry CDP connection with exponential backoff — sandbox needs time to boot Xvfb + Chromium
-  const maxRetries = 10;
-  const retryDelay = 2000;
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      browser = await chromium.connectOverCDP(cdpUrl);
-      break;
-    } catch (err) {
-      if (attempt === maxRetries) {
-        throw new Error(
-          `Failed to connect to sandbox CDP after ${maxRetries} attempts: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-      const delay = Math.min(retryDelay * Math.pow(1.5, attempt - 1), 10000);
-      logger.info(
-        { attempt, maxRetries, delay, err: err instanceof Error ? err.message : String(err) },
-        'CDP connection failed, retrying',
-      );
-      await new Promise((resolve) => setTimeout(resolve, delay));
-    }
+  const response = await fetch(sandbox.commandUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ command, args }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(
+      `CUA command HTTP ${response.status}: ${body.slice(0, 500)}`,
+    );
   }
 
-  const contexts = browser!.contexts();
-  const context = contexts[0] || (await browser!.newContext());
-  const pages = context.pages();
-  page = pages[0] || (await context.newPage());
-  return page;
+  const payload = (await response.json()) as {
+    status?: string;
+    content?: unknown;
+    result?: unknown;
+    error?: string;
+    message?: string;
+  };
+
+  if (
+    payload.status &&
+    payload.status !== 'success' &&
+    payload.status !== 'ok'
+  ) {
+    throw new Error(
+      payload.error || payload.message || `CUA command failed: ${command}`,
+    );
+  }
+  if (payload.error) {
+    throw new Error(payload.error);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(payload, 'content')) {
+    return payload.content;
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, 'result')) {
+    return payload.result;
+  }
+  return payload;
+}
+
+async function runCuaCommandWithFallback(
+  attempts: Array<{ command: string; args?: Record<string, unknown> }>,
+): Promise<unknown> {
+  let lastError: unknown;
+  for (const attempt of attempts) {
+    try {
+      return await runCuaCommand(attempt.command, attempt.args || {});
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error('CUA command failed with unknown error');
+}
+
+function selectorToElementDescription(selector: string): string {
+  if (selector.startsWith('text=')) {
+    return selector.slice(5).trim();
+  }
+  return selector.trim();
+}
+
+function extractCoordinates(input: unknown): { x: number; y: number } | null {
+  if (!input || typeof input !== 'object') return null;
+  const record = input as Record<string, unknown>;
+
+  const x =
+    typeof record.center_x === 'number'
+      ? record.center_x
+      : typeof record.x === 'number'
+        ? record.x
+        : null;
+  const y =
+    typeof record.center_y === 'number'
+      ? record.center_y
+      : typeof record.y === 'number'
+        ? record.y
+        : null;
+
+  if (typeof x === 'number' && typeof y === 'number') {
+    return { x, y };
+  }
+  return null;
+}
+
+function extractBase64Png(input: unknown): string | null {
+  if (typeof input === 'string') {
+    const dataUrlPrefix = 'data:image/png;base64,';
+    if (input.startsWith(dataUrlPrefix)) {
+      return input.slice(dataUrlPrefix.length);
+    }
+    if (/^[A-Za-z0-9+/=\r\n]+$/.test(input)) {
+      return input.replace(/\s/g, '');
+    }
+  }
+  if (input && typeof input === 'object') {
+    const record = input as Record<string, unknown>;
+    if (typeof record.screenshot === 'string') {
+      return extractBase64Png(record.screenshot);
+    }
+    if (typeof record.image === 'string') return extractBase64Png(record.image);
+    if (typeof record.content === 'string') {
+      return extractBase64Png(record.content);
+    }
+  }
+  return null;
+}
+
+async function processCuaRequest(
+  action: string,
+  params: Record<string, unknown>,
+  groupFolder: string,
+): Promise<BrowseResponse> {
+  switch (action) {
+    case 'navigate': {
+      const url = String(params.url || '').trim();
+      if (!url) {
+        return { status: 'error', error: 'navigate requires a URL' };
+      }
+      await runCuaCommandWithFallback([
+        { command: 'press_key', args: { key: 'ctrl+l' } },
+        { command: 'hotkey', args: { keys: 'ctrl+l' } },
+      ]);
+      await runCuaCommandWithFallback([
+        { command: 'type', args: { text: url } },
+        { command: 'type_text', args: { text: url } },
+      ]);
+      await runCuaCommandWithFallback([
+        { command: 'press_key', args: { key: 'enter' } },
+        { command: 'key', args: { key: 'enter' } },
+      ]);
+      await runCuaCommandWithFallback([
+        { command: 'wait', args: { seconds: 1.5 } },
+        { command: 'wait', args: { duration: 1.5 } },
+      ]);
+      return { status: 'ok', result: `Navigated to ${url}` };
+    }
+    case 'snapshot': {
+      const snapshot = await runCuaCommand('get_accessibility_tree');
+      return {
+        status: 'ok',
+        result:
+          typeof snapshot === 'string' ? snapshot : JSON.stringify(snapshot),
+      };
+    }
+    case 'click': {
+      const selector = String(params.selector || '');
+      const description = selectorToElementDescription(selector);
+      const found = await runCuaCommandWithFallback([
+        { command: 'find_element', args: { description } },
+        { command: 'find_element', args: { query: description } },
+      ]);
+      const coords = extractCoordinates(found);
+      if (!coords) {
+        return {
+          status: 'error',
+          error: `CUA could not locate element for selector/description: ${selector}`,
+        };
+      }
+      await runCuaCommand('left_click', { x: coords.x, y: coords.y });
+      return { status: 'ok', result: `clicked (${coords.x}, ${coords.y})` };
+    }
+    case 'fill': {
+      const selector = String(params.selector || '');
+      const value = String(params.value || '');
+      const description = selectorToElementDescription(selector);
+      const found = await runCuaCommandWithFallback([
+        { command: 'find_element', args: { description } },
+        { command: 'find_element', args: { query: description } },
+      ]);
+      const coords = extractCoordinates(found);
+      if (!coords) {
+        return {
+          status: 'error',
+          error: `CUA could not locate input for selector/description: ${selector}`,
+        };
+      }
+      await runCuaCommand('left_click', { x: coords.x, y: coords.y });
+      await runCuaCommandWithFallback([
+        { command: 'type', args: { text: value } },
+        { command: 'type_text', args: { text: value } },
+      ]);
+      return { status: 'ok', result: `filled (${coords.x}, ${coords.y})` };
+    }
+    case 'screenshot': {
+      const screenshotContent = await runCuaCommand('screenshot');
+      const base64 = extractBase64Png(screenshotContent);
+      if (!base64) {
+        return {
+          status: 'error',
+          error: 'CUA screenshot returned an unsupported payload format',
+        };
+      }
+
+      const mediaDir = path.join(GROUPS_DIR, groupFolder, 'media');
+      fs.mkdirSync(mediaDir, { recursive: true });
+      const filename = `screenshot-${Date.now()}.png`;
+      const filePath = path.join(mediaDir, filename);
+      fs.writeFileSync(filePath, Buffer.from(base64, 'base64'));
+      return { status: 'ok', result: `/workspace/group/media/${filename}` };
+    }
+    case 'go_back': {
+      await runCuaCommandWithFallback([
+        { command: 'press_key', args: { key: 'alt+left' } },
+        { command: 'hotkey', args: { keys: 'alt+left' } },
+      ]);
+      return { status: 'ok', result: 'navigated back' };
+    }
+    case 'evaluate':
+      return {
+        status: 'error',
+        error:
+          'browse_evaluate is not supported in CUA sandbox mode. Use browse_snapshot + follow-up actions instead.',
+      };
+    case 'close':
+      await runCuaCommandWithFallback([
+        { command: 'press_key', args: { key: 'ctrl+w' } },
+        { command: 'hotkey', args: { keys: 'ctrl+w' } },
+      ]);
+      return { status: 'ok', result: 'closed' };
+    default:
+      return { status: 'error', error: `Unknown action: ${action}` };
+  }
 }
 
 export async function processBrowseRequest(
@@ -50,81 +253,20 @@ export async function processBrowseRequest(
   action: string,
   params: Record<string, unknown>,
   groupFolder: string,
-  ipcDir: string,
+  _ipcDir: string,
 ): Promise<{ status: 'ok' | 'error'; result?: unknown; error?: string }> {
   resetIdleTimer();
 
   try {
-    switch (action) {
-      case 'navigate': {
-        const p = await getPage();
-        await p.goto(params.url as string, {
-          waitUntil: 'domcontentloaded',
-          timeout: 30000,
+    if (action === 'wait_for_user') {
+      return new Promise((resolve) => {
+        waitingForUser.set(requestId, () => {
+          resolve({ status: 'ok', result: 'User continued' });
         });
-        return { status: 'ok', result: await p.title() };
-      }
-      case 'snapshot': {
-        const p = await getPage();
-        const snapshot = await p.locator('body').ariaSnapshot();
-        return { status: 'ok', result: snapshot };
-      }
-      case 'click': {
-        const p = await getPage();
-        await p.click(params.selector as string, { timeout: 10000 });
-        return { status: 'ok', result: 'clicked' };
-      }
-      case 'fill': {
-        const p = await getPage();
-        await p.fill(params.selector as string, params.value as string, {
-          timeout: 10000,
-        });
-        return { status: 'ok', result: 'filled' };
-      }
-      case 'screenshot': {
-        const p = await getPage();
-        const mediaDir = path.join(GROUPS_DIR, groupFolder, 'media');
-        fs.mkdirSync(mediaDir, { recursive: true });
-        const filename = `screenshot-${Date.now()}.png`;
-        const filePath = path.join(mediaDir, filename);
-        await p.screenshot({ path: filePath, fullPage: false });
-        return { status: 'ok', result: `/workspace/group/media/${filename}` };
-      }
-      case 'wait_for_user': {
-        return new Promise((resolve) => {
-          waitingForUser.set(requestId, () => {
-            resolve({ status: 'ok', result: 'User continued' });
-          });
-        });
-      }
-      case 'go_back': {
-        const p = await getPage();
-        await p.goBack({ timeout: 10000 });
-        return { status: 'ok', result: await p.title() };
-      }
-      case 'evaluate': {
-        const p = await getPage();
-        const result = await p.evaluate(params.expression as string);
-        return {
-          status: 'ok',
-          result:
-            typeof result === 'string' ? result : JSON.stringify(result),
-        };
-      }
-      case 'close': {
-        if (page && !page.isClosed()) {
-          await page.close();
-          page = null;
-        }
-        if (browser) {
-          await browser.close().catch(() => {});
-          browser = null;
-        }
-        return { status: 'ok', result: 'closed' };
-      }
-      default:
-        return { status: 'error', error: `Unknown action: ${action}` };
+      });
     }
+
+    return await processCuaRequest(action, params, groupFolder);
   } catch (err) {
     logger.error({ err, action, requestId }, 'Browse request failed');
     return {
@@ -156,12 +298,5 @@ export function hasWaitingRequests(): boolean {
 }
 
 export async function disconnectBrowser(): Promise<void> {
-  if (page && !page.isClosed()) {
-    await page.close().catch(() => {});
-  }
-  if (browser) {
-    await browser.close().catch(() => {});
-    browser = null;
-    page = null;
-  }
+  // No persistent Playwright browser in CUA mode.
 }

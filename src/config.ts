@@ -35,6 +35,39 @@ export const CONTAINER_MAX_OUTPUT_SIZE = parseInt(
 ); // 10MB default
 export const IPC_POLL_INTERVAL = 1000;
 
+// Sandbox configuration (CUA desktop sandbox)
+export const SANDBOX_IDLE_TIMEOUT_MS = parseInt(
+  process.env.SANDBOX_IDLE_TIMEOUT_MS || `${30 * 60 * 1000}`,
+  10,
+);
+export const SANDBOX_TAILSCALE_ENABLED =
+  process.env.SANDBOX_TAILSCALE_ENABLED !== 'false';
+export const CUA_SANDBOX_CONTAINER_NAME =
+  process.env.CUA_SANDBOX_CONTAINER_NAME || 'nanoclaw-cua-sandbox';
+export const CUA_SANDBOX_IMAGE =
+  process.env.CUA_SANDBOX_IMAGE || 'trycua/cua-sandbox:latest';
+export const CUA_SANDBOX_COMMAND_PORT = parseInt(
+  process.env.CUA_SANDBOX_COMMAND_PORT || '8000',
+  10,
+);
+export const CUA_SANDBOX_VNC_PORT = parseInt(
+  process.env.CUA_SANDBOX_VNC_PORT || '5900',
+  10,
+);
+export const CUA_SANDBOX_SCREEN_WIDTH = parseInt(
+  process.env.CUA_SANDBOX_SCREEN_WIDTH || '1024',
+  10,
+);
+export const CUA_SANDBOX_SCREEN_HEIGHT = parseInt(
+  process.env.CUA_SANDBOX_SCREEN_HEIGHT || '768',
+  10,
+);
+export const CUA_SANDBOX_SCREEN_DEPTH = parseInt(
+  process.env.CUA_SANDBOX_SCREEN_DEPTH || '24',
+  10,
+);
+export const CUA_API_KEY = process.env.CUA_API_KEY || '';
+
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

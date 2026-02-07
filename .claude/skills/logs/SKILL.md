@@ -1,64 +1,53 @@
 ---
 name: logs
-description: View NanoClaw service logs. Shows recent output, errors, or follows live logs. Use when user says "logs", "show logs", "check logs", "what happened", or "tail logs".
+description: View NanoClaw logs on macOS/Linux. Supports file logs and Linux systemd journal logs.
 ---
 
 # View NanoClaw Logs
 
-Log files are in the project `logs/` directory:
-
-| File | Contents |
-|------|----------|
-| `logs/nanoclaw.log` | Stdout — all pino-formatted application logs |
-| `logs/nanoclaw.error.log` | Stderr — crashes, unhandled errors |
-
-## Default: Show Recent Logs
-
-Show the last 50 lines of the main log:
+## Default file logs
 
 ```bash
 tail -50 logs/nanoclaw.log
-```
-
-If the user asks about errors specifically, show the error log:
-
-```bash
 tail -50 logs/nanoclaw.error.log
 ```
 
-## Follow Live Logs
-
-If the user says "follow", "watch", or "live":
+## Follow live logs
 
 ```bash
 tail -f logs/nanoclaw.log
 ```
 
-Note: this blocks — let the user know they can Ctrl+C to stop.
-
-## Search Logs
-
-If the user asks about a specific event, grep for it:
+## Search logs
 
 ```bash
 grep -i "<search term>" logs/nanoclaw.log | tail -30
 ```
 
-## Common Patterns
+## Linux systemd logs
 
-- **Startup issues:** Look for early errors in `logs/nanoclaw.error.log`
-- **Telegram connection:** `grep -i telegram logs/nanoclaw.log | tail -20`
-- **Container runs:** `grep -i container logs/nanoclaw.log | tail -20`
-- **Scheduler:** `grep -i scheduler logs/nanoclaw.log | tail -20`
-- **Check if service is running:** `launchctl list | grep com.nanoclaw`
-
-## Log Rotation
-
-If logs are very large, the user may want to rotate them:
+Use this when deployed with `bun run deploy:linux`:
 
 ```bash
-> logs/nanoclaw.log
-> logs/nanoclaw.error.log
+journalctl --user -u com.nanoclaw.service -n 100 --no-pager
 ```
 
-Then restart the service with `/restart` to begin fresh logging.
+Follow live journal logs:
+
+```bash
+journalctl --user -u com.nanoclaw.service -f
+```
+
+## Service checks
+
+macOS:
+
+```bash
+launchctl list | grep com.nanoclaw
+```
+
+Linux:
+
+```bash
+systemctl --user status com.nanoclaw.service --no-pager
+```

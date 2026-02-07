@@ -22,11 +22,19 @@ claude
 
 Then run `/setup`. Claude Code handles everything: dependencies, authentication, container setup, service configuration.
 
+Deployment helpers:
+
+```bash
+bun run docker:requirements   # validate Docker daemon/images, pull CUA image
+bun run deploy:macos          # build + install/reload launchd service
+bun run deploy:linux          # build + install/reload systemd user service
+```
+
 ## Philosophy
 
 **Small enough to understand.** One process, a few source files. No microservices, no message queues, no abstraction layers. Have Claude Code walk you through it.
 
-**Secure by isolation.** Agents run in Linux containers (Apple Container on macOS, or Docker). They can only see what's explicitly mounted. Bash access is safe because commands run inside the container, not on your host.
+**Secure by isolation.** Agents run in Linux containers via Docker. They can only see what's explicitly mounted. Bash access is safe because commands run inside the container, not on your host.
 
 **Built for one user.** This isn't a framework. It's working software that fits my exact needs. You fork it and have Claude Code make it match your exact needs.
 
@@ -45,7 +53,8 @@ Then run `/setup`. Claude Code handles everything: dependencies, authentication,
 - **Main channel** - Your private channel (self-chat) for admin control; every other group is completely isolated
 - **Scheduled tasks** - Recurring jobs that run Claude and can message you back
 - **Web access** - Search and fetch content
-- **Container isolation** - Agents sandboxed in Apple Container (macOS) or Docker (macOS/Linux)
+- **Container isolation** - Agents sandboxed in Docker containers (macOS/Linux)
+- **Desktop sandbox option (CUA)** - Optional CUA Docker desktop sandbox for full-computer browser workflows with screenshot feedback
 - **Optional integrations** - Add Gmail (`/add-gmail`) and more via skills
 
 ## Usage
@@ -59,6 +68,7 @@ Talk to your assistant with the trigger word (default: `@Andy`):
 ```
 
 From the main channel (your self-chat), you can manage groups and tasks:
+
 ```
 @Andy list all scheduled tasks across groups
 @Andy pause the Monday briefing task
@@ -91,13 +101,16 @@ Users then run `/add-slack` on their fork and get clean code that does exactly w
 Skills we'd love to see:
 
 **Communication Channels**
+
 - `/add-slack` - Add Slack
 - `/add-discord` - Add Discord
 
 **Platform Support**
+
 - `/setup-windows` - Windows via WSL2 + Docker
 
 **Session Management**
+
 - `/add-clear` - Add a `/clear` command that compacts the conversation (summarizes context while preserving critical information in the same session). Requires figuring out how to trigger compaction programmatically via the Claude Agent SDK.
 
 ## Requirements
@@ -105,7 +118,7 @@ Skills we'd love to see:
 - macOS or Linux
 - [Bun](https://bun.sh)
 - [Claude Code](https://claude.ai/download)
-- [Apple Container](https://github.com/apple/container) (macOS) or [Docker](https://docker.com/products/docker-desktop) (macOS/Linux)
+- [Docker](https://docker.com/products/docker-desktop) (macOS/Linux)
 
 ## Architecture
 
@@ -116,6 +129,7 @@ Telegram (grammY) --> SQLite --> Polling loop --> Container (Claude Agent SDK) -
 Single Bun process. Agents execute in isolated Linux containers with mounted directories. IPC via filesystem. No daemons, no queues, no complexity.
 
 Key files:
+
 - `src/index.ts` - Main app: message routing, IPC
 - `src/container-runner.ts` - Spawns agent containers
 - `src/task-scheduler.ts` - Runs scheduled tasks
@@ -128,13 +142,13 @@ Key files:
 
 Because it has a clean Bot API, no unofficial libraries needed, and works great on all platforms. Fork it and run a skill to change it if you prefer something else.
 
-**Why Apple Container instead of Docker?**
+**Why Docker?**
 
-On macOS, Apple Container is lightweight, fast, and optimized for Apple silicon. But Docker is also fully supported—during `/setup`, you can choose which runtime to use. On Linux, Docker is used automatically.
+Docker is cross-platform, widely available, and the runtime NanoClaw is built around.
 
 **Can I run this on Linux?**
 
-Yes. Run `/setup` and it will automatically configure Docker as the container runtime. Thanks to [@dotsetgreg](https://github.com/dotsetgreg) for contributing the `/convert-to-docker` skill.
+Yes. Run `/setup` and it will configure Docker-based runtime checks and deployment.
 
 **Is this secure?**
 

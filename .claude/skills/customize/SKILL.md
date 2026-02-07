@@ -1,107 +1,91 @@
 ---
 name: customize
-description: Add new capabilities or modify NanoClaw behavior. Use when user wants to add channels (Slack, email input), change triggers, add integrations, modify the router, or make any other customizations. This is an interactive skill that asks questions to understand what the user wants.
+description: Add new capabilities or modify NanoClaw behavior. Use when user wants to add channels/integrations, change triggers/persona/tools, or adjust deployment/runtime behavior across macOS/Linux.
 ---
 
 # NanoClaw Customization
 
-This skill helps users add capabilities or modify behavior. Use AskUserQuestion to understand what they want before making changes.
+Use AskUserQuestion for ambiguous product decisions. Then implement directly in code.
 
 ## Workflow
 
-1. **Understand the request** - Ask clarifying questions
-2. **Plan the changes** - Identify files to modify
-3. **Implement** - Make changes directly to the code
-4. **Test guidance** - Tell user how to verify
+1. Understand exactly what changes are desired.
+2. Confirm platform/deployment constraints (macOS launchd vs Linux systemd).
+3. Implement minimal, testable code changes.
+4. Build and verify.
+5. If runtime/deploy behavior changed, redeploy service.
 
 ## Key Files
 
-| File | Purpose |
-|------|---------|
-| `src/config.ts` | Assistant name, trigger pattern, directories |
-| `src/index.ts` | Message routing, Telegram connection, agent invocation |
-| `src/db.ts` | Database initialization and queries |
-| `src/types.ts` | TypeScript interfaces |
-| `.mcp.json` | MCP server configuration (reference) |
-| `groups/CLAUDE.md` | Global memory/persona |
+| File                      | Purpose                                               |
+| ------------------------- | ----------------------------------------------------- |
+| `src/config.ts`           | Runtime config: triggers, Docker/CUA sandbox env vars |
+| `src/index.ts`            | Message routing, startup checks, IPC processing       |
+| `src/container-runner.ts` | Agent container lifecycle and mounts                  |
+| `src/browse-host.ts`      | CUA browser action bridge                             |
+| `src/sandbox-manager.ts`  | CUA sandbox lifecycle                                 |
+| `src/db.ts`               | Persistent state (messages/tasks/chats)               |
+| `groups/*/CLAUDE.md`      | Persona/memory behavior by group                      |
+| `scripts/*.sh`            | Deployment and Docker prerequisite automation         |
 
-## Common Customization Patterns
+## Common Customizations
 
-### Adding a New Input Channel (e.g., Telegram, Slack, Email)
+### Behavior and Trigger Changes
 
-Questions to ask:
-- Which channel? (Telegram, Slack, Discord, email, SMS, etc.)
-- Same trigger word or different?
-- Same memory hierarchy or separate?
-- Should messages from this channel go to existing groups or new ones?
+- Trigger/name: update `.env` (`ASSISTANT_NAME`) and/or group memory files.
+- Response behavior/persona: update `groups/main/CLAUDE.md` and `groups/global/CLAUDE.md`.
 
-Implementation pattern:
-1. Find/add MCP server for the channel
-2. Add connection and message handling in `src/index.ts`
-3. Store messages in the database (update `src/db.ts` if needed)
-4. Ensure responses route back to correct channel
+### New Integrations/Tools
 
-### Adding a New MCP Integration
+- Add tool wiring in `container/agent-runner/src/ipc-mcp.ts`.
+- Add host processing in `src/index.ts` or dedicated modules.
+- Keep authorization boundaries between main vs non-main groups.
 
-Questions to ask:
-- What service? (Calendar, Notion, database, etc.)
-- What operations needed? (read, write, both)
-- Which groups should have access?
+### Sandbox/Browser Changes (CUA)
 
-Implementation:
-1. Add MCP server to the `mcpServers` config in `src/index.ts`
-2. Add tools to `allowedTools` array
-3. Document in `groups/CLAUDE.md`
+- Keep actions in `src/browse-host.ts` command-based (`/cmd`).
+- Preserve screenshot feedback path to Telegram.
+- Ensure `wait_for_user` always sends a usable sandbox URL.
 
-### Changing Assistant Behavior
+### Deployment/Runtime Changes
 
 Questions to ask:
-- What aspect? (name, trigger, persona, response style)
-- Apply to all groups or specific ones?
 
-Simple changes → edit `src/config.ts`
-Persona changes → edit `groups/CLAUDE.md`
-Per-group behavior → edit specific group's `CLAUDE.md`
+- Which OS targets are required? (macOS, Linux, both)
+- Service mode? (launchd, systemd user service, foreground)
+- Any restricted environment assumptions? (headless server, no Tailscale, custom Docker registry)
 
-### Adding New Commands
+Implement with:
 
-Questions to ask:
-- What should the command do?
-- Available in all groups or main only?
-- Does it need new MCP tools?
+- `scripts/ensure-docker-requirements.sh`
+- `scripts/deploy-launchd.sh`
+- `scripts/deploy-systemd.sh`
 
-Implementation:
-1. Add command handling in `processMessage()` in `src/index.ts`
-2. Check for the command before the trigger pattern check
+## Verification Checklist
 
-### Changing Deployment
-
-Questions to ask:
-- Target platform? (Linux server, Docker, different Mac)
-- Service manager? (systemd, Docker, supervisord)
-
-Implementation:
-1. Create appropriate service files
-2. Update paths in config
-3. Provide setup instructions
-
-## After Changes
-
-Always tell the user:
 ```bash
-# Rebuild and restart
 bun run build
-launchctl unload ~/Library/LaunchAgents/com.nanoclaw.plist
-launchctl load ~/Library/LaunchAgents/com.nanoclaw.plist
+bun test
 ```
 
-## Example Interaction
+If deploy/runtime impacted:
 
-User: "Add Slack as an input channel"
+```bash
+bun run docker:requirements
+# macOS:
+bun run deploy:macos
+# Linux:
+bun run deploy:linux
+```
 
-1. Ask: "Should Slack use the same @Andy trigger, or a different one?"
-2. Ask: "Should Slack messages create separate conversation contexts, or share with Telegram groups?"
-3. Find Slack library or MCP server
-4. Add connection handling in index.ts
-5. Update message storage in db.ts
-6. Tell user how to authenticate and test
+Then verify:
+
+- Service is active
+- Telegram message flow works
+- At least one browse screenshot roundtrip works
+
+## Safety Notes
+
+- Do not hardcode platform-specific paths when cross-platform behavior is required.
+- Prefer environment variables over magic constants for deploy/runtime details.
+- Keep Docker and CUA assumptions explicit in docs/skills when changed.
