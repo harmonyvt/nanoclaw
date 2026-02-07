@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  buildScreenshotAnalysis,
   buildElementSearchQueries,
   ensureWaitForUserRequest,
   getOldestWaitForUserRequest,
@@ -129,5 +130,93 @@ describe('buildElementSearchQueries', () => {
       (query) => query.toLowerCase() === 'search',
     ).length;
     expect(searchCount).toBe(1);
+  });
+});
+
+describe('buildScreenshotAnalysis', () => {
+  test('extracts labeled elements and assigns grid cells', () => {
+    const snapshot = {
+      tree: {
+        role: 'Window',
+        title: 'Chromium',
+        position: { x: 0, y: 0 },
+        size: { width: 1024, height: 768 },
+        children: [
+          {
+            role: 'button',
+            title: 'Search',
+            position: { x: 100, y: 80 },
+            size: { width: 120, height: 30 },
+            children: [],
+          },
+          {
+            role: 'textbox',
+            title: 'Email',
+            position: { x: 300, y: 300 },
+            size: { width: 220, height: 40 },
+            children: [],
+          },
+        ],
+      },
+    };
+
+    const analysis = buildScreenshotAnalysis(snapshot, {
+      width: 1024,
+      height: 768,
+    });
+
+    expect(analysis.grid.cols).toBe(12);
+    expect(analysis.grid.rows).toBe(8);
+    expect(analysis.elementCount).toBe(2);
+    expect(analysis.elements[0]?.label).toBe('Search');
+    expect(analysis.elements[0]?.grid.key).toBe('B1');
+    expect(analysis.elements[1]?.label).toBe('Email');
+    expect(analysis.elements[1]?.interactive).toBe(true);
+  });
+
+  test('supports normalized bounds from detectors', () => {
+    const snapshot = {
+      tree: {
+        role: 'window',
+        children: [
+          {
+            type: 'text',
+            content: 'Continue',
+            bounds: { x: 0.5, y: 0.5, width: 0.2, height: 0.1 },
+          },
+        ],
+      },
+    };
+
+    const analysis = buildScreenshotAnalysis(
+      snapshot,
+      { width: 1000, height: 800 },
+      { rows: 8, cols: 10 },
+    );
+
+    expect(analysis.elementCount).toBe(1);
+    expect(analysis.elements[0]?.label).toBe('Continue');
+    expect(analysis.elements[0]?.center).toEqual({ x: 600, y: 440 });
+    expect(analysis.elements[0]?.grid.key).toBe('G5');
+  });
+
+  test('truncates large element lists', () => {
+    const children = Array.from({ length: 6 }, (_, index) => ({
+      role: 'button',
+      title: `Button ${index + 1}`,
+      position: { x: 40 + index * 60, y: 100 },
+      size: { width: 40, height: 24 },
+      children: [],
+    }));
+
+    const analysis = buildScreenshotAnalysis(
+      { tree: { role: 'window', children } },
+      { width: 800, height: 600 },
+      { maxElements: 3 },
+    );
+
+    expect(analysis.elementCount).toBe(6);
+    expect(analysis.elements).toHaveLength(3);
+    expect(analysis.truncated).toBe(true);
   });
 });

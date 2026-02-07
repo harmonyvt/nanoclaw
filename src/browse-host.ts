@@ -33,7 +33,40 @@ type BrowseResponse = {
   status: 'ok' | 'error';
   result?: unknown;
   error?: string;
+  analysis?: ScreenshotAnalysis;
 };
+
+export type ScreenshotGrid = {
+  rows: number;
+  cols: number;
+  width: number;
+  height: number;
+};
+
+export type ScreenshotAnalysisElement = {
+  id: number;
+  label: string;
+  role: string | null;
+  interactive: boolean;
+  center: { x: number; y: number };
+  bounds: { x: number; y: number; width: number; height: number };
+  grid: { row: number; col: number; key: string };
+};
+
+export type ScreenshotAnalysis = {
+  capturedAt: string;
+  grid: ScreenshotGrid;
+  elementCount: number;
+  truncated: boolean;
+  elements: ScreenshotAnalysisElement[];
+  metadataPath?: string;
+  summary: string;
+};
+
+const SCREENSHOT_GRID_ROWS = 8;
+const SCREENSHOT_GRID_COLS = 12;
+const SCREENSHOT_MAX_ELEMENTS = 40;
+const SCREENSHOT_SUMMARY_LIMIT = 20;
 
 type CuaPayload = {
   status?: string;
@@ -807,6 +840,500 @@ function describePayloadShape(input: unknown): string {
   return `object(keys=${keys.join(',') || 'none'})`;
 }
 
+function toFiniteNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function getImageDimensionsFromBytes(
+  bytes: Buffer,
+): { width: number; height: number } | null {
+  // PNG: width/height in IHDR chunk at offsets 16..23 (big-endian)
+  if (
+    bytes.length >= 24 &&
+    bytes.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))
+  ) {
+    const width = bytes.readUInt32BE(16);
+    const height = bytes.readUInt32BE(20);
+    if (width > 0 && height > 0) return { width, height };
+  }
+
+  // GIF: logical screen descriptor at offsets 6..9 (little-endian)
+  if (bytes.length >= 10) {
+    const signature = bytes.subarray(0, 6).toString('ascii');
+    if (signature === 'GIF87a' || signature === 'GIF89a') {
+      const width = bytes.readUInt16LE(6);
+      const height = bytes.readUInt16LE(8);
+      if (width > 0 && height > 0) return { width, height };
+    }
+  }
+
+  // JPEG: scan SOF markers for dimensions.
+  if (bytes.length >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8) {
+    let offset = 2;
+    while (offset + 9 < bytes.length) {
+      while (offset < bytes.length && bytes[offset] !== 0xff) offset += 1;
+      if (offset + 3 >= bytes.length) break;
+
+      const marker = bytes[offset + 1];
+      offset += 2;
+
+      if (marker === 0xd8 || marker === 0x01) continue;
+      if (marker === 0xd9 || marker === 0xda) break;
+      if (offset + 2 > bytes.length) break;
+
+      const segmentLength = bytes.readUInt16BE(offset);
+      if (segmentLength < 2 || offset + segmentLength > bytes.length) break;
+
+      const isSofMarker =
+        (marker >= 0xc0 && marker <= 0xc3) ||
+        (marker >= 0xc5 && marker <= 0xc7) ||
+        (marker >= 0xc9 && marker <= 0xcb) ||
+        (marker >= 0xcd && marker <= 0xcf);
+      if (isSofMarker && segmentLength >= 7) {
+        const height = bytes.readUInt16BE(offset + 3);
+        const width = bytes.readUInt16BE(offset + 5);
+        if (width > 0 && height > 0) return { width, height };
+        break;
+      }
+
+      offset += segmentLength;
+    }
+  }
+
+  return null;
+}
+
+async function getScreenSizeSafe(): Promise<{
+  width: number;
+  height: number;
+} | null> {
+  try {
+    const response = await runCuaCommand('get_screen_size');
+    if (!response || typeof response !== 'object') return null;
+    const record = response as Record<string, unknown>;
+
+    const nested = coerceSnapshotRecord(record.size);
+    const width = toFiniteNumber(record.width) ?? toFiniteNumber(nested?.width);
+    const height =
+      toFiniteNumber(record.height) ?? toFiniteNumber(nested?.height);
+    if (typeof width === 'number' && typeof height === 'number') {
+      if (width > 0 && height > 0) {
+        return { width: Math.round(width), height: Math.round(height) };
+      }
+    }
+  } catch {
+    // best-effort
+  }
+  return null;
+}
+
+function firstNonEmptyString(
+  record: Record<string, unknown>,
+  keys: string[],
+): string | null {
+  for (const key of keys) {
+    const raw = record[key];
+    if (typeof raw !== 'string') continue;
+    const trimmed = raw.trim();
+    if (trimmed.length > 0) return trimmed;
+  }
+  return null;
+}
+
+function resolveAccessibilityRoot(
+  snapshot: unknown,
+): Record<string, unknown> | null {
+  const record = coerceSnapshotRecord(snapshot);
+  if (!record) return null;
+  return coerceSnapshotRecord(record.tree) || record;
+}
+
+function collectAccessibilityNodes(
+  node: Record<string, unknown>,
+  output: Record<string, unknown>[],
+  depth = 0,
+): void {
+  if (depth > 200) return;
+  output.push(node);
+
+  const childKeys = ['children', 'nodes', 'elements', 'items'];
+  for (const key of childKeys) {
+    const raw = node[key];
+    if (!Array.isArray(raw)) continue;
+    for (const child of raw) {
+      const childRecord = coerceSnapshotRecord(child);
+      if (!childRecord) continue;
+      collectAccessibilityNodes(childRecord, output, depth + 1);
+    }
+  }
+}
+
+type RawBounds = { x: number; y: number; width: number; height: number };
+
+function boxFromXywh(
+  x: number | null,
+  y: number | null,
+  width: number | null,
+  height: number | null,
+): RawBounds | null {
+  if (
+    typeof x !== 'number' ||
+    typeof y !== 'number' ||
+    typeof width !== 'number' ||
+    typeof height !== 'number'
+  ) {
+    return null;
+  }
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return null;
+  if (width <= 0 || height <= 0) return null;
+  return { x, y, width, height };
+}
+
+function boxFromCorners(
+  x1: number | null,
+  y1: number | null,
+  x2: number | null,
+  y2: number | null,
+): RawBounds | null {
+  if (
+    typeof x1 !== 'number' ||
+    typeof y1 !== 'number' ||
+    typeof x2 !== 'number' ||
+    typeof y2 !== 'number'
+  ) {
+    return null;
+  }
+  const left = Math.min(x1, x2);
+  const top = Math.min(y1, y2);
+  const width = Math.abs(x2 - x1);
+  const height = Math.abs(y2 - y1);
+  return boxFromXywh(left, top, width, height);
+}
+
+function extractBoundsFromNode(
+  node: Record<string, unknown>,
+): RawBounds | null {
+  const bounds = coerceSnapshotRecord(node.bounds);
+  if (bounds) {
+    const xywh =
+      boxFromXywh(
+        toFiniteNumber(bounds.x),
+        toFiniteNumber(bounds.y),
+        toFiniteNumber(bounds.width),
+        toFiniteNumber(bounds.height),
+      ) ||
+      boxFromCorners(
+        toFiniteNumber(bounds.left) ?? toFiniteNumber(bounds.x1),
+        toFiniteNumber(bounds.top) ?? toFiniteNumber(bounds.y1),
+        toFiniteNumber(bounds.right) ?? toFiniteNumber(bounds.x2),
+        toFiniteNumber(bounds.bottom) ?? toFiniteNumber(bounds.y2),
+      );
+    if (xywh) return xywh;
+  }
+
+  const position = coerceSnapshotRecord(node.position);
+  const size = coerceSnapshotRecord(node.size);
+  const positionSize = boxFromXywh(
+    toFiniteNumber(position?.x),
+    toFiniteNumber(position?.y),
+    toFiniteNumber(size?.width),
+    toFiniteNumber(size?.height),
+  );
+  if (positionSize) return positionSize;
+
+  const directXywh = boxFromXywh(
+    toFiniteNumber(node.x),
+    toFiniteNumber(node.y),
+    toFiniteNumber(node.width),
+    toFiniteNumber(node.height),
+  );
+  if (directXywh) return directXywh;
+
+  const directCorners = boxFromCorners(
+    toFiniteNumber(node.x1),
+    toFiniteNumber(node.y1),
+    toFiniteNumber(node.x2),
+    toFiniteNumber(node.y2),
+  );
+  if (directCorners) return directCorners;
+
+  if (Array.isArray(node.bbox) && node.bbox.length >= 4) {
+    const [x1, y1, x2, y2] = node.bbox;
+    const fromBbox = boxFromCorners(
+      toFiniteNumber(x1),
+      toFiniteNumber(y1),
+      toFiniteNumber(x2),
+      toFiniteNumber(y2),
+    );
+    if (fromBbox) return fromBbox;
+  }
+
+  return null;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function resolvePixelBounds(
+  bounds: RawBounds,
+  imageWidth: number,
+  imageHeight: number,
+): RawBounds | null {
+  let { x, y, width, height } = bounds;
+
+  const normalizedCandidate =
+    x >= 0 &&
+    x <= 1 &&
+    y >= 0 &&
+    y <= 1 &&
+    width >= 0 &&
+    width <= 1 &&
+    height >= 0 &&
+    height <= 1;
+  if (normalizedCandidate) {
+    x *= imageWidth;
+    y *= imageHeight;
+    width *= imageWidth;
+    height *= imageHeight;
+  }
+
+  const x1 = clamp(x, 0, imageWidth);
+  const y1 = clamp(y, 0, imageHeight);
+  const x2 = clamp(x + width, 0, imageWidth);
+  const y2 = clamp(y + height, 0, imageHeight);
+  const resolvedWidth = x2 - x1;
+  const resolvedHeight = y2 - y1;
+
+  if (resolvedWidth < 2 || resolvedHeight < 2) return null;
+  return { x: x1, y: y1, width: resolvedWidth, height: resolvedHeight };
+}
+
+function toGridColumnName(col: number): string {
+  let index = col;
+  let label = '';
+  while (index > 0) {
+    const remainder = (index - 1) % 26;
+    label = String.fromCharCode(65 + remainder) + label;
+    index = Math.floor((index - 1) / 26);
+  }
+  return label || 'A';
+}
+
+function toGridCell(
+  x: number,
+  y: number,
+  grid: ScreenshotGrid,
+): { row: number; col: number; key: string } {
+  const col = clamp(
+    Math.floor((x / Math.max(grid.width, 1)) * grid.cols) + 1,
+    1,
+    grid.cols,
+  );
+  const row = clamp(
+    Math.floor((y / Math.max(grid.height, 1)) * grid.rows) + 1,
+    1,
+    grid.rows,
+  );
+  const key = `${toGridColumnName(col)}${row}`;
+  return { row, col, key };
+}
+
+function nodeIsInteractive(
+  node: Record<string, unknown>,
+  role: string | null,
+): boolean {
+  const roleText = (role || '').toLowerCase();
+  if (node.clickable === true) return true;
+  if (node.interactive === true || node.interactivity === true) return true;
+  return /button|input|link|checkbox|textbox|tab|menuitem|combobox|search/i.test(
+    roleText,
+  );
+}
+
+function shouldSkipStructuralNode(
+  role: string | null,
+  bounds: RawBounds,
+  imageWidth: number,
+  imageHeight: number,
+  hasChildren: boolean,
+): boolean {
+  const roleText = (role || '').toLowerCase();
+  const areaRatio =
+    (bounds.width * bounds.height) / Math.max(imageWidth * imageHeight, 1);
+  if (!hasChildren) return false;
+  if (areaRatio < 0.85) return false;
+  return /window|application|desktop|pane/.test(roleText);
+}
+
+function formatAnalysisSummary(
+  screenshotPath: string,
+  analysis: ScreenshotAnalysis,
+): string {
+  const lines: string[] = [];
+  lines.push(`Screenshot saved: ${screenshotPath}`);
+  lines.push(
+    `Grid: ${analysis.grid.cols}x${analysis.grid.rows} (${analysis.grid.width}x${analysis.grid.height})`,
+  );
+  lines.push(
+    `Detected elements: ${analysis.elementCount}${analysis.truncated ? ` (showing ${analysis.elements.length})` : ''}`,
+  );
+
+  if (analysis.elements.length > 0) {
+    lines.push('Labeled elements:');
+    const limited = analysis.elements.slice(0, SCREENSHOT_SUMMARY_LIMIT);
+    for (const element of limited) {
+      const rolePart = element.role ? ` role=${element.role}` : '';
+      lines.push(
+        `${element.id}. [${element.grid.key}] "${element.label}"${rolePart} center=(${element.center.x},${element.center.y})`,
+      );
+    }
+    if (analysis.elements.length > limited.length) {
+      lines.push(
+        `... ${analysis.elements.length - limited.length} additional element(s) omitted`,
+      );
+    }
+  } else {
+    lines.push(
+      'Labeled elements: none (accessibility tree did not expose element bounds).',
+    );
+  }
+
+  if (analysis.metadataPath) {
+    lines.push(`Metadata JSON: ${analysis.metadataPath}`);
+  }
+
+  return lines.join('\n');
+}
+
+export function buildScreenshotAnalysis(
+  snapshot: unknown,
+  imageDimensions: { width: number; height: number },
+  options?: { rows?: number; cols?: number; maxElements?: number },
+): ScreenshotAnalysis {
+  const grid: ScreenshotGrid = {
+    rows: options?.rows || SCREENSHOT_GRID_ROWS,
+    cols: options?.cols || SCREENSHOT_GRID_COLS,
+    width: Math.max(1, Math.round(imageDimensions.width)),
+    height: Math.max(1, Math.round(imageDimensions.height)),
+  };
+  const maxElements = Math.max(
+    1,
+    options?.maxElements || SCREENSHOT_MAX_ELEMENTS,
+  );
+
+  const nodes: Record<string, unknown>[] = [];
+  const root = resolveAccessibilityRoot(snapshot);
+  if (root) collectAccessibilityNodes(root, nodes);
+
+  const seen = new Set<string>();
+  const candidates: Array<
+    Omit<ScreenshotAnalysisElement, 'id'> & { sortWeight: number }
+  > = [];
+
+  for (const node of nodes) {
+    const bounds = extractBoundsFromNode(node);
+    if (!bounds) continue;
+
+    const resolvedBounds = resolvePixelBounds(bounds, grid.width, grid.height);
+    if (!resolvedBounds) continue;
+
+    const role = firstNonEmptyString(node, [
+      'role',
+      'class',
+      'type',
+      'controlType',
+      'control_type',
+    ]);
+    const labelCandidate = firstNonEmptyString(node, [
+      'title',
+      'label',
+      'name',
+      'text',
+      'description',
+      'value',
+      'content',
+      'aria_label',
+      'ariaLabel',
+      'placeholder',
+      'resource_id',
+      'resourceId',
+      'id',
+    ]);
+    const hasChildren =
+      Array.isArray(node.children) && node.children.length > 0;
+
+    if (
+      shouldSkipStructuralNode(
+        role,
+        resolvedBounds,
+        grid.width,
+        grid.height,
+        hasChildren,
+      )
+    ) {
+      continue;
+    }
+
+    const label = labelCandidate || role || 'unnamed element';
+    const centerX = Math.round(resolvedBounds.x + resolvedBounds.width / 2);
+    const centerY = Math.round(resolvedBounds.y + resolvedBounds.height / 2);
+    const dedupeKey = `${centerX}:${centerY}:${normalizeForSearch(label)}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+
+    const interactive = nodeIsInteractive(node, role);
+    const gridCell = toGridCell(centerX, centerY, grid);
+    candidates.push({
+      label,
+      role: role || null,
+      interactive,
+      center: { x: centerX, y: centerY },
+      bounds: {
+        x: Math.round(resolvedBounds.x),
+        y: Math.round(resolvedBounds.y),
+        width: Math.round(resolvedBounds.width),
+        height: Math.round(resolvedBounds.height),
+      },
+      grid: gridCell,
+      sortWeight: interactive ? 0 : 1,
+    });
+  }
+
+  candidates.sort((a, b) => {
+    if (a.sortWeight !== b.sortWeight) return a.sortWeight - b.sortWeight;
+    if (a.center.y !== b.center.y) return a.center.y - b.center.y;
+    return a.center.x - b.center.x;
+  });
+
+  const limited = candidates.slice(0, maxElements).map((element, index) => ({
+    id: index + 1,
+    label: element.label,
+    role: element.role,
+    interactive: element.interactive,
+    center: element.center,
+    bounds: element.bounds,
+    grid: element.grid,
+  }));
+
+  return {
+    capturedAt: new Date().toISOString(),
+    grid,
+    elementCount: candidates.length,
+    truncated: candidates.length > limited.length,
+    elements: limited,
+    summary: '',
+  };
+}
+
 async function processCuaRequest(
   action: string,
   params: Record<string, unknown>,
@@ -966,8 +1493,24 @@ async function processCuaRequest(
       fs.mkdirSync(mediaDir, { recursive: true });
       const filename = `screenshot-${Date.now()}.png`;
       const filePath = path.join(mediaDir, filename);
-      fs.writeFileSync(filePath, Buffer.from(base64, 'base64'));
-      return { status: 'ok', result: `/workspace/group/media/${filename}` };
+      const screenshotBytes = Buffer.from(base64, 'base64');
+      fs.writeFileSync(filePath, screenshotBytes);
+
+      const screenshotPath = `/workspace/group/media/${filename}`;
+      const imageSize = getImageDimensionsFromBytes(screenshotBytes) ||
+        (await getScreenSizeSafe()) || { width: 1024, height: 768 };
+      const snapshot = await getAccessibilitySnapshotSafe();
+      const analysis = buildScreenshotAnalysis(snapshot, imageSize);
+      const metadataFilename = filename.replace(/\.png$/, '.labels.json');
+      const metadataPath = `/workspace/group/media/${metadataFilename}`;
+      analysis.metadataPath = metadataPath;
+      analysis.summary = formatAnalysisSummary(screenshotPath, analysis);
+      fs.writeFileSync(
+        path.join(mediaDir, metadataFilename),
+        JSON.stringify(analysis, null, 2),
+      );
+
+      return { status: 'ok', result: screenshotPath, analysis };
     }
     case 'go_back': {
       await runCuaCommandWithFallback([
@@ -999,7 +1542,7 @@ export async function processBrowseRequest(
   params: Record<string, unknown>,
   groupFolder: string,
   _ipcDir: string,
-): Promise<{ status: 'ok' | 'error'; result?: unknown; error?: string }> {
+): Promise<BrowseResponse> {
   resetIdleTimer();
 
   try {
