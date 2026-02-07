@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { promisify } from 'util';
 import { Bot, InlineKeyboard, InputFile } from 'grammy';
+import type { LanguageCode } from 'grammy/types';
 
 import {
   GROUPS_DIR,
@@ -26,8 +27,14 @@ import {
   storeMediaMessage,
   storeTextMessage,
 } from './db.js';
+import {
+  ensureWaitForUserRequest,
+  getOldestWaitForUserRequest,
+} from './browse-host.js';
+import { getTakeoverUrl } from './cua-takeover-server.js';
 import { downloadTelegramFile, transcribeAudio } from './media.js';
 import { logger } from './logger.js';
+import { ensureSandbox, getSandboxUrl } from './sandbox-manager.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
 
 /**
@@ -46,7 +53,9 @@ export interface SessionManager {
  * Passed in by the host (index.ts) so telegram.ts doesn't depend on task-scheduler.
  */
 export interface TaskActionHandler {
-  runTaskNow(taskId: string): Promise<{ success: boolean; error?: string; durationMs?: number }>;
+  runTaskNow(
+    taskId: string,
+  ): Promise<{ success: boolean; error?: string; durationMs?: number }>;
 }
 
 // --- Task formatting helpers ---
@@ -101,9 +110,9 @@ function escapeHtml(s: string): string {
 function formatTaskList(tasks: ScheduledTask[]): string {
   if (tasks.length === 0) return 'No tasks scheduled. Ask me to create one.';
 
-  const active = tasks.filter(t => t.status === 'active').length;
-  const paused = tasks.filter(t => t.status === 'paused').length;
-  const completed = tasks.filter(t => t.status === 'completed').length;
+  const active = tasks.filter((t) => t.status === 'active').length;
+  const paused = tasks.filter((t) => t.status === 'paused').length;
+  const completed = tasks.filter((t) => t.status === 'completed').length;
 
   const parts = [];
   if (active) parts.push(`${active} active`);
@@ -114,11 +123,18 @@ function formatTaskList(tasks: ScheduledTask[]): string {
 
   for (let i = 0; i < tasks.length; i++) {
     const t = tasks[i];
-    const status = t.status === 'active' ? 'active' : t.status === 'paused' ? 'paused' : 'done';
-    const nextInfo = t.next_run ? ` | next: ${formatRelativeTime(t.next_run)}` : '';
+    const status =
+      t.status === 'active'
+        ? 'active'
+        : t.status === 'paused'
+          ? 'paused'
+          : 'done';
+    const nextInfo = t.next_run
+      ? ` | next: ${formatRelativeTime(t.next_run)}`
+      : '';
     lines.push(
       `${i + 1}. <b>${escapeHtml(truncatePrompt(t.prompt, 40))}</b>\n` +
-      `   <code>${formatSchedule(t)}</code> | ${status}${nextInfo}`
+        `   <code>${formatSchedule(t)}</code> | ${status}${nextInfo}`,
     );
   }
 
@@ -153,7 +169,9 @@ function formatTaskDetail(task: ScheduledTask): string {
     `<b>Last run:</b> ${task.last_run ? formatRelativeTime(task.last_run) : 'never'}`,
   ];
   if (task.last_result) {
-    lines.push(`<b>Last result:</b> ${escapeHtml(task.last_result.slice(0, 200))}`);
+    lines.push(
+      `<b>Last result:</b> ${escapeHtml(task.last_result.slice(0, 200))}`,
+    );
   }
   return lines.join('\n');
 }
@@ -208,6 +226,69 @@ export function isVerbose(chatJid: string): boolean {
 
 const TELEGRAM_MAX_LENGTH = 4096;
 
+type SlashCommandSpec = {
+  command:
+    | 'tasks'
+    | 'runtask'
+    | 'new'
+    | 'clear'
+    | 'status'
+    | 'update'
+    | 'takeover'
+    | 'verbose'
+    | 'help';
+  description: string;
+  help: string;
+};
+
+const TELEGRAM_SLASH_COMMANDS: SlashCommandSpec[] = [
+  {
+    command: 'tasks',
+    description: 'List scheduled tasks and automations',
+    help: 'List scheduled tasks and automations',
+  },
+  {
+    command: 'runtask',
+    description: 'Trigger a task immediately',
+    help: 'Trigger a task immediately: /runtask <task-id>',
+  },
+  {
+    command: 'new',
+    description: 'Start a new conversation thread',
+    help: 'Start a new conversation thread',
+  },
+  {
+    command: 'clear',
+    description: 'Clear conversation history',
+    help: 'Clear conversation history and reset session',
+  },
+  {
+    command: 'status',
+    description: 'Show session info',
+    help: 'Show session info, message count, uptime',
+  },
+  {
+    command: 'update',
+    description: 'Check and apply service update',
+    help: 'Check for updates and request confirmation',
+  },
+  {
+    command: 'takeover',
+    description: 'Force CUA takeover URL',
+    help: 'Force a CUA takeover URL',
+  },
+  {
+    command: 'verbose',
+    description: 'Toggle verbose mode (show agent tool use)',
+    help: 'Toggle verbose mode (show agent tool use)',
+  },
+  {
+    command: 'help',
+    description: 'List commands',
+    help: 'List available commands',
+  },
+];
+
 /**
  * Extract common message metadata from a Telegram context.
  */
@@ -237,6 +318,11 @@ function shouldAccept(ctx: {
   if (TELEGRAM_OWNER_ID && ctx.from?.id.toString() !== TELEGRAM_OWNER_ID)
     return false;
   return true;
+}
+
+function toLanguageCode(value?: string): LanguageCode | undefined {
+  if (!value) return undefined;
+  return value as LanguageCode;
 }
 
 /**
@@ -311,27 +397,63 @@ export async function connectTelegram(
   taskActions?: TaskActionHandler,
 ): Promise<void> {
   bot = new Bot(TELEGRAM_BOT_TOKEN);
-  const commandList = [
-    { command: 'tasks', description: 'List scheduled tasks and automations' },
-    { command: 'new', description: 'Start a new conversation thread' },
-    { command: 'clear', description: 'Clear conversation history' },
-    { command: 'status', description: 'Show session info' },
-    { command: 'update', description: 'Check and apply service update' },
-    {
-      command: 'verbose',
-      description: 'Toggle verbose mode (show agent tool use)',
-    },
-    { command: 'help', description: 'List commands' },
-  ] as const;
+  const apiCommands = TELEGRAM_SLASH_COMMANDS.map((c) => ({
+    command: c.command,
+    description: c.description,
+  }));
+  const syncedCommandScopes = new Set<string>();
+
+  async function syncChatCommandsIfNeeded(
+    chatId: number,
+    languageCode?: LanguageCode,
+  ): Promise<void> {
+    const defaultKey = `${chatId}:default`;
+    const langKey = languageCode ? `${chatId}:${languageCode}` : null;
+    if (
+      syncedCommandScopes.has(defaultKey) &&
+      (!langKey || syncedCommandScopes.has(langKey))
+    ) {
+      return;
+    }
+
+    try {
+      await bot!.api.setMyCommands(apiCommands, {
+        scope: { type: 'chat', chat_id: chatId },
+      });
+      syncedCommandScopes.add(defaultKey);
+
+      if (languageCode && !syncedCommandScopes.has(langKey!)) {
+        await bot!.api.setMyCommands(apiCommands, {
+          scope: { type: 'chat', chat_id: chatId },
+          language_code: languageCode,
+        });
+        syncedCommandScopes.add(langKey!);
+      }
+    } catch (err) {
+      logger.warn(
+        { err, chatId, languageCode },
+        'Failed to sync Telegram commands for chat scope',
+      );
+    }
+  }
 
   // Register slash commands with Telegram immediately so they appear in the command menu.
   // This runs before bot.start() since bot.api only needs the token, not full initialization.
   try {
-    await bot.api.setMyCommands(commandList);
+    await bot.api.setMyCommands(apiCommands);
     // Also set commands specifically for private chats so they appear in the / menu
-    await bot.api.setMyCommands(commandList, {
+    await bot.api.setMyCommands(apiCommands, {
       scope: { type: 'all_private_chats' },
     });
+
+    // Chat-specific scope has higher priority than all_private_chats.
+    // If a stale chat scope exists, this ensures our latest command set is visible.
+    if (TELEGRAM_OWNER_ID) {
+      const ownerChatId = Number(TELEGRAM_OWNER_ID);
+      if (!Number.isNaN(ownerChatId)) {
+        await syncChatCommandsIfNeeded(ownerChatId);
+      }
+    }
     logger.info('Bot commands registered with Telegram');
   } catch (err) {
     logger.error({ err }, 'Failed to register bot commands');
@@ -363,6 +485,16 @@ export async function connectTelegram(
   }
 
   // --- Slash command handlers ---
+
+  bot.use(async (ctx, next) => {
+    if (ctx.chat && shouldAccept({ chat: ctx.chat, from: ctx.from })) {
+      await syncChatCommandsIfNeeded(
+        ctx.chat.id,
+        toLanguageCode(ctx.from?.language_code),
+      );
+    }
+    await next();
+  });
 
   bot.command('new', async (ctx) => {
     if (!shouldAccept(ctx)) return;
@@ -413,21 +545,58 @@ export async function connectTelegram(
     await ctx.reply(lines.join('\n'));
   });
 
+  bot.command('takeover', async (ctx) => {
+    if (!shouldAccept(ctx)) return;
+    const chatId = makeTelegramChatId(ctx.chat.id);
+    const senderName = ctx.from
+      ? `${ctx.from.first_name}${ctx.from.last_name ? ` ${ctx.from.last_name}` : ''}`
+      : 'Owner';
+    const group = ensureRegistered(chatId, senderName);
+    if (!group) {
+      await ctx.reply('Could not register this chat for takeover.');
+      return;
+    }
+
+    try {
+      await ensureSandbox();
+    } catch (err) {
+      logger.error({ chatId, err }, 'Failed to start sandbox for /takeover');
+      await ctx.reply(
+        'Failed to start CUA sandbox. Check Docker/sandbox logs.',
+      );
+      return;
+    }
+
+    const existing = getOldestWaitForUserRequest(group.folder);
+    const request =
+      existing ||
+      ensureWaitForUserRequest(
+        `manual-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        group.folder,
+        'Manual forced takeover requested from Telegram command.',
+      );
+
+    const takeoverUrl = getTakeoverUrl(request.token);
+    const sandboxUrl = getSandboxUrl();
+    const takeoverLine = takeoverUrl
+      ? `Take over CUA: ${takeoverUrl}`
+      : 'Takeover URL unavailable (takeover web UI may be disabled).';
+    const noVncLine = sandboxUrl ? `\nDirect noVNC: ${sandboxUrl}` : '';
+    const requestLine = existing
+      ? `\nReusing active request: ${request.requestId}`
+      : `\nCreated request: ${request.requestId}`;
+
+    await ctx.reply(
+      `Forced takeover ready.\n${takeoverLine}${noVncLine}${requestLine}\n\nWhen done, click "Return Control To Agent" in the takeover page.\nFallback: reply "continue ${request.requestId}".`,
+    );
+  });
+
   bot.command('help', async (ctx) => {
     if (!shouldAccept(ctx)) return;
-    const lines = [
-      '/tasks - List scheduled tasks and automations',
-      '/runtask &lt;id&gt; - Trigger a task immediately',
-      '/new - Start a new conversation thread',
-      '/clear - Clear conversation history and reset session',
-      '/status - Show session info, message count, uptime',
-      '/update - Check for updates and request confirmation',
-      '/update confirm - Apply latest update',
-      '/update cancel - Cancel pending update',
-      '/verbose - Toggle verbose mode (show agent tool use)',
-      '/help - List available commands',
-    ];
-    await ctx.reply(lines.join('\n'), { parse_mode: 'HTML' });
+    const lines = TELEGRAM_SLASH_COMMANDS.map(
+      (c) => `/${c.command} - ${c.help}`,
+    );
+    await ctx.reply(lines.join('\n'));
   });
 
   bot.command('verbose', async (ctx) => {
@@ -539,9 +708,9 @@ export async function connectTelegram(
 
     // Main sees all, others see only their group
     const tasks = isMain
-      ? getAllTasks().filter(t => t.status !== 'completed')
+      ? getAllTasks().filter((t) => t.status !== 'completed')
       : group
-        ? getTasksForGroup(group.folder).filter(t => t.status !== 'completed')
+        ? getTasksForGroup(group.folder).filter((t) => t.status !== 'completed')
         : [];
 
     const text = formatTaskList(tasks);
@@ -575,7 +744,9 @@ export async function connectTelegram(
     await ctx.reply(`Running task: ${truncatePrompt(task.prompt, 60)}...`);
     const result = await taskActions.runTaskNow(task.id);
     if (result.success) {
-      const dur = result.durationMs ? ` (${Math.round(result.durationMs / 1000)}s)` : '';
+      const dur = result.durationMs
+        ? ` (${Math.round(result.durationMs / 1000)}s)`
+        : '';
       await ctx.reply(`Task completed${dur}.`);
     } else {
       await ctx.reply(`Task failed: ${result.error || 'Unknown error'}`);
@@ -585,7 +756,7 @@ export async function connectTelegram(
   // --- Inline keyboard callback handler ---
 
   bot.on('callback_query:data', async (ctx) => {
-    if (!shouldAccept(ctx)) return;
+    if (!ctx.chat || !shouldAccept({ chat: ctx.chat, from: ctx.from })) return;
     const data = ctx.callbackQuery.data;
     if (!data.startsWith('t:')) return;
 
@@ -604,9 +775,11 @@ export async function connectTelegram(
     // "back" action returns to task list
     if (action === 'back') {
       const tasks = isMain
-        ? getAllTasks().filter(t => t.status !== 'completed')
+        ? getAllTasks().filter((t) => t.status !== 'completed')
         : group
-          ? getTasksForGroup(group.folder).filter(t => t.status !== 'completed')
+          ? getTasksForGroup(group.folder).filter(
+              (t) => t.status !== 'completed',
+            )
           : [];
       const text = formatTaskList(tasks);
       const kb = tasks.length > 0 ? buildTaskListKeyboard(tasks) : undefined;
@@ -654,10 +827,18 @@ export async function connectTelegram(
         const result = await taskActions.runTaskNow(task.id);
         const numericId = extractTelegramChatId(chatId);
         if (result.success) {
-          const dur = result.durationMs ? ` (${Math.round(result.durationMs / 1000)}s)` : '';
-          await bot!.api.sendMessage(numericId, `Task completed${dur}: ${truncatePrompt(task.prompt, 60)}`);
+          const dur = result.durationMs
+            ? ` (${Math.round(result.durationMs / 1000)}s)`
+            : '';
+          await bot!.api.sendMessage(
+            numericId,
+            `Task completed${dur}: ${truncatePrompt(task.prompt, 60)}`,
+          );
         } else {
-          await bot!.api.sendMessage(numericId, `Task failed: ${result.error || 'Unknown error'}`);
+          await bot!.api.sendMessage(
+            numericId,
+            `Task failed: ${result.error || 'Unknown error'}`,
+          );
         }
         break;
       }
@@ -688,7 +869,10 @@ export async function connectTelegram(
         const kb = new InlineKeyboard()
           .text('Back to Task', `t:detail:${sid}`)
           .text('Back to List', `t:back:_`);
-        await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
+        await ctx.editMessageText(text, {
+          parse_mode: 'HTML',
+          reply_markup: kb,
+        });
         await ctx.answerCallbackQuery();
         break;
       }
@@ -698,7 +882,10 @@ export async function connectTelegram(
         const kb = new InlineKeyboard()
           .text('Yes, Delete', `t:confirm_del:${sid}`)
           .text('No, Keep', `t:detail:${sid}`);
-        await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
+        await ctx.editMessageText(text, {
+          parse_mode: 'HTML',
+          reply_markup: kb,
+        });
         await ctx.answerCallbackQuery();
         break;
       }
@@ -707,13 +894,16 @@ export async function connectTelegram(
         deleteTask(task.id);
         // Return to task list
         const tasks = isMain
-          ? getAllTasks().filter(t => t.status !== 'completed')
+          ? getAllTasks().filter((t) => t.status !== 'completed')
           : group
-            ? getTasksForGroup(group.folder).filter(t => t.status !== 'completed')
+            ? getTasksForGroup(group.folder).filter(
+                (t) => t.status !== 'completed',
+              )
             : [];
-        const text = tasks.length > 0
-          ? `Task deleted.\n\n${formatTaskList(tasks)}`
-          : 'Task deleted. No tasks remaining.';
+        const text =
+          tasks.length > 0
+            ? `Task deleted.\n\n${formatTaskList(tasks)}`
+            : 'Task deleted. No tasks remaining.';
         const kb = tasks.length > 0 ? buildTaskListKeyboard(tasks) : undefined;
         await ctx.editMessageText(text, {
           parse_mode: 'HTML',
