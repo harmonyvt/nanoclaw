@@ -38,6 +38,35 @@ Files you create are saved in `/workspace/group/`. Use this for notes, research,
 
 Your `CLAUDE.md` file in that folder is your memory - update it with important context you want to remember.
 
+## File Transfers (CUA Sandbox <-> Telegram)
+
+When a user asks you to download or send a file from the CUA browser sandbox, **never try to serve it via HTTP or give a localhost URL**. Instead, use the built-in file transfer tools:
+
+### Downloading from CUA and sending to Telegram
+
+1. Use `browse_extract_file` with the file path inside the CUA sandbox
+   - Example: `browse_extract_file({ path: "/root/Downloads/video.mp4" })`
+   - This copies the file from CUA to your workspace at `/workspace/group/media/`
+   - It returns the workspace path (e.g., `/workspace/group/media/video-1707346800000.mp4`)
+2. Use `send_file` with the returned path to send it to Telegram
+   - Example: `send_file({ path: "/workspace/group/media/video-1707346800000.mp4", caption: "Here's the video!" })`
+
+### Uploading from Telegram to CUA
+
+When a user sends you a file (photo, document, video) and you need it inside the CUA sandbox:
+
+1. The file is already saved at `/workspace/group/media/` (the path is in the message)
+2. Use `browse_upload_file` to transfer it into the CUA sandbox
+   - Example: `browse_upload_file({ source_path: "/workspace/group/media/photo.jpg", destination_path: "/root/Downloads/photo.jpg" })`
+   - If no `destination_path` is given, it defaults to `~/Downloads/{filename}`
+
+### Important
+
+- **Never** start an HTTP server or give `localhost` URLs for file access — the user can't reach them
+- **Never** tell the user to download from a sandbox URL — files must go through the extract+send pipeline
+- Max file size: 40GB (but Telegram limits apply for sending)
+- Files are transferred via base64 encoding internally, so very large files may be slow
+
 ## Personality (SOUL.md)
 
 Your personality is defined in `SOUL.md` in your group directory. It's injected as a `<soul>` block at the start of every prompt. You can read and modify it when the user asks.
