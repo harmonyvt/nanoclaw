@@ -6,6 +6,7 @@ import {
   DASHBOARD_PORT,
   DASHBOARD_TLS_CERT,
   DASHBOARD_TLS_KEY,
+  DASHBOARD_URL,
   GROUPS_DIR,
 } from './config.js';
 import { getSandboxHostIp } from './sandbox-manager.js';
@@ -953,6 +954,8 @@ function handleRequest(req: Request): Response | Promise<Response> {
 
 export function getDashboardUrl(): string | null {
   if (!DASHBOARD_ENABLED) return null;
+  // Prefer explicit DASHBOARD_URL (e.g. from tailscale serve/funnel HTTPS proxy)
+  if (DASHBOARD_URL) return DASHBOARD_URL.replace(/\/$/, '');
   const ip = getSandboxHostIp();
   const protocol =
     DASHBOARD_TLS_CERT && DASHBOARD_TLS_KEY ? 'https' : 'http';

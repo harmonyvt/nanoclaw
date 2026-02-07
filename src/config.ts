@@ -138,6 +138,9 @@ export const LOG_RETENTION_DAYS = parseInt(
 );
 export const DASHBOARD_TLS_CERT = process.env.DASHBOARD_TLS_CERT || '';
 export const DASHBOARD_TLS_KEY = process.env.DASHBOARD_TLS_KEY || '';
+// Explicit HTTPS URL for Telegram Web App (e.g. from tailscale serve/funnel).
+// When set, used for the menu button and /dashboard command instead of auto-detected URL.
+export const DASHBOARD_URL = process.env.DASHBOARD_URL || '';
 
 // Timezone for scheduled tasks (cron expressions, etc.)
 // Uses system timezone by default
