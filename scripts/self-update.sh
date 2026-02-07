@@ -21,7 +21,11 @@ if [[ ! -d .git ]]; then
   exit 1
 fi
 
-echo "[nanoclaw] resetting local changes"
+DIRTY="$(git diff --stat)"
+if [[ -n "$DIRTY" ]]; then
+  echo "[nanoclaw] discarding local changes:"
+  echo "$DIRTY"
+fi
 git reset --hard HEAD
 
 echo "[nanoclaw] fetching ${REMOTE}/${BRANCH}"
