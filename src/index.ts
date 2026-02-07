@@ -84,6 +84,20 @@ import {
   startCuaTakeoverServer,
   stopCuaTakeoverServer,
 } from './cua-takeover-server.js';
+import { createSessionForOwner } from './dashboard-auth.js';
+import {
+  initLogSync,
+  stopLogSync,
+  pruneOldLogEntries,
+} from './log-sync.js';
+import {
+  startDashboardServer,
+  stopDashboardServer,
+} from './dashboard-server.js';
+import {
+  initTailscaleServe,
+  stopTailscaleServe,
+} from './tailscale-serve.js';
 
 let lastTimestamp = '';
 let sessions: Session = {};
@@ -689,7 +703,8 @@ function startIpcWatcher(): void {
                 );
 
                 if (chatJid) {
-                  const takeoverUrl = getTakeoverUrl(waitRequest.token);
+                  const ownerSession = createSessionForOwner();
+                  const takeoverUrl = getTakeoverUrl(waitRequest.token, ownerSession?.token);
                   const sandboxUrl = getSandboxUrl();
                   const takeoverPart = takeoverUrl
                     ? `\nTake over CUA: ${takeoverUrl}`
@@ -1230,6 +1245,8 @@ async function main(): Promise<void> {
   cleanupOrphanPersistentContainers();
   initDatabase();
   logger.info('Database initialized');
+  initLogSync();
+  pruneOldLogEntries();
   loadState();
   // Clean up old media files on startup (7 day retention)
   for (const group of Object.values(registeredGroups)) {
@@ -1261,6 +1278,10 @@ async function main(): Promise<void> {
     runTaskNow: (taskId: string) => runTaskNow(taskId, schedulerDeps),
   };
 
+  startCuaTakeoverServer();
+  startDashboardServer();
+  initTailscaleServe();
+
   await connectTelegram(
     () => registeredGroups,
     registerGroup,
@@ -1268,7 +1289,6 @@ async function main(): Promise<void> {
     taskActions,
   );
   startSchedulerLoop(schedulerDeps);
-  startCuaTakeoverServer();
   startIpcWatcher();
   startIdleWatcher();
   startContainerIdleCleanup();
@@ -1282,6 +1302,9 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     stopTelegram();
     killAllContainers();
     await disconnectBrowser();
+    stopTailscaleServe();
+    stopDashboardServer();
+    stopLogSync();
     stopCuaTakeoverServer();
     cleanupSandbox();
     process.exit(0);

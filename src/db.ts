@@ -87,6 +87,36 @@ export function initDatabase(): void {
   } catch {
     /* column already exists */
   }
+
+  // Dashboard log tables
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      level INTEGER NOT NULL,
+      time INTEGER NOT NULL,
+      msg TEXT NOT NULL,
+      module TEXT,
+      group_folder TEXT,
+      raw TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_logs_time ON logs(time);
+    CREATE INDEX IF NOT EXISTS idx_logs_level ON logs(level);
+
+    CREATE TABLE IF NOT EXISTS container_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      group_folder TEXT NOT NULL,
+      filename TEXT NOT NULL UNIQUE,
+      timestamp TEXT,
+      duration_ms INTEGER,
+      exit_code INTEGER,
+      mode TEXT,
+      is_main INTEGER,
+      status TEXT,
+      file_size INTEGER,
+      indexed_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_container_logs_group ON container_logs(group_folder);
+  `);
 }
 
 /**
@@ -417,4 +447,207 @@ export function getMessageCount(chatJid: string): number {
     .prepare('SELECT COUNT(*) as count FROM messages WHERE chat_jid = ?')
     .get(chatJid) as { count: number } | undefined;
   return row?.count ?? 0;
+}
+
+// ── Dashboard log functions ──────────────────────────────────────────────
+
+export interface LogEntry {
+  id: number;
+  level: number;
+  time: number;
+  msg: string;
+  module: string | null;
+  group_folder: string | null;
+  raw: string;
+}
+
+export interface LogQueryParams {
+  level?: number;
+  search?: string;
+  group?: string;
+  since?: number;
+  until?: number;
+  limit?: number;
+  offset?: number;
+}
+
+export interface ContainerLogEntry {
+  id: number;
+  group_folder: string;
+  filename: string;
+  timestamp: string | null;
+  duration_ms: number | null;
+  exit_code: number | null;
+  mode: string | null;
+  is_main: number | null;
+  status: string | null;
+  file_size: number | null;
+  indexed_at: string;
+}
+
+export function insertLog(log: Omit<LogEntry, 'id'>): number {
+  const stmt = db.prepare(`
+    INSERT INTO logs (level, time, msg, module, group_folder, raw)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  const result = stmt.run(
+    log.level,
+    log.time,
+    log.msg,
+    log.module,
+    log.group_folder,
+    log.raw,
+  );
+  return Number(result.lastInsertRowid);
+}
+
+export function queryLogs(params: LogQueryParams): LogEntry[] {
+  const conditions: string[] = [];
+  const values: (string | number)[] = [];
+
+  if (params.level !== undefined) {
+    conditions.push('level = ?');
+    values.push(params.level);
+  }
+  if (params.search) {
+    conditions.push('msg LIKE ?');
+    values.push(`%${params.search}%`);
+  }
+  if (params.group) {
+    conditions.push('group_folder = ?');
+    values.push(params.group);
+  }
+  if (params.since !== undefined) {
+    conditions.push('time >= ?');
+    values.push(params.since);
+  }
+  if (params.until !== undefined) {
+    conditions.push('time <= ?');
+    values.push(params.until);
+  }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const limit = params.limit || 200;
+  const offset = params.offset || 0;
+
+  return db
+    .prepare(
+      `SELECT id, level, time, msg, module, group_folder, raw FROM logs ${where} ORDER BY time DESC LIMIT ? OFFSET ?`,
+    )
+    .all(...values, limit, offset) as LogEntry[];
+}
+
+export function getLogStats(): {
+  total: number;
+  byLevel: Record<number, number>;
+  oldestTime: number | null;
+  newestTime: number | null;
+} {
+  const total = (
+    db.prepare('SELECT COUNT(*) as count FROM logs').get() as { count: number }
+  ).count;
+
+  const levels = db
+    .prepare('SELECT level, COUNT(*) as count FROM logs GROUP BY level')
+    .all() as { level: number; count: number }[];
+
+  const byLevel: Record<number, number> = {};
+  for (const row of levels) byLevel[row.level] = row.count;
+
+  const times = db
+    .prepare('SELECT MIN(time) as oldest, MAX(time) as newest FROM logs')
+    .get() as { oldest: number | null; newest: number | null };
+
+  return {
+    total,
+    byLevel,
+    oldestTime: times.oldest,
+    newestTime: times.newest,
+  };
+}
+
+export function insertContainerLog(
+  entry: Omit<ContainerLogEntry, 'id'>,
+): void {
+  db.prepare(`
+    INSERT OR IGNORE INTO container_logs (group_folder, filename, timestamp, duration_ms, exit_code, mode, is_main, status, file_size, indexed_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    entry.group_folder,
+    entry.filename,
+    entry.timestamp,
+    entry.duration_ms,
+    entry.exit_code,
+    entry.mode,
+    entry.is_main,
+    entry.status,
+    entry.file_size,
+    entry.indexed_at,
+  );
+}
+
+export function queryContainerLogs(params: {
+  group?: string;
+  since?: string;
+  limit?: number;
+}): ContainerLogEntry[] {
+  const conditions: string[] = [];
+  const values: (string | number)[] = [];
+
+  if (params.group) {
+    conditions.push('group_folder = ?');
+    values.push(params.group);
+  }
+  if (params.since) {
+    conditions.push('timestamp >= ?');
+    values.push(params.since);
+  }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const limit = params.limit || 50;
+
+  return db
+    .prepare(
+      `SELECT * FROM container_logs ${where} ORDER BY indexed_at DESC LIMIT ?`,
+    )
+    .all(...values, limit) as ContainerLogEntry[];
+}
+
+export function isContainerLogIndexed(filename: string): boolean {
+  const row = db
+    .prepare('SELECT 1 FROM container_logs WHERE filename = ?')
+    .get(filename);
+  return !!row;
+}
+
+export function pruneOldLogs(retentionMs: number): number {
+  const cutoff = Date.now() - retentionMs;
+  const result = db.prepare('DELETE FROM logs WHERE time < ?').run(cutoff);
+  return result.changes;
+}
+
+export function getAllTaskRunLogs(
+  limit = 50,
+  offset = 0,
+): (TaskRunLog & {
+  prompt: string;
+  group_folder: string;
+  schedule_type: string;
+})[] {
+  return db
+    .prepare(
+      `
+    SELECT trl.task_id, trl.run_at, trl.duration_ms, trl.status, trl.result, trl.error,
+           st.prompt, st.group_folder, st.schedule_type
+    FROM task_run_logs trl
+    JOIN scheduled_tasks st ON trl.task_id = st.id
+    ORDER BY trl.run_at DESC
+    LIMIT ? OFFSET ?
+  `,
+    )
+    .all(limit, offset) as (TaskRunLog & {
+    prompt: string;
+    group_folder: string;
+    schedule_type: string;
+  })[];
 }

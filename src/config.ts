@@ -126,6 +126,31 @@ export function extractTelegramChatId(id: string): number {
   return Number(id.slice(3));
 }
 
+// Dashboard configuration
+export const DASHBOARD_ENABLED = process.env.DASHBOARD_ENABLED !== 'false';
+export const DASHBOARD_PORT = parseInt(
+  process.env.DASHBOARD_PORT || '7789',
+  10,
+);
+export const LOG_RETENTION_DAYS = parseInt(
+  process.env.LOG_RETENTION_DAYS || '7',
+  10,
+);
+export const DASHBOARD_TLS_CERT = process.env.DASHBOARD_TLS_CERT || '';
+export const DASHBOARD_TLS_KEY = process.env.DASHBOARD_TLS_KEY || '';
+// Explicit HTTPS URL for Telegram Web App (e.g. from tailscale serve/funnel).
+// When set, used for the menu button and /dashboard command instead of auto-detected URL.
+export const DASHBOARD_URL = process.env.DASHBOARD_URL || '';
+// HTTPS ports used by tailscale serve reverse proxy
+export const DASHBOARD_HTTPS_PORT = parseInt(
+  process.env.DASHBOARD_HTTPS_PORT || '7790',
+  10,
+);
+export const CUA_TAKEOVER_HTTPS_PORT = parseInt(
+  process.env.CUA_TAKEOVER_HTTPS_PORT || '7791',
+  10,
+);
+
 // Timezone for scheduled tasks (cron expressions, etc.)
 // Uses system timezone by default
 export const TIMEZONE =

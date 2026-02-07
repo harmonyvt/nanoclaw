@@ -32,6 +32,8 @@ import {
   getOldestWaitForUserRequest,
 } from './browse-host.js';
 import { getTakeoverUrl } from './cua-takeover-server.js';
+import { createSessionForOwner } from './dashboard-auth.js';
+import { getDashboardUrl } from './dashboard-server.js';
 import { downloadTelegramFile, transcribeAudio } from './media.js';
 import { logger } from './logger.js';
 import { ensureSandbox, getSandboxUrl } from './sandbox-manager.js';
@@ -235,6 +237,7 @@ type SlashCommandSpec = {
     | 'status'
     | 'update'
     | 'takeover'
+    | 'dashboard'
     | 'verbose'
     | 'help';
   description: string;
@@ -276,6 +279,11 @@ const TELEGRAM_SLASH_COMMANDS: SlashCommandSpec[] = [
     command: 'takeover',
     description: 'Force CUA takeover URL',
     help: 'Force a CUA takeover URL',
+  },
+  {
+    command: 'dashboard',
+    description: 'Open the realtime log dashboard',
+    help: 'Open the realtime log dashboard',
   },
   {
     command: 'verbose',
@@ -476,6 +484,24 @@ export async function connectTelegram(
     logger.error({ err }, 'Failed to register bot commands');
   }
 
+  // Set the persistent Menu Button (bottom-left "Open" button like BotFather)
+  // This opens the dashboard as a Telegram Web App when tapped.
+  const dashboardUrl = getDashboardUrl();
+  if (dashboardUrl) {
+    try {
+      await bot.api.setChatMenuButton({
+        menu_button: {
+          type: 'web_app',
+          text: 'Dashboard',
+          web_app: { url: dashboardUrl + '/app' },
+        },
+      });
+      logger.info({ url: dashboardUrl }, 'Dashboard menu button set');
+    } catch (err) {
+      logger.warn({ err }, 'Failed to set dashboard menu button');
+    }
+  }
+
   /**
    * Ensure the owner's chat is registered. Auto-registers as "main" on first contact.
    */
@@ -593,7 +619,8 @@ export async function connectTelegram(
         'Manual forced takeover requested from Telegram command.',
       );
 
-    const takeoverUrl = getTakeoverUrl(request.token);
+    const ownerSession = createSessionForOwner();
+    const takeoverUrl = getTakeoverUrl(request.token, ownerSession?.token);
     const sandboxUrl = getSandboxUrl();
     const takeoverLine = takeoverUrl
       ? `Take over CUA: ${takeoverUrl}`
@@ -606,6 +633,27 @@ export async function connectTelegram(
     await ctx.reply(
       `Forced takeover ready.\n${takeoverLine}${noVncLine}${requestLine}\n\nWhen done, click "Return Control To Agent" in the takeover page.\nFallback: reply "continue ${request.requestId}".`,
     );
+  });
+
+  bot.command('dashboard', async (ctx) => {
+    if (!shouldAccept(ctx)) return;
+
+    const dashboardBaseUrl = getDashboardUrl();
+    if (!dashboardBaseUrl) {
+      await ctx.reply(
+        'Dashboard is disabled. Set DASHBOARD_ENABLED=true to enable.',
+      );
+      return;
+    }
+
+    const kb = new InlineKeyboard().webApp(
+      'Open Dashboard',
+      dashboardBaseUrl + '/app',
+    );
+
+    await ctx.reply('Tap the button below to open the log dashboard.', {
+      reply_markup: kb,
+    });
   });
 
   bot.command('help', async (ctx) => {
