@@ -884,12 +884,12 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
 
       tool(
         'browse_click',
-        'Click an element by selector or description text.',
+        'Click an element by human-readable description text (selector-like hints are best-effort).',
         {
           selector: z
             .string()
             .describe(
-              'CSS selector or text content to click (e.g., "button.submit", "text=Sign In")',
+              'Description text to click (e.g., "text=Sign In", "Search"); CSS-like selectors are treated as hints',
             ),
         },
         async (args) => {
@@ -915,7 +915,7 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
           selector: z
             .string()
             .describe(
-              'CSS selector of the input field (e.g., "input[name=email]", "#password")',
+              'Description text of the input field (e.g., "Email", "Search"); CSS-like selectors are treated as hints',
             ),
           value: z.string().describe('The value to type into the field'),
         },
@@ -948,7 +948,9 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
             .number()
             .int()
             .optional()
-            .describe('Optional horizontal scroll delta. Positive=right, negative=left'),
+            .describe(
+              'Optional horizontal scroll delta. Positive=right, negative=left',
+            ),
         },
         async (args) => {
           const res = await writeBrowseRequest('scroll', {

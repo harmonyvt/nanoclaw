@@ -31,10 +31,18 @@ type CuaPayload = {
 };
 
 function detectImageMimeFromBytes(bytes: Buffer): string | null {
-  if (bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))) {
+  if (
+    bytes.length >= 8 &&
+    bytes.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))
+  ) {
     return 'image/png';
   }
-  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+  if (
+    bytes.length >= 3 &&
+    bytes[0] === 0xff &&
+    bytes[1] === 0xd8 &&
+    bytes[2] === 0xff
+  ) {
     return 'image/jpeg';
   }
   if (bytes.length >= 6) {
@@ -90,7 +98,9 @@ async function runCuaCommand(
   }
   const response = await client.commandRaw(command, args);
 
-  const contentType = (response.headers.get('content-type') || '').toLowerCase();
+  const contentType = (
+    response.headers.get('content-type') || ''
+  ).toLowerCase();
   const responseBytes = Buffer.from(await response.arrayBuffer());
 
   if (!response.ok) {
@@ -162,7 +172,10 @@ async function runCuaCommandWithFallback(
   let lastError: unknown;
   for (const attempt of attempts) {
     if (!CuaClient.isKnownCommandName(attempt.command)) {
-      logger.debug({ command: attempt.command }, 'Skipping unknown CUA command');
+      logger.debug(
+        { command: attempt.command },
+        'Skipping unknown CUA command',
+      );
       continue;
     }
     try {
@@ -297,7 +310,9 @@ async function focusBrowserWindow(): Promise<boolean> {
   return false;
 }
 
-async function stabilizeBrowserForScreenshot(groupFolder: string): Promise<void> {
+async function stabilizeBrowserForScreenshot(
+  groupFolder: string,
+): Promise<void> {
   const focusedWindow = await focusBrowserWindow();
   if (focusedWindow) {
     await sleep(250);
@@ -330,7 +345,9 @@ async function stabilizeBrowserForScreenshot(groupFolder: string): Promise<void>
     return;
   }
 
-  const reopened = await tryCuaCommandWithFallback(buildOpenUrlAttempts(lastUrl));
+  const reopened = await tryCuaCommandWithFallback(
+    buildOpenUrlAttempts(lastUrl),
+  );
   if (reopened) {
     await focusBrowserWindow();
     logger.debug(
@@ -341,11 +358,133 @@ async function stabilizeBrowserForScreenshot(groupFolder: string): Promise<void>
   }
 }
 
-function selectorToElementDescription(selector: string): string {
-  if (selector.startsWith('text=')) {
-    return selector.slice(5).trim();
+function normalizeSelectorToken(value: string): string {
+  return value.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function decodeCssSelectorValue(value: string): string {
+  const trimmed = value.trim();
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1).trim();
   }
-  return selector.trim();
+  return trimmed;
+}
+
+function addQueryCandidate(
+  target: Map<string, string>,
+  candidate: string | null | undefined,
+): void {
+  if (typeof candidate !== 'string') return;
+  const trimmed = candidate.trim();
+  if (!trimmed) return;
+  const key = normalizeForSearch(trimmed);
+  if (!target.has(key)) {
+    target.set(key, trimmed);
+  }
+}
+
+export function buildElementSearchQueries(selector: string): string[] {
+  const raw = selector.trim();
+  if (!raw) return [];
+
+  const candidates = new Map<string, string>();
+
+  if (raw.startsWith('text=')) {
+    addQueryCandidate(candidates, raw.slice(5));
+    return [...candidates.values()];
+  }
+
+  addQueryCandidate(candidates, raw);
+
+  const attrPattern =
+    /\[\s*([A-Za-z0-9:_-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\]\s]+))\s*\]/g;
+  let attrMatch: RegExpExecArray | null = null;
+  while ((attrMatch = attrPattern.exec(raw)) !== null) {
+    const attrName = (attrMatch[1] || '').toLowerCase();
+    const attrValue = decodeCssSelectorValue(
+      attrMatch[2] || attrMatch[3] || attrMatch[4] || '',
+    );
+    addQueryCandidate(candidates, attrValue);
+    addQueryCandidate(candidates, normalizeSelectorToken(attrValue));
+
+    if (attrName === 'type' && attrValue.toLowerCase() === 'search') {
+      addQueryCandidate(candidates, 'search');
+      addQueryCandidate(candidates, 'search box');
+    }
+    if (attrName === 'role' && attrValue.toLowerCase() === 'searchbox') {
+      addQueryCandidate(candidates, 'search');
+      addQueryCandidate(candidates, 'search box');
+    }
+  }
+
+  const idMatches = raw.match(/#[A-Za-z0-9_-]+/g) || [];
+  for (const match of idMatches) {
+    addQueryCandidate(candidates, normalizeSelectorToken(match.slice(1)));
+  }
+
+  const classMatches = raw.match(/\.[A-Za-z0-9_-]+/g) || [];
+  for (const match of classMatches) {
+    addQueryCandidate(candidates, normalizeSelectorToken(match.slice(1)));
+  }
+
+  if (raw.toLowerCase().includes('search')) {
+    addQueryCandidate(candidates, 'search');
+    addQueryCandidate(candidates, 'search box');
+  }
+
+  return [...candidates.values()];
+}
+
+function formatAttemptedQueries(queries: string[]): string {
+  if (queries.length === 0) return 'none';
+  const shown = queries.slice(0, 4);
+  const suffix =
+    queries.length > shown.length
+      ? ` (+${queries.length - shown.length} more)`
+      : '';
+  return `${shown.join(' | ')}${suffix}`;
+}
+
+type LocatedElement = {
+  coords: { x: number; y: number };
+  matchedQuery: string;
+};
+
+async function findElementCoordinates(
+  queries: string[],
+): Promise<LocatedElement | null> {
+  if (queries.length === 0) return null;
+
+  const retryDelaysMs = [0, 500, 1200];
+  for (const delay of retryDelaysMs) {
+    if (delay > 0) {
+      await sleep(delay);
+    }
+
+    for (const query of queries) {
+      let found: unknown;
+      try {
+        found = await runCuaCommandWithFallback([
+          { command: 'find_element', args: { description: query } },
+          { command: 'find_element', args: { query } },
+          { command: 'find_element', args: { title: query } },
+          { command: 'find_element', args: { selector: query } },
+        ]);
+      } catch {
+        continue;
+      }
+
+      const coords = extractCoordinates(found);
+      if (coords) {
+        return { coords, matchedQuery: query };
+      }
+    }
+  }
+
+  return null;
 }
 
 function extractCoordinates(input: unknown): { x: number; y: number } | null {
@@ -388,16 +527,24 @@ function toSnapshotComparableString(input: unknown): string {
   }
 }
 
-function didSnapshotChange(before: unknown | null, after: unknown | null): boolean | null {
+function didSnapshotChange(
+  before: unknown | null,
+  after: unknown | null,
+): boolean | null {
   if (before === null || after === null) return null;
-  return toSnapshotComparableString(before) !== toSnapshotComparableString(after);
+  return (
+    toSnapshotComparableString(before) !== toSnapshotComparableString(after)
+  );
 }
 
 function normalizeForSearch(value: string): string {
   return value.replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
-function snapshotContainsText(snapshot: unknown | null, needle: string): boolean | null {
+function snapshotContainsText(
+  snapshot: unknown | null,
+  needle: string,
+): boolean | null {
   const normalizedNeedle = normalizeForSearch(needle);
   if (!normalizedNeedle) return null;
   if (snapshot === null) return null;
@@ -441,7 +588,9 @@ function extractBase64Png(input: unknown): string | null {
       }
     }
 
-    const dataUrlMatch = value.match(/^data:image\/[A-Za-z0-9.+-]+;base64,(.+)$/s);
+    const dataUrlMatch = value.match(
+      /^data:image\/[A-Za-z0-9.+-]+;base64,(.+)$/s,
+    );
     if (dataUrlMatch) {
       return dataUrlMatch[1].replace(/\s/g, '');
     }
@@ -620,20 +769,19 @@ async function processCuaRequest(
     }
     case 'click': {
       const selector = String(params.selector || '');
-      const description = selectorToElementDescription(selector);
+      const queries = buildElementSearchQueries(selector);
       const beforeSnapshot = await getAccessibilitySnapshotSafe();
-      const found = await runCuaCommandWithFallback([
-        { command: 'find_element', args: { description } },
-        { command: 'find_element', args: { query: description } },
-      ]);
-      const coords = extractCoordinates(found);
-      if (!coords) {
+      const located = await findElementCoordinates(queries);
+      if (!located) {
         return {
           status: 'error',
-          error: `CUA could not locate element for selector/description: ${selector}`,
+          error: `CUA could not locate element for selector/description: ${selector}; attempted queries: ${formatAttemptedQueries(queries)}`,
         };
       }
-      await runCuaCommand('left_click', { x: coords.x, y: coords.y });
+      await runCuaCommand('left_click', {
+        x: located.coords.x,
+        y: located.coords.y,
+      });
       await sleep(250);
       const afterSnapshot = await getAccessibilitySnapshotSafe();
       const changed = didSnapshotChange(beforeSnapshot, afterSnapshot);
@@ -645,26 +793,25 @@ async function processCuaRequest(
             : 'not confirmed (snapshot unavailable)';
       return {
         status: 'ok',
-        result: `clicked (${coords.x}, ${coords.y})${verificationSuffix(verify)}`,
+        result: `clicked (${located.coords.x}, ${located.coords.y})${verificationSuffix(verify)}; matched query: ${located.matchedQuery}`,
       };
     }
     case 'fill': {
       const selector = String(params.selector || '');
       const value = String(params.value || '');
-      const description = selectorToElementDescription(selector);
+      const queries = buildElementSearchQueries(selector);
       const beforeSnapshot = await getAccessibilitySnapshotSafe();
-      const found = await runCuaCommandWithFallback([
-        { command: 'find_element', args: { description } },
-        { command: 'find_element', args: { query: description } },
-      ]);
-      const coords = extractCoordinates(found);
-      if (!coords) {
+      const located = await findElementCoordinates(queries);
+      if (!located) {
         return {
           status: 'error',
-          error: `CUA could not locate input for selector/description: ${selector}`,
+          error: `CUA could not locate input for selector/description: ${selector}; attempted queries: ${formatAttemptedQueries(queries)}`,
         };
       }
-      await runCuaCommand('left_click', { x: coords.x, y: coords.y });
+      await runCuaCommand('left_click', {
+        x: located.coords.x,
+        y: located.coords.y,
+      });
       await runCuaCommandWithFallback([
         { command: 'type', args: { text: value } },
         { command: 'type_text', args: { text: value } },
@@ -683,7 +830,7 @@ async function processCuaRequest(
               : 'not confirmed (snapshot unavailable)';
       return {
         status: 'ok',
-        result: `filled (${coords.x}, ${coords.y})${verificationSuffix(verify)}`,
+        result: `filled (${located.coords.x}, ${located.coords.y})${verificationSuffix(verify)}; matched query: ${located.matchedQuery}`,
       };
     }
     case 'scroll': {
