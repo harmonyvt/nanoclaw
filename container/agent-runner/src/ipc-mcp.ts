@@ -838,6 +838,231 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
         },
       ),
 
+      // --- Supermemory tools (direct API calls, no IPC needed) ---
+
+      tool(
+        'memory_save',
+        'Save a note, fact, or piece of information to long-term memory (Supermemory). Use this to explicitly remember important context, preferences, or decisions that should persist across conversations.',
+        {
+          content: z
+            .string()
+            .describe(
+              'The text content to save to memory. Can be a fact, note, summary, or any information worth remembering.',
+            ),
+          metadata: z
+            .record(z.string(), z.string())
+            .optional()
+            .describe(
+              'Optional key-value metadata (e.g., {"category": "preference", "topic": "coding"})',
+            ),
+        },
+        async (args) => {
+          const smApiKey = process.env.SUPERMEMORY_API_KEY;
+          if (!smApiKey) {
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: 'SUPERMEMORY_API_KEY is not set. Ask the admin to configure the Supermemory API key.',
+                },
+              ],
+              isError: true,
+            };
+          }
+
+          try {
+            const res = await fetch(
+              'https://api.supermemory.ai/v3/documents',
+              {
+                method: 'POST',
+                headers: {
+                  Authorization: `Bearer ${smApiKey}`,
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                  content: args.content,
+                  containerTags: [`nanoclaw_${groupFolder}`],
+                  metadata: {
+                    type: 'explicit_save',
+                    ...args.metadata,
+                  },
+                }),
+              },
+            );
+
+            if (res.status === 429) {
+              return {
+                content: [
+                  {
+                    type: 'text',
+                    text: 'Supermemory rate limit exceeded. Please wait a moment and try again.',
+                  },
+                ],
+                isError: true,
+              };
+            }
+
+            if (!res.ok) {
+              const body = await res.text();
+              return {
+                content: [
+                  {
+                    type: 'text',
+                    text: `Supermemory save failed (HTTP ${res.status}): ${body.slice(0, 500)}`,
+                  },
+                ],
+                isError: true,
+              };
+            }
+
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: 'Memory saved successfully.',
+                },
+              ],
+            };
+          } catch (err) {
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: `Supermemory save error: ${err instanceof Error ? err.message : String(err)}`,
+                },
+              ],
+              isError: true,
+            };
+          }
+        },
+      ),
+
+      tool(
+        'memory_search',
+        'Search long-term memory (Supermemory) for relevant past information, conversations, and facts. Use this to recall context from previous conversations or explicitly saved memories.',
+        {
+          query: z
+            .string()
+            .describe(
+              'Natural language search query describing what you want to recall',
+            ),
+          limit: z
+            .number()
+            .optional()
+            .describe('Maximum number of results to return (default: 10)'),
+        },
+        async (args) => {
+          const smApiKey = process.env.SUPERMEMORY_API_KEY;
+          if (!smApiKey) {
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: 'SUPERMEMORY_API_KEY is not set. Ask the admin to configure the Supermemory API key.',
+                },
+              ],
+              isError: true,
+            };
+          }
+
+          try {
+            const res = await fetch('https://api.supermemory.ai/v4/search', {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${smApiKey}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                q: args.query,
+                containerTag: `nanoclaw_${groupFolder}`,
+                searchMode: 'hybrid',
+                limit: args.limit ?? 10,
+                threshold: 0.5,
+                rerank: true,
+                rewriteQuery: false,
+              }),
+            });
+
+            if (res.status === 429) {
+              return {
+                content: [
+                  {
+                    type: 'text',
+                    text: 'Supermemory rate limit exceeded. Please wait a moment and try again.',
+                  },
+                ],
+                isError: true,
+              };
+            }
+
+            if (!res.ok) {
+              const body = await res.text();
+              return {
+                content: [
+                  {
+                    type: 'text',
+                    text: `Supermemory search failed (HTTP ${res.status}): ${body.slice(0, 500)}`,
+                  },
+                ],
+                isError: true,
+              };
+            }
+
+            const data = (await res.json()) as {
+              results?: Array<{
+                memory?: string;
+                chunk?: string;
+                similarity?: number;
+              }>;
+            };
+
+            const results = (data.results || [])
+              .map((r) => ({
+                text: r.memory || r.chunk || '',
+                similarity: r.similarity ?? 0,
+              }))
+              .filter((r) => r.text.trim());
+
+            if (results.length === 0) {
+              return {
+                content: [
+                  {
+                    type: 'text',
+                    text: 'No matching memories found.',
+                  },
+                ],
+              };
+            }
+
+            const formatted = results
+              .map(
+                (r, i) =>
+                  `${i + 1}. [relevance: ${r.similarity.toFixed(2)}] ${r.text}`,
+              )
+              .join('\n\n');
+
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: `Found ${results.length} memories:\n\n${formatted}`,
+                },
+              ],
+            };
+          } catch (err) {
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: `Supermemory search error: ${err instanceof Error ? err.message : String(err)}`,
+                },
+              ],
+              isError: true,
+            };
+          }
+        },
+      ),
+
       // --- Browser automation tools (IPC request/response to host) ---
 
       tool(

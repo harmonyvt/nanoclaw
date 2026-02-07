@@ -32,6 +32,7 @@ Telegram <-> Host (Bun) <-> SQLite
 | `src/browse-host.ts`      | Host-side browse bridge for CUA `/cmd` actions                     |
 | `src/sandbox-manager.ts`  | CUA sandbox lifecycle: start/stop/idle timeout (Docker)            |
 | `src/mount-security.ts`   | Validates additional mounts against external allowlist             |
+| `src/supermemory.ts`      | Optional Supermemory integration: retrieve/store long-term memory  |
 | `src/types.ts`            | Shared TypeScript interfaces                                       |
 | `src/logger.ts`           | Pino logger with pino-pretty                                       |
 | `src/utils.ts`            | `loadJson` / `saveJson` helpers                                    |
@@ -168,6 +169,13 @@ Per-group IPC directories prevent cross-group access. Non-main groups can only s
 - `firecrawl_crawl` -- Multi-page crawl with depth/limit (100KB max)
 - `firecrawl_map` -- Discover all URLs on a domain
 
+### Long-term Memory (Supermemory)
+
+- `memory_save` -- Explicitly save a note/fact to long-term memory
+- `memory_search` -- Search past memories and conversations
+
+Requires `SUPERMEMORY_API_KEY`. When enabled, memories are also automatically retrieved before each agent invocation and stored after each response.
+
 ### Built-in Claude Tools
 
 - `Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, `WebSearch`, `WebFetch`
@@ -210,6 +218,7 @@ Per-group IPC directories prevent cross-group access. Non-main groups can only s
 | --------------------------- | ------------------------ | --------------------------------------- |
 | `OPENAI_API_KEY`            | --                       | Whisper audio transcription             |
 | `FIRECRAWL_API_KEY`         | --                       | Firecrawl web scraping                  |
+| `SUPERMEMORY_API_KEY`       | --                       | Supermemory long-term memory            |
 | `ASSISTANT_NAME`            | `Andy`                   | Bot trigger name (`@Name`)              |
 | `CONTAINER_IMAGE`           | `nanoclaw-agent:latest`  | Docker image for agent containers       |
 | `CONTAINER_TIMEOUT`         | `300000` (5 min)         | Container execution timeout (ms)        |
