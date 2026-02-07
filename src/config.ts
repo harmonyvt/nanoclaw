@@ -120,3 +120,8 @@ export function extractTelegramChatId(id: string): number {
 // Uses system timezone by default
 export const TIMEZONE =
   process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+// Default AI provider configuration
+// Groups without explicit providerConfig use these values
+export const DEFAULT_PROVIDER = process.env.DEFAULT_PROVIDER || 'anthropic';
+export const DEFAULT_MODEL = process.env.DEFAULT_MODEL || '';

@@ -5,6 +5,8 @@ import path from 'path';
 import {
   ASSISTANT_NAME,
   DATA_DIR,
+  DEFAULT_MODEL,
+  DEFAULT_PROVIDER,
   GROUPS_DIR,
   MAIN_GROUP_FOLDER,
   SCHEDULER_POLL_INTERVAL,
@@ -87,6 +89,9 @@ async function runTask(
     task.context_mode === 'group' ? sessions[task.group_folder] : undefined;
 
   try {
+    const provider = group.providerConfig?.provider || DEFAULT_PROVIDER;
+    const model = group.providerConfig?.model || DEFAULT_MODEL || undefined;
+
     const output = await runContainerAgent(group, {
       prompt: task.prompt,
       sessionId,
@@ -95,6 +100,8 @@ async function runTask(
       isMain,
       isScheduledTask: true,
       assistantName: ASSISTANT_NAME,
+      provider,
+      model,
     });
 
     if (output.status === 'error') {
