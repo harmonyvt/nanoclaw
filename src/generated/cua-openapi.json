@@ -1,0 +1,260 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Computer API",
+    "description": "API for the Computer project",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/status": {
+      "get": {
+        "summary": "Status",
+        "operationId": "status_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/commands": {
+      "get": {
+        "summary": "List Commands",
+        "description": "List all available commands and their aliases.",
+        "operationId": "list_commands_commands_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/cmd": {
+      "post": {
+        "summary": "Cmd Endpoint",
+        "description": "Backup endpoint for when WebSocket connections fail.\nAccepts commands via HTTP POST with streaming response.\n\nHeaders:\n- X-Container-Name: Container name for cloud authentication\n- X-API-Key: API key for cloud authentication\n\nBody:\n{\n    \"command\": \"command_name\",\n    \"params\": {...}\n}",
+        "operationId": "cmd_endpoint_cmd_post",
+        "parameters": [
+          {
+            "name": "X-Container-Name",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Container-Name"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/responses": {
+      "post": {
+        "summary": "Agent Response Endpoint",
+        "description": "Minimal proxy to run ComputerAgent for up to 2 turns.\n\nSecurity:\n- If CONTAINER_NAME is set on the server, require X-API-Key\n  and validate using AuthenticationManager unless CUA_ENABLE_PUBLIC_PROXY is true.\n\nBody JSON:\n{\n  \"model\": \"...\",                 # required\n  \"input\": \"... or messages[]\",   # required\n  \"agent_kwargs\": { ... },         # optional, passed directly to ComputerAgent\n  \"env\": { ... }                   # optional env overrides for agent\n}",
+        "operationId": "agent_response_endpoint_responses_post",
+        "parameters": [
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/playwright_exec": {
+      "post": {
+        "summary": "Playwright Exec Endpoint",
+        "description": "Execute Playwright browser commands.\n\nHeaders:\n- X-Container-Name: Container name for cloud authentication\n- X-API-Key: API key for cloud authentication\n\nBody:\n{\n    \"command\": \"visit_url|click|type|scroll|web_search\",\n    \"params\": {...}\n}",
+        "operationId": "playwright_exec_endpoint_playwright_exec_post",
+        "parameters": [
+          {
+            "name": "X-Container-Name",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Container-Name"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}
