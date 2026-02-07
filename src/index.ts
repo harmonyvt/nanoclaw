@@ -5,6 +5,8 @@ import path from 'path';
 import {
   ASSISTANT_NAME,
   DATA_DIR,
+  DEBUG_THREADS,
+  GROUPS_DIR,
   IPC_POLL_INTERVAL,
   MAIN_GROUP_FOLDER,
   POLL_INTERVAL,
@@ -15,7 +17,9 @@ import {
 } from './config.js';
 import {
   AvailableGroup,
+  killAllContainers,
   runContainerAgent,
+  startContainerIdleCleanup,
   writeGroupsSnapshot,
   writeTasksSnapshot,
 } from './container-runner.js';
@@ -30,12 +34,26 @@ import { startSchedulerLoop } from './task-scheduler.js';
 import {
   connectTelegram,
   sendTelegramMessage,
+  sendTelegramPhoto,
   setTelegramTyping,
   stopTelegram,
 } from './telegram.js';
+import type { SessionManager } from './telegram.js';
 import { NewMessage, RegisteredGroup, Session } from './types.js';
 import { loadJson, saveJson } from './utils.js';
 import { logger } from './logger.js';
+import {
+  processBrowseRequest,
+  resolveWaitForUser,
+  hasWaitingRequests,
+  disconnectBrowser,
+} from './browse-host.js';
+import { cleanupOldMedia } from './media.js';
+import {
+  cleanupSandbox,
+  startIdleWatcher,
+  getSandboxUrl,
+} from './sandbox-manager.js';
 
 let lastTimestamp = '';
 let sessions: Session = {};
@@ -112,6 +130,15 @@ async function processMessage(msg: NewMessage): Promise<void> {
   const content = msg.content.trim();
   const isMainGroup = group.folder === MAIN_GROUP_FOLDER;
 
+  // Check if user is saying "continue" to unblock a browse_wait_for_user request
+  if (/^continue$/i.test(content) && hasWaitingRequests()) {
+    const resolved = resolveWaitForUser();
+    if (resolved) {
+      logger.info({ chatJid: msg.chat_jid }, 'Browse wait_for_user resolved by user');
+      return;
+    }
+  }
+
   // Main group responds to all messages; other groups require trigger prefix
   if (!isMainGroup && !TRIGGER_PATTERN.test(content)) return;
 
@@ -131,7 +158,19 @@ async function processMessage(msg: NewMessage): Promise<void> {
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;');
-    return `<message sender="${escapeXml(m.sender_name)}" time="${m.timestamp}">${escapeXml(m.content)}</message>`;
+
+    // Build optional media attributes
+    let mediaAttrs = '';
+    if (m.media_type && m.media_path) {
+      // Translate host path to container path: groups/{folder}/media/file -> /workspace/group/media/file
+      const groupDir = path.join(GROUPS_DIR, group.folder);
+      const containerPath = m.media_path.startsWith(groupDir)
+        ? '/workspace/group' + m.media_path.slice(groupDir.length)
+        : m.media_path;
+      mediaAttrs = ` media_type="${escapeXml(m.media_type)}" media_path="${escapeXml(containerPath)}"`;
+    }
+
+    return `<message sender="${escapeXml(m.sender_name)}" time="${m.timestamp}"${mediaAttrs}>${escapeXml(m.content)}</message>`;
   });
   const prompt = `<messages>\n${lines.join('\n')}\n</messages>`;
 
@@ -148,7 +187,14 @@ async function processMessage(msg: NewMessage): Promise<void> {
 
   if (response) {
     lastAgentTimestamp[msg.chat_jid] = msg.timestamp;
-    await sendMessage(msg.chat_jid, `${ASSISTANT_NAME}: ${response}`);
+    let text = response;
+    if (DEBUG_THREADS) {
+      const threadId = sessions[group.folder];
+      if (threadId) {
+        text += `\n[thread: ${threadId.slice(0, 8)}]`;
+      }
+    }
+    await sendMessage(msg.chat_jid, text);
   }
 }
 
@@ -265,7 +311,7 @@ function startIpcWatcher(): void {
                 ) {
                   await sendMessage(
                     data.chatJid,
-                    `${ASSISTANT_NAME}: ${data.text}`,
+                    data.text,
                   );
                   logger.info(
                     { chatJid: data.chatJid, sourceGroup },
@@ -329,6 +375,121 @@ function startIpcWatcher(): void {
         }
       } catch (err) {
         logger.error({ err, sourceGroup }, 'Error reading IPC tasks directory');
+      }
+
+      // Process browse requests from this group's IPC directory
+      const browseDir = path.join(ipcBaseDir, sourceGroup, 'browse');
+      try {
+        if (fs.existsSync(browseDir)) {
+          const reqFiles = fs
+            .readdirSync(browseDir)
+            .filter((f) => f.startsWith('req-') && f.endsWith('.json'));
+          for (const file of reqFiles) {
+            const filePath = path.join(browseDir, file);
+            try {
+              const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+              const { id: requestId, action, params } = data;
+
+              // For wait_for_user, send Telegram notification first
+              if (action === 'wait_for_user' && params?.message) {
+                const chatJid = Object.entries(registeredGroups).find(
+                  ([, g]) => g.folder === sourceGroup,
+                )?.[0];
+                if (chatJid) {
+                  const sandboxUrl = getSandboxUrl();
+                  const urlPart = sandboxUrl ? `\nBrowser: ${sandboxUrl}` : '';
+                  await sendMessage(
+                    chatJid,
+                    `${params.message}${urlPart}\n\nReply "continue" when ready.`,
+                  );
+                }
+              }
+
+              // Process the browse request (may be async for wait_for_user)
+              const result = await processBrowseRequest(
+                requestId,
+                action,
+                params || {},
+                sourceGroup,
+                browseDir,
+              );
+
+              // Write response file (atomic: temp + rename)
+              const resFile = path.join(browseDir, `res-${requestId}.json`);
+              const tmpFile = `${resFile}.tmp`;
+              fs.writeFileSync(tmpFile, JSON.stringify(result));
+              fs.renameSync(tmpFile, resFile);
+
+              // Clean up request file
+              fs.unlinkSync(filePath);
+
+              // Send screenshots as Telegram photos for better UX
+              if (
+                action === 'screenshot' &&
+                result.status === 'ok' &&
+                result.result
+              ) {
+                const chatJid = Object.entries(registeredGroups).find(
+                  ([, g]) => g.folder === sourceGroup,
+                )?.[0];
+                if (chatJid) {
+                  // Translate container path back to host path
+                  const containerPath = result.result as string;
+                  const hostPath = path.join(
+                    GROUPS_DIR,
+                    sourceGroup,
+                    'media',
+                    path.basename(containerPath),
+                  );
+                  try {
+                    await sendTelegramPhoto(chatJid, hostPath, 'Screenshot');
+                  } catch (photoErr) {
+                    logger.warn(
+                      { photoErr, hostPath },
+                      'Failed to send screenshot as Telegram photo',
+                    );
+                  }
+                }
+              }
+
+              logger.debug(
+                { requestId, action, sourceGroup, status: result.status },
+                'Browse request processed',
+              );
+            } catch (err) {
+              logger.error(
+                { file, sourceGroup, err },
+                'Error processing browse request',
+              );
+              // Write error response so agent doesn't hang
+              try {
+                const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+                const resFile = path.join(browseDir, `res-${data.id}.json`);
+                const tmpFile = `${resFile}.tmp`;
+                fs.writeFileSync(
+                  tmpFile,
+                  JSON.stringify({
+                    status: 'error',
+                    error: err instanceof Error ? err.message : String(err),
+                  }),
+                );
+                fs.renameSync(tmpFile, resFile);
+              } catch {
+                // Can't even write error response
+              }
+              try {
+                fs.unlinkSync(filePath);
+              } catch {
+                // Already cleaned up
+              }
+            }
+          }
+        }
+      } catch (err) {
+        logger.error(
+          { err, sourceGroup },
+          'Error reading IPC browse directory',
+        );
       }
     }
 
@@ -624,21 +785,46 @@ async function main(): Promise<void> {
   initDatabase();
   logger.info('Database initialized');
   loadState();
-  connectTelegram(() => registeredGroups);
+  // Clean up old media files on startup (7 day retention)
+  for (const group of Object.values(registeredGroups)) {
+    cleanupOldMedia(path.join(GROUPS_DIR, group.folder, 'media'), 7);
+  }
+
+  const sessionManager: SessionManager = {
+    getSession(chatJid: string): string | undefined {
+      const group = registeredGroups[chatJid];
+      if (!group) return undefined;
+      return sessions[group.folder];
+    },
+    clearSession(chatJid: string): void {
+      const group = registeredGroups[chatJid];
+      if (group && sessions[group.folder]) {
+        delete sessions[group.folder];
+        saveJson(path.join(DATA_DIR, 'sessions.json'), sessions);
+      }
+    },
+  };
+
+  await connectTelegram(() => registeredGroups, registerGroup, sessionManager);
   startSchedulerLoop({
     sendMessage,
     registeredGroups: () => registeredGroups,
     getSessions: () => sessions,
   });
   startIpcWatcher();
+  startIdleWatcher();
+  startContainerIdleCleanup();
   startMessageLoop();
 }
 
 // Graceful shutdown
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-  process.on(signal, () => {
+  process.on(signal, async () => {
     logger.info({ signal }, 'Shutting down');
     stopTelegram();
+    killAllContainers();
+    await disconnectBrowser();
+    cleanupSandbox();
     process.exit(0);
   });
 }
