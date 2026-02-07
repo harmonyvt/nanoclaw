@@ -252,9 +252,9 @@ async function processMessage(msg: NewMessage): Promise<void> {
     }
     await sendMessage(msg.chat_jid, text);
 
-    // Store interaction to Supermemory (fire-and-forget)
+    // Store interaction to Supermemory (non-blocking)
     if (isSupermemoryEnabled()) {
-      storeInteraction(group.folder, messagesXml, response, {
+      void storeInteraction(group.folder, messagesXml, response, {
         threadId: sessions[group.folder],
         timestamp: msg.timestamp,
         groupName: group.name,
