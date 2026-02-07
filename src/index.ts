@@ -93,6 +93,10 @@ import {
   startDashboardServer,
   stopDashboardServer,
 } from './dashboard-server.js';
+import {
+  initTailscaleServe,
+  stopTailscaleServe,
+} from './tailscale-serve.js';
 
 let lastTimestamp = '';
 let sessions: Session = {};
@@ -1281,6 +1285,7 @@ async function main(): Promise<void> {
   startSchedulerLoop(schedulerDeps);
   startCuaTakeoverServer();
   startDashboardServer();
+  initTailscaleServe();
   startIpcWatcher();
   startIdleWatcher();
   startContainerIdleCleanup();
@@ -1294,6 +1299,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     stopTelegram();
     killAllContainers();
     await disconnectBrowser();
+    stopTailscaleServe();
     stopDashboardServer();
     stopLogSync();
     stopCuaTakeoverServer();

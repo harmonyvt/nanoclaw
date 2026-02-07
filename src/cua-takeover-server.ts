@@ -4,6 +4,7 @@ import {
   getSandboxUrl,
   resetIdleTimer,
 } from './sandbox-manager.js';
+import { getTailscaleHttpsUrl } from './tailscale-serve.js';
 import {
   getWaitForUserRequestByToken,
   resolveWaitForUserByToken,
@@ -61,6 +62,8 @@ function extractContinueToken(pathname: string): string | null {
 
 export function getTakeoverBaseUrl(): string | null {
   if (!CUA_TAKEOVER_WEB_ENABLED) return null;
+  const tsUrl = getTailscaleHttpsUrl(CUA_TAKEOVER_WEB_PORT);
+  if (tsUrl) return tsUrl;
   return `http://${getSandboxHostIp()}:${CUA_TAKEOVER_WEB_PORT}`;
 }
 

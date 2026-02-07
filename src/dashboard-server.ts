@@ -10,6 +10,7 @@ import {
   GROUPS_DIR,
 } from './config.js';
 import { getSandboxHostIp } from './sandbox-manager.js';
+import { getTailscaleHttpsUrl } from './tailscale-serve.js';
 import { logger } from './logger.js';
 import {
   validateTelegramInitData,
@@ -954,8 +955,11 @@ function handleRequest(req: Request): Response | Promise<Response> {
 
 export function getDashboardUrl(): string | null {
   if (!DASHBOARD_ENABLED) return null;
-  // Prefer explicit DASHBOARD_URL (e.g. from tailscale serve/funnel HTTPS proxy)
+  // Prefer explicit DASHBOARD_URL (e.g. manual override)
   if (DASHBOARD_URL) return DASHBOARD_URL.replace(/\/$/, '');
+  // Prefer auto-detected tailscale HTTPS URL
+  const tsUrl = getTailscaleHttpsUrl(DASHBOARD_PORT);
+  if (tsUrl) return tsUrl;
   const ip = getSandboxHostIp();
   const protocol =
     DASHBOARD_TLS_CERT && DASHBOARD_TLS_KEY ? 'https' : 'http';
