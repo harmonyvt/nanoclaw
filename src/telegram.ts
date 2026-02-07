@@ -406,6 +406,7 @@ export async function connectTelegram(
   // --- Inline keyboard callback handler ---
 
   bot.on('callback_query:data', async (ctx) => {
+    if (!shouldAccept(ctx)) return;
     const data = ctx.callbackQuery.data;
     if (!data.startsWith('t:')) return;
 
