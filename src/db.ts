@@ -270,6 +270,16 @@ export function getTaskById(id: string): ScheduledTask | undefined {
     | undefined;
 }
 
+/**
+ * Find a task by a suffix/partial ID match (for inline keyboard short IDs).
+ * Used when callback data is limited to 64 bytes and we only store the last 8 chars.
+ */
+export function getTaskByShortId(shortId: string): ScheduledTask | undefined {
+  return db
+    .prepare("SELECT * FROM scheduled_tasks WHERE id LIKE '%' || ?")
+    .get(shortId) as ScheduledTask | undefined;
+}
+
 export function getTasksForGroup(groupFolder: string): ScheduledTask[] {
   return db
     .prepare(

@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 
 import {
+  ASSISTANT_NAME,
   DATA_DIR,
   GROUPS_DIR,
   MAIN_GROUP_FOLDER,
@@ -93,6 +94,7 @@ async function runTask(
       chatJid: task.chat_jid,
       isMain,
       isScheduledTask: true,
+      assistantName: ASSISTANT_NAME,
     });
 
     if (output.status === 'error') {
@@ -139,6 +141,32 @@ async function runTask(
       ? result.slice(0, 200)
       : 'Completed';
   updateTaskAfterRun(task.id, nextRun, resultSummary);
+}
+
+/**
+ * Manually trigger a task for immediate execution.
+ * Does not affect the task's next_run or status -- the regular scheduler handles that.
+ */
+export async function runTaskNow(
+  taskId: string,
+  deps: SchedulerDependencies,
+): Promise<{ success: boolean; error?: string; durationMs?: number }> {
+  const task = getTaskById(taskId);
+  if (!task) {
+    return { success: false, error: 'Task not found' };
+  }
+
+  const startTime = Date.now();
+  try {
+    await runTask(task, deps);
+    return { success: true, durationMs: Date.now() - startTime };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+      durationMs: Date.now() - startTime,
+    };
+  }
 }
 
 let schedulerRunning = false;

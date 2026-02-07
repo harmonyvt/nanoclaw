@@ -22,6 +22,7 @@ interface ContainerInput {
   chatJid: string;
   isMain: boolean;
   isScheduledTask?: boolean;
+  assistantName?: string;
 }
 
 interface ContainerOutput {
@@ -123,7 +124,7 @@ function getSessionSummary(sessionId: string, transcriptPath: string): string | 
   return null;
 }
 
-function createPreCompactHook(): HookCallback {
+function createPreCompactHook(assistantName?: string): HookCallback {
   return async (input, _toolUseId, _context) => {
     const preCompact = input as PreCompactHookInput;
     const transcriptPath = preCompact.transcript_path;
@@ -153,7 +154,7 @@ function createPreCompactHook(): HookCallback {
       const filename = `${date}-${name}.md`;
       const filePath = path.join(conversationsDir, filename);
 
-      const markdown = formatTranscriptMarkdown(messages, summary);
+      const markdown = formatTranscriptMarkdown(messages, summary, assistantName);
       fs.writeFileSync(filePath, markdown);
 
       log(`Archived conversation to ${filePath}`);
@@ -209,7 +210,7 @@ function parseTranscript(content: string): ParsedMessage[] {
   return messages;
 }
 
-function formatTranscriptMarkdown(messages: ParsedMessage[], title?: string | null): string {
+function formatTranscriptMarkdown(messages: ParsedMessage[], title?: string | null, assistantName?: string): string {
   const now = new Date();
   const formatDateTime = (d: Date) => d.toLocaleString('en-US', {
     month: 'short',
@@ -228,7 +229,7 @@ function formatTranscriptMarkdown(messages: ParsedMessage[], title?: string | nu
   lines.push('');
 
   for (const msg of messages) {
-    const sender = msg.role === 'user' ? 'User' : 'Andy';
+    const sender = msg.role === 'user' ? 'User' : (assistantName || 'Assistant');
     const content = msg.content.length > 2000
       ? msg.content.slice(0, 2000) + '...'
       : msg.content;
@@ -252,8 +253,24 @@ async function runQuery(input: ContainerInput): Promise<ContainerOutput> {
   let newSessionId: string | undefined;
 
   let prompt = input.prompt;
+
+  // Inject SOUL.md personality into prompt
+  const soulPath = '/workspace/group/SOUL.md';
+  try {
+    if (fs.existsSync(soulPath)) {
+      const soulContent = fs.readFileSync(soulPath, 'utf-8').trim();
+      if (soulContent) {
+        prompt = `<soul>\n${soulContent}\n</soul>\n\n${prompt}`;
+      }
+    } else if (!input.isScheduledTask) {
+      prompt = `<soul_setup>\nYou don't have a personality defined yet (no SOUL.md file). Introduce yourself briefly and ask the user if they'd like to give you a name and personality. If they do, create /workspace/group/SOUL.md with what they describe. Until then, be helpful and friendly.\n</soul_setup>\n\n${prompt}`;
+    }
+  } catch (err) {
+    log(`Failed to read SOUL.md: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
   if (input.isScheduledTask) {
-    prompt = `[SCHEDULED TASK - You are running automatically, not in response to a user message. Use mcp__nanoclaw__send_message if needed to communicate with the user.]\n\n${input.prompt}`;
+    prompt = `[SCHEDULED TASK - You are running automatically, not in response to a user message. Use mcp__nanoclaw__send_message if needed to communicate with the user.]\n\n${prompt}`;
   }
 
   try {
@@ -277,7 +294,7 @@ async function runQuery(input: ContainerInput): Promise<ContainerOutput> {
           nanoclaw: ipcMcp
         },
         hooks: {
-          PreCompact: [{ hooks: [createPreCompactHook()] }]
+          PreCompact: [{ hooks: [createPreCompactHook(input.assistantName)] }]
         }
       }
     })) {
