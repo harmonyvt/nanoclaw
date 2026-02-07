@@ -12,6 +12,8 @@
     "format": "prettier --write \"src/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.ts\"",
     "test": "bun test",
+    "generate:cua-client": "bun scripts/generate-cua-client.ts",
+    "setup:envs": "bun run scripts/setup-envs.ts",
     "docker:requirements": "./scripts/ensure-docker-requirements.sh",
     "deploy:macos": "./scripts/deploy-launchd.sh",
     "deploy:linux": "./scripts/deploy-systemd.sh"

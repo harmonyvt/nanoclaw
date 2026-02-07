@@ -80,6 +80,24 @@ interface PersistentContainer {
 const runningContainers = new Map<string, PersistentContainer>();
 let idleCleanupTimer: ReturnType<typeof setInterval> | null = null;
 
+function sanitizeDockerNamePart(input: string): string {
+  const value = input.toLowerCase().replace(/[^a-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '');
+  return value || 'default';
+}
+
+function getPersistentContainerName(groupFolder: string): string {
+  const prefix = 'nanoclaw-agent-';
+  const sanitized = sanitizeDockerNamePart(groupFolder);
+  return `${prefix}${sanitized}`.slice(0, 63);
+}
+
+function getOneShotContainerName(groupFolder: string): string {
+  const prefix = 'nanoclaw-oneshot-';
+  const sanitized = sanitizeDockerNamePart(groupFolder);
+  const suffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  return `${prefix}${sanitized}-${suffix}`.slice(0, 63);
+}
+
 // ─── Credential Resolution ───────────────────────────────────────────────────
 
 function getHomeDir(): string {
@@ -351,8 +369,14 @@ function buildVolumeMounts(
 
 // ─── One-shot Mode (original behavior) ───────────────────────────────────────
 
-function buildOneShotContainerArgs(mounts: VolumeMount[]): string[] {
+function buildOneShotContainerArgs(
+  mounts: VolumeMount[],
+  containerName?: string,
+): string[] {
   const args: string[] = ['run', '-i', '--rm'];
+  if (containerName) {
+    args.push('--name', containerName);
+  }
 
   for (const mount of mounts) {
     if (mount.readonly) {
@@ -380,7 +404,8 @@ async function runOneShotContainer(
   fs.mkdirSync(groupDir, { recursive: true });
 
   const mounts = buildVolumeMounts(group, input.isMain);
-  const containerArgs = buildOneShotContainerArgs(mounts);
+  const oneShotContainerName = getOneShotContainerName(group.folder);
+  const containerArgs = buildOneShotContainerArgs(mounts, oneShotContainerName);
 
   logger.debug(
     {
@@ -459,6 +484,13 @@ async function runOneShotContainer(
     const timeout = setTimeout(() => {
       logger.error({ group: group.name }, 'Container timeout, killing');
       container.kill('SIGKILL');
+      try {
+        execSync(`docker rm -f ${oneShotContainerName} 2>/dev/null`, {
+          timeout: 5000,
+        });
+      } catch {
+        // Best effort cleanup for one-shot timeout
+      }
       resolve({
         status: 'error',
         result: null,
@@ -615,9 +647,27 @@ async function runOneShotContainer(
 
 // ─── Persistent Mode ─────────────────────────────────────────────────────────
 
-function buildPersistentContainerArgs(mounts: VolumeMount[]): string[] {
+function buildPersistentContainerArgs(
+  mounts: VolumeMount[],
+  groupFolder: string,
+): string[] {
+  const containerName = getPersistentContainerName(groupFolder);
+  const sanitizedGroup = sanitizeDockerNamePart(groupFolder);
   // Detached, no --rm (we manage lifecycle), with persistent env var
-  const args: string[] = ['run', '-d', '-e', 'NANOCLAW_PERSISTENT=1'];
+  const args: string[] = [
+    'run',
+    '-d',
+    '--name',
+    containerName,
+    '--label',
+    'com.nanoclaw.app=nanoclaw',
+    '--label',
+    'com.nanoclaw.role=agent',
+    '--label',
+    `com.nanoclaw.group=${sanitizedGroup}`,
+    '-e',
+    'NANOCLAW_PERSISTENT=1',
+  ];
 
   for (const mount of mounts) {
     if (mount.readonly) {
@@ -742,6 +792,88 @@ function killContainer(groupFolder: string, reason: string): void {
   runningContainers.delete(groupFolder);
 }
 
+type DockerInspectResult = {
+  Config?: {
+    Env?: string[];
+  };
+  Mounts?: Array<{
+    Source?: string;
+    Destination?: string;
+  }>;
+};
+
+function isContainerFromCurrentProject(containerId: string): boolean {
+  try {
+    const raw = execSync(`docker inspect ${containerId}`, {
+      encoding: 'utf-8',
+      timeout: 5000,
+    });
+    const inspected = JSON.parse(raw) as DockerInspectResult[];
+    const first = inspected[0];
+    if (!first) return false;
+
+    const hasPersistentEnv = (first.Config?.Env || []).includes(
+      'NANOCLAW_PERSISTENT=1',
+    );
+    if (!hasPersistentEnv) return false;
+
+    const projectIpcDir = path.resolve(DATA_DIR, 'ipc');
+    const hasProjectIpcMount = (first.Mounts || []).some((mount) => {
+      if (mount.Destination !== '/workspace/ipc' || !mount.Source) return false;
+      const source = path.resolve(mount.Source);
+      return source === projectIpcDir || source.startsWith(`${projectIpcDir}${path.sep}`);
+    });
+    return hasProjectIpcMount;
+  } catch {
+    return false;
+  }
+}
+
+function listRunningContainersForImage(image: string): string[] {
+  try {
+    const raw = execSync(`docker ps -q --filter ancestor=${image}`, {
+      encoding: 'utf-8',
+      timeout: 5000,
+    }).trim();
+    if (!raw) return [];
+    return raw.split('\n').map((id) => id.trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Remove stale persistent containers left behind by older NanoClaw processes.
+ * Called on startup because in-memory tracking does not survive restarts.
+ */
+export function cleanupOrphanPersistentContainers(): void {
+  const trackedIds = new Set(
+    [...runningContainers.values()].map((entry) => entry.containerId),
+  );
+  const candidateIds = listRunningContainersForImage(CONTAINER_IMAGE);
+  const orphanIds = candidateIds.filter(
+    (id) => !trackedIds.has(id) && isContainerFromCurrentProject(id),
+  );
+
+  if (orphanIds.length === 0) return;
+
+  logger.warn(
+    {
+      count: orphanIds.length,
+      containerIds: orphanIds.map((id) => id.slice(0, 12)),
+    },
+    'Cleaning up orphan NanoClaw persistent containers from previous runs',
+  );
+
+  for (const containerId of orphanIds) {
+    try {
+      execSync(`docker rm -f ${containerId} 2>/dev/null`, { timeout: 10000 });
+    } catch {
+      // Best effort cleanup
+    }
+  }
+}
+
 /**
  * Get or start a persistent container for a group.
  * Returns the container entry, or null if startup failed.
@@ -771,7 +903,8 @@ async function getOrStartContainer(
   fs.mkdirSync(groupDir, { recursive: true });
 
   const mounts = buildVolumeMounts(group, isMain);
-  const containerArgs = buildPersistentContainerArgs(mounts);
+  const containerArgs = buildPersistentContainerArgs(mounts, group.folder);
+  const persistentName = getPersistentContainerName(group.folder);
 
   logger.info(
     {
@@ -797,6 +930,13 @@ async function getOrStartContainer(
 
   let containerId: string;
   try {
+    // Ensure deterministic named container is clear (for restart safety).
+    try {
+      execSync(`docker rm -f ${persistentName} 2>/dev/null`, { timeout: 5000 });
+    } catch {
+      // Container may not exist
+    }
+
     // docker run -d prints the container ID
     containerId = execSync(`docker ${containerArgs.join(' ')}`, {
       encoding: 'utf-8',

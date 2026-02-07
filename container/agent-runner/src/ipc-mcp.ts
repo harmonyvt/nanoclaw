@@ -903,7 +903,7 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
             };
           }
           return {
-            content: [{ type: 'text', text: `Clicked: ${args.selector}` }],
+            content: [{ type: 'text', text: `Click result: ${res.result}` }],
           };
         },
       ),
@@ -931,7 +931,38 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
             };
           }
           return {
-            content: [{ type: 'text', text: `Filled ${args.selector}` }],
+            content: [{ type: 'text', text: `Fill result: ${res.result}` }],
+          };
+        },
+      ),
+
+      tool(
+        'browse_scroll',
+        'Scroll the current page by delta values. Positive dy scrolls down; negative dy scrolls up.',
+        {
+          dy: z
+            .number()
+            .int()
+            .describe('Vertical scroll delta. Positive=down, negative=up'),
+          dx: z
+            .number()
+            .int()
+            .optional()
+            .describe('Optional horizontal scroll delta. Positive=right, negative=left'),
+        },
+        async (args) => {
+          const res = await writeBrowseRequest('scroll', {
+            deltaY: args.dy,
+            deltaX: args.dx ?? 0,
+          });
+          if (res.status === 'error') {
+            return {
+              content: [{ type: 'text', text: `Scroll failed: ${res.error}` }],
+              isError: true,
+            };
+          }
+          return {
+            content: [{ type: 'text', text: `Scroll complete: ${res.result}` }],
           };
         },
       ),
@@ -972,7 +1003,7 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
           const res = await writeBrowseRequest(
             'wait_for_user',
             { message: args.message },
-            120000,
+            300000,
           );
           if (res.status === 'error') {
             return {

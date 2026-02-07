@@ -21,6 +21,7 @@ import {
 } from './config.js';
 import {
   AvailableGroup,
+  cleanupOrphanPersistentContainers,
   killAllContainers,
   runContainerAgent,
   startContainerIdleCleanup,
@@ -65,6 +66,13 @@ let lastTimestamp = '';
 let sessions: Session = {};
 let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
+type CuaUsageStats = {
+  total: number;
+  ok: number;
+  failed: number;
+  recent: string[];
+};
+const cuaUsageByGroup: Map<string, CuaUsageStats> = new Map();
 
 async function setTyping(jid: string, isTyping: boolean): Promise<void> {
   if (isTyping) await setTelegramTyping(jid);
@@ -136,14 +144,35 @@ async function processMessage(msg: NewMessage): Promise<void> {
   const content = msg.content.trim();
   const isMainGroup = group.folder === MAIN_GROUP_FOLDER;
 
-  // Check if user is saying "continue" to unblock a browse_wait_for_user request
-  if (/^continue$/i.test(content) && hasWaitingRequests()) {
-    const resolved = resolveWaitForUser();
+  // Check if user is saying "continue" to unblock a browse_wait_for_user request.
+  // Supports both: "continue" and "continue <requestId>".
+  const continueMatch = content.match(/^continue(?:\s+(\S+))?$/i);
+  if (continueMatch) {
+    const requestId = continueMatch[1];
+    const hasPendingInGroup = hasWaitingRequests(group.folder);
+    const resolved = resolveWaitForUser(group.folder, requestId);
     if (resolved) {
       logger.info(
-        { chatJid: msg.chat_jid },
+        { chatJid: msg.chat_jid, groupFolder: group.folder, requestId },
         'Browse wait_for_user resolved by user',
       );
+      return;
+    }
+
+    // If user intended to continue a paused browse flow, acknowledge invalid ID
+    // or missing pending waits and avoid routing this as a normal agent prompt.
+    if (requestId || hasPendingInGroup) {
+      if (requestId) {
+        await sendMessage(
+          msg.chat_jid,
+          `No pending wait request found for ID: ${requestId}`,
+        );
+      } else {
+        await sendMessage(
+          msg.chat_jid,
+          'No pending wait request found for this chat.',
+        );
+      }
       return;
     }
   }
@@ -278,6 +307,76 @@ async function sendMessage(jid: string, text: string): Promise<void> {
   }
 }
 
+function getChatJidForGroup(groupFolder: string): string | undefined {
+  return Object.entries(registeredGroups).find(([, g]) => g.folder === groupFolder)?.[0];
+}
+
+function truncateForTelegram(input: string, max = 80): string {
+  const normalized = input.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= max) return normalized;
+  return `${normalized.slice(0, Math.max(0, max - 1))}…`;
+}
+
+function describeCuaActionStart(
+  action: string,
+  params: Record<string, unknown>,
+): string | null {
+  switch (action) {
+    case 'navigate': {
+      const url = truncateForTelegram(String(params.url || ''), 120);
+      return url ? `Navigating to ${url}` : 'Navigating';
+    }
+    case 'click': {
+      const selector = truncateForTelegram(String(params.selector || ''), 80);
+      return selector ? `Clicking ${selector}` : 'Clicking';
+    }
+    case 'fill': {
+      const selector = truncateForTelegram(String(params.selector || ''), 80);
+      const valueLength = String(params.value || '').length;
+      return selector
+        ? `Filling ${selector} (${valueLength} chars)`
+        : `Filling input (${valueLength} chars)`;
+    }
+    case 'screenshot':
+      return 'Taking screenshot';
+    case 'scroll': {
+      const dy = Number(params.deltaY ?? params.dy ?? 0);
+      const dx = Number(params.deltaX ?? params.dx ?? 0);
+      return `Scrolling (dx=${dx}, dy=${dy})`;
+    }
+    case 'go_back':
+      return 'Navigating back';
+    case 'snapshot':
+      return 'Capturing page snapshot';
+    case 'close':
+      return 'Closing browser tab';
+    default:
+      return null;
+  }
+}
+
+function updateCuaUsage(
+  groupFolder: string,
+  action: string,
+  status: 'ok' | 'error',
+): CuaUsageStats {
+  const current = cuaUsageByGroup.get(groupFolder) || {
+    total: 0,
+    ok: 0,
+    failed: 0,
+    recent: [],
+  };
+  current.total += 1;
+  if (status === 'ok') current.ok += 1;
+  else current.failed += 1;
+  current.recent.push(`${action}:${status}`);
+  if (current.recent.length > 6) {
+    current.recent = current.recent.slice(-6);
+  }
+  cuaUsageByGroup.set(groupFolder, current);
+  return current;
+}
+
 function startIpcWatcher(): void {
   const ipcBaseDir = path.join(DATA_DIR, 'ipc');
   fs.mkdirSync(ipcBaseDir, { recursive: true });
@@ -395,6 +494,8 @@ function startIpcWatcher(): void {
             try {
               const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
               const { id: requestId, action, params } = data;
+              const browseParams = (params || {}) as Record<string, unknown>;
+              const chatJid = getChatJidForGroup(sourceGroup);
 
               // For wait_for_user, send Telegram notification first
               if (action === 'wait_for_user' && params?.message) {
@@ -407,9 +508,6 @@ function startIpcWatcher(): void {
                     'Failed to prestart sandbox for wait_for_user',
                   );
                 }
-                const chatJid = Object.entries(registeredGroups).find(
-                  ([, g]) => g.folder === sourceGroup,
-                )?.[0];
                 if (chatJid) {
                   const sandboxUrl = getSandboxUrl();
                   const urlPart = sandboxUrl
@@ -417,19 +515,40 @@ function startIpcWatcher(): void {
                     : '';
                   await sendMessage(
                     chatJid,
-                    `${params.message}${urlPart}\n\nReply "continue" when ready.`,
+                    `${params.message}${urlPart}\nRequest ID: ${requestId}\n\nReply "continue ${requestId}" when ready.`,
                   );
+                }
+              } else if (chatJid) {
+                const startNote = describeCuaActionStart(action, browseParams);
+                if (startNote) {
+                  await sendMessage(chatJid, `CUA: ${startNote}`);
                 }
               }
 
               // Process the browse request (may be async for wait_for_user)
+              const browseStartMs = Date.now();
               const result = await processBrowseRequest(
                 requestId,
                 action,
-                params || {},
+                browseParams,
                 sourceGroup,
                 browseDir,
               );
+              const browseDurationMs = Date.now() - browseStartMs;
+              const usage = updateCuaUsage(sourceGroup, action, result.status);
+
+              if (chatJid && action !== 'wait_for_user') {
+                const statusText =
+                  result.status === 'ok'
+                    ? 'ok'
+                    : `error: ${truncateForTelegram(String(result.error || 'unknown'), 140)}`;
+                const summaryText = `Usage ${usage.total} actions (${usage.ok} ok, ${usage.failed} failed)`;
+                const recentText = usage.recent.join(' -> ');
+                await sendMessage(
+                  chatJid,
+                  `CUA ${action}: ${statusText} (${browseDurationMs}ms)\n${summaryText}\nRecent: ${recentText}`,
+                );
+              }
 
               // Write response file (atomic: temp + rename)
               const resFile = path.join(browseDir, `res-${requestId}.json`);
@@ -446,9 +565,6 @@ function startIpcWatcher(): void {
                 result.status === 'ok' &&
                 result.result
               ) {
-                const chatJid = Object.entries(registeredGroups).find(
-                  ([, g]) => g.folder === sourceGroup,
-                )?.[0];
                 if (chatJid) {
                   // Translate container path back to host path
                   const containerPath = result.result as string;
@@ -925,6 +1041,7 @@ async function main(): Promise<void> {
   }
   ensureContainerSystemRunning();
   ensureDockerImageRequirements();
+  cleanupOrphanPersistentContainers();
   initDatabase();
   logger.info('Database initialized');
   loadState();
