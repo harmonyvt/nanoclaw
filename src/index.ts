@@ -33,6 +33,7 @@ import {
 import { startSchedulerLoop } from './task-scheduler.js';
 import {
   connectTelegram,
+  isVerbose,
   sendTelegramMessage,
   sendTelegramPhoto,
   setTelegramTyping,
@@ -490,6 +491,64 @@ function startIpcWatcher(): void {
           { err, sourceGroup },
           'Error reading IPC browse directory',
         );
+      }
+
+      // Process status events from this group's IPC directory (transparency/verbose mode)
+      const statusDir = path.join(ipcBaseDir, sourceGroup, 'status');
+      try {
+        if (fs.existsSync(statusDir)) {
+          const statusFiles = fs
+            .readdirSync(statusDir)
+            .filter((f) => f.startsWith('evt-') && f.endsWith('.json'))
+            .sort();
+
+          if (statusFiles.length > 0) {
+            // Find the chat JID for this group
+            const chatJid = Object.entries(registeredGroups).find(
+              ([, g]) => g.folder === sourceGroup,
+            )?.[0];
+
+            if (chatJid && isVerbose(chatJid)) {
+              // Rate limit: collect all events, send at most 1 summary per poll cycle
+              const events: Array<Record<string, unknown>> = [];
+              for (const file of statusFiles) {
+                const filePath = path.join(statusDir, file);
+                try {
+                  events.push(JSON.parse(fs.readFileSync(filePath, 'utf-8')));
+                } catch {}
+                try { fs.unlinkSync(filePath); } catch {}
+              }
+
+              if (events.length > 0) {
+                // Format status summary
+                const lines: string[] = [];
+                for (const evt of events) {
+                  if (evt.type === 'tool_start') {
+                    const preview = evt.preview ? String(evt.preview).slice(0, 100) : '';
+                    lines.push(`> ${evt.tool_name}${preview ? ': ' + preview : ''}`);
+                  } else if (evt.type === 'tool_progress') {
+                    lines.push(`> ${evt.tool_name} (${evt.elapsed_seconds}s)`);
+                  }
+                }
+                if (lines.length > 0) {
+                  const statusMsg = lines.slice(0, 5).join('\n'); // Max 5 lines
+                  try {
+                    await sendTelegramMessage(chatJid, statusMsg);
+                  } catch (err) {
+                    logger.debug({ err }, 'Failed to send status message');
+                  }
+                }
+              }
+            } else {
+              // Not verbose - just clean up status files silently
+              for (const file of statusFiles) {
+                try { fs.unlinkSync(path.join(statusDir, file)); } catch {}
+              }
+            }
+          }
+        }
+      } catch (err) {
+        logger.debug({ err, sourceGroup }, 'Error reading IPC status directory');
       }
     }
 

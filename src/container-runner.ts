@@ -304,6 +304,7 @@ function buildVolumeMounts(
   // Persistent mode IPC subdirectories
   fs.mkdirSync(path.join(groupIpcDir, 'agent-input'), { recursive: true });
   fs.mkdirSync(path.join(groupIpcDir, 'agent-output'), { recursive: true });
+  fs.mkdirSync(path.join(groupIpcDir, 'status'), { recursive: true });
   mounts.push({
     hostPath: groupIpcDir,
     containerPath: '/workspace/ipc',

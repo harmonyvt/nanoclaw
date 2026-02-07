@@ -75,6 +75,18 @@ function atomicWriteFileSync(filePath: string, data: string): void {
   fs.renameSync(tmpPath, filePath);
 }
 
+const STATUS_DIR = '/workspace/ipc/status';
+
+function writeStatusEvent(event: Record<string, unknown>): void {
+  try {
+    fs.mkdirSync(STATUS_DIR, { recursive: true });
+    const filename = `evt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.json`;
+    atomicWriteFileSync(path.join(STATUS_DIR, filename), JSON.stringify(event));
+  } catch {
+    // Best effort - don't break agent on status write failure
+  }
+}
+
 function updateHeartbeat(): void {
   try {
     atomicWriteFileSync(HEARTBEAT_FILE, JSON.stringify({
@@ -276,6 +288,26 @@ async function runQuery(input: ContainerInput): Promise<ContainerOutput> {
 
       if ('result' in message && message.result) {
         result = message.result as string;
+      }
+
+      // Transparency: write status events for host to forward to Telegram
+      if (message.type === 'assistant' && 'message' in message) {
+        const msg = message.message as { content?: Array<{ type: string; name?: string; input?: unknown }> };
+        const toolUses = msg.content?.filter((b: { type: string }) => b.type === 'tool_use') || [];
+        for (const tu of toolUses) {
+          writeStatusEvent({
+            type: 'tool_start',
+            tool_name: (tu as { name?: string }).name || 'unknown',
+            preview: JSON.stringify((tu as { input?: unknown }).input).slice(0, 200),
+          });
+        }
+      }
+      if (message.type === 'tool_progress' && 'tool_name' in message) {
+        writeStatusEvent({
+          type: 'tool_progress',
+          tool_name: (message as { tool_name: string }).tool_name,
+          elapsed_seconds: (message as { elapsed_time_seconds?: number }).elapsed_time_seconds,
+        });
       }
     }
 

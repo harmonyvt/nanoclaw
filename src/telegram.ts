@@ -38,6 +38,9 @@ const APP_VERSION: string = JSON.parse(fs.readFileSync(pkgPath, 'utf-8')).versio
 
 let bot: Bot | undefined;
 
+const verboseChats = new Set<string>();
+export function isVerbose(chatJid: string): boolean { return verboseChats.has(chatJid); }
+
 const TELEGRAM_MAX_LENGTH = 4096;
 
 /**
@@ -100,6 +103,7 @@ export async function connectTelegram(
       { command: 'new', description: 'Start a new conversation thread' },
       { command: 'clear', description: 'Clear conversation history' },
       { command: 'status', description: 'Show session info' },
+      { command: 'verbose', description: 'Toggle verbose mode (show agent tool use)' },
       { command: 'help', description: 'List commands' },
     ]);
     // Also set commands specifically for private chats so they appear in the / menu
@@ -108,6 +112,7 @@ export async function connectTelegram(
         { command: 'new', description: 'Start a new conversation thread' },
         { command: 'clear', description: 'Clear conversation history' },
         { command: 'status', description: 'Show session info' },
+        { command: 'verbose', description: 'Toggle verbose mode (show agent tool use)' },
         { command: 'help', description: 'List commands' },
       ],
       { scope: { type: 'all_private_chats' } },
@@ -192,9 +197,22 @@ export async function connectTelegram(
       '/new - Start a new conversation thread',
       '/clear - Clear conversation history and reset session',
       '/status - Show session info, message count, uptime',
+      '/verbose - Toggle verbose mode (show agent tool use)',
       '/help - List available commands',
     ];
     await ctx.reply(lines.join('\n'));
+  });
+
+  bot.command('verbose', async (ctx) => {
+    if (!shouldAccept(ctx)) return;
+    const chatId = makeTelegramChatId(ctx.chat.id);
+    if (verboseChats.has(chatId)) {
+      verboseChats.delete(chatId);
+      await ctx.reply('Verbose mode off');
+    } else {
+      verboseChats.add(chatId);
+      await ctx.reply('Verbose mode on');
+    }
   });
 
   // --- Message handlers ---

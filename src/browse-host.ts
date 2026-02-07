@@ -14,10 +14,10 @@ const waitingForUser: Map<string, () => void> = new Map();
 async function getPage(): Promise<Page> {
   if (page && !page.isClosed()) return page;
 
-  const cdpUrl = ensureSandbox();
+  const cdpUrl = await ensureSandbox();
 
-  // Retry CDP connection with backoff — sandbox needs time to boot Xvfb + Chromium
-  const maxRetries = 5;
+  // Retry CDP connection with exponential backoff — sandbox needs time to boot Xvfb + Chromium
+  const maxRetries = 10;
   const retryDelay = 2000;
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
@@ -29,11 +29,12 @@ async function getPage(): Promise<Page> {
           `Failed to connect to sandbox CDP after ${maxRetries} attempts: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
-      logger.debug(
-        { attempt, maxRetries, err: err instanceof Error ? err.message : String(err) },
+      const delay = Math.min(retryDelay * Math.pow(1.5, attempt - 1), 10000);
+      logger.info(
+        { attempt, maxRetries, delay, err: err instanceof Error ? err.message : String(err) },
         'CDP connection failed, retrying',
       );
-      await new Promise((resolve) => setTimeout(resolve, retryDelay));
+      await new Promise((resolve) => setTimeout(resolve, delay));
     }
   }
 

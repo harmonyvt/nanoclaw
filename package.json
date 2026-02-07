@@ -10,7 +10,8 @@
     "dev": "bun --watch src/index.ts",
     "typecheck": "tsc --noEmit",
     "format": "prettier --write \"src/**/*.ts\"",
-    "format:check": "prettier --check \"src/**/*.ts\""
+    "format:check": "prettier --check \"src/**/*.ts\"",
+    "test": "bun test"
   },
   "dependencies": {
     "@grammyjs/files": "^1.2.0",

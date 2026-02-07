@@ -55,7 +55,7 @@ export function stopSandbox(): void {
   logger.info('Sandbox container stopped');
 }
 
-export function ensureSandbox(): string {
+export async function ensureSandbox(): Promise<string> {
   if (!isSandboxRunning()) {
     // Remove stale container if it exists but isn't running
     try {
@@ -64,6 +64,20 @@ export function ensureSandbox(): string {
       // No stale container
     }
     startSandbox();
+
+    // Wait for CDP to be reachable from host
+    for (let i = 0; i < 15; i++) {
+      try {
+        execSync('curl -sf http://localhost:9222/json/version', { stdio: 'pipe', timeout: 3000 });
+        logger.info('Sandbox CDP is reachable from host');
+        break;
+      } catch {
+        if (i === 14) {
+          logger.warn('Sandbox CDP not reachable after 15 attempts, proceeding anyway');
+        }
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
   }
   resetIdleTimer();
   return `http://localhost:${CDP_PORT}`;

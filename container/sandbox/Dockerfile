@@ -8,6 +8,8 @@ RUN apt-get update && apt-get install -y \
     novnc \
     websockify \
     socat \
+    dbus-x11 \
+    curl \
     fonts-liberation \
     fonts-noto-color-emoji \
     procps \
