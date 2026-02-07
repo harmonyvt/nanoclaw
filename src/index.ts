@@ -53,6 +53,7 @@ import {
   detectEmotionFromText,
   formatFreyaText,
   isFreyaEnabled,
+  looksLikeCode,
   parseEmotion,
   synthesizeSpeech,
 } from './tts.js';
@@ -266,7 +267,54 @@ async function processMessage(msg: NewMessage): Promise<void> {
         text += `\n[thread: ${threadId.slice(0, 8)}]`;
       }
     }
-    await sendMessage(msg.chat_jid, text);
+
+    // Auto-TTS: parse structured voice response (---voice--- separator)
+    const voiceSep = '---voice---';
+    const sepIndex = text.indexOf(voiceSep);
+
+    if (isFreyaEnabled()) {
+      let voicePart: string;
+      let textPart: string | null;
+
+      if (sepIndex !== -1) {
+        // Structured: voice summary + text follow-up
+        voicePart = text.slice(0, sepIndex).trim();
+        textPart = text.slice(sepIndex + voiceSep.length).trim();
+      } else if (!looksLikeCode(text) && text.length <= 500) {
+        // Short non-code response: voice only
+        voicePart = text;
+        textPart = null;
+      } else {
+        // Long or code-heavy with no separator: text only
+        voicePart = '';
+        textPart = text;
+      }
+
+      if (voicePart) {
+        try {
+          const emotion = detectEmotionFromText(voicePart);
+          const markedText = formatFreyaText(voicePart, emotion);
+          const mediaDir = path.join(GROUPS_DIR, group.folder, 'media');
+          const oggPath = await synthesizeSpeech(markedText, mediaDir);
+          await sendTelegramVoice(msg.chat_jid, oggPath);
+        } catch (err) {
+          logger.error({ err }, 'Auto-TTS failed, sending as text');
+          // On TTS failure, prepend voice part back to text
+          textPart = textPart
+            ? `${voicePart}\n\n${textPart}`
+            : voicePart;
+        }
+      }
+
+      if (textPart) {
+        await sendMessage(msg.chat_jid, textPart);
+      }
+    } else {
+      // Freya disabled: strip separator and send as plain text
+      const cleanText =
+        sepIndex !== -1 ? text.replace(voiceSep, '').trim() : text;
+      await sendMessage(msg.chat_jid, cleanText);
+    }
 
     // Store interaction to Supermemory (non-blocking)
     if (isSupermemoryEnabled()) {

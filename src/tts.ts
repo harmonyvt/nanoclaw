@@ -272,6 +272,11 @@ export function isFreyaEnabled(): boolean {
   return FREYA_API_KEY.length > 0;
 }
 
+/** Check if text looks like code/structured content unsuitable for TTS. */
+export function looksLikeCode(text: string): boolean {
+  return text.includes('```');
+}
+
 /**
  * Synthesize text to speech via Freya TTS API.
  * Text should already include emotion markers (use formatFreyaText).
