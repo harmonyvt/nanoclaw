@@ -84,6 +84,15 @@ import {
   startCuaTakeoverServer,
   stopCuaTakeoverServer,
 } from './cua-takeover-server.js';
+import {
+  initLogSync,
+  stopLogSync,
+  pruneOldLogEntries,
+} from './log-sync.js';
+import {
+  startDashboardServer,
+  stopDashboardServer,
+} from './dashboard-server.js';
 
 let lastTimestamp = '';
 let sessions: Session = {};
@@ -1230,6 +1239,8 @@ async function main(): Promise<void> {
   cleanupOrphanPersistentContainers();
   initDatabase();
   logger.info('Database initialized');
+  initLogSync();
+  pruneOldLogEntries();
   loadState();
   // Clean up old media files on startup (7 day retention)
   for (const group of Object.values(registeredGroups)) {
@@ -1269,6 +1280,7 @@ async function main(): Promise<void> {
   );
   startSchedulerLoop(schedulerDeps);
   startCuaTakeoverServer();
+  startDashboardServer();
   startIpcWatcher();
   startIdleWatcher();
   startContainerIdleCleanup();
@@ -1282,6 +1294,8 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     stopTelegram();
     killAllContainers();
     await disconnectBrowser();
+    stopDashboardServer();
+    stopLogSync();
     stopCuaTakeoverServer();
     cleanupSandbox();
     process.exit(0);

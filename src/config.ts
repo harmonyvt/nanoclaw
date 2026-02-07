@@ -126,6 +126,19 @@ export function extractTelegramChatId(id: string): number {
   return Number(id.slice(3));
 }
 
+// Dashboard configuration
+export const DASHBOARD_ENABLED = process.env.DASHBOARD_ENABLED !== 'false';
+export const DASHBOARD_PORT = parseInt(
+  process.env.DASHBOARD_PORT || '7789',
+  10,
+);
+export const LOG_RETENTION_DAYS = parseInt(
+  process.env.LOG_RETENTION_DAYS || '7',
+  10,
+);
+export const DASHBOARD_TLS_CERT = process.env.DASHBOARD_TLS_CERT || '';
+export const DASHBOARD_TLS_KEY = process.env.DASHBOARD_TLS_KEY || '';
+
 // Timezone for scheduled tasks (cron expressions, etc.)
 // Uses system timezone by default
 export const TIMEZONE =

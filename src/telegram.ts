@@ -32,6 +32,7 @@ import {
   getOldestWaitForUserRequest,
 } from './browse-host.js';
 import { getTakeoverUrl } from './cua-takeover-server.js';
+import { getDashboardUrl } from './dashboard-server.js';
 import { downloadTelegramFile, transcribeAudio } from './media.js';
 import { logger } from './logger.js';
 import { ensureSandbox, getSandboxUrl } from './sandbox-manager.js';
@@ -235,6 +236,7 @@ type SlashCommandSpec = {
     | 'status'
     | 'update'
     | 'takeover'
+    | 'dashboard'
     | 'verbose'
     | 'help';
   description: string;
@@ -276,6 +278,11 @@ const TELEGRAM_SLASH_COMMANDS: SlashCommandSpec[] = [
     command: 'takeover',
     description: 'Force CUA takeover URL',
     help: 'Force a CUA takeover URL',
+  },
+  {
+    command: 'dashboard',
+    description: 'Open the realtime log dashboard',
+    help: 'Open the realtime log dashboard',
   },
   {
     command: 'verbose',
@@ -606,6 +613,27 @@ export async function connectTelegram(
     await ctx.reply(
       `Forced takeover ready.\n${takeoverLine}${noVncLine}${requestLine}\n\nWhen done, click "Return Control To Agent" in the takeover page.\nFallback: reply "continue ${request.requestId}".`,
     );
+  });
+
+  bot.command('dashboard', async (ctx) => {
+    if (!shouldAccept(ctx)) return;
+
+    const dashboardBaseUrl = getDashboardUrl();
+    if (!dashboardBaseUrl) {
+      await ctx.reply(
+        'Dashboard is disabled. Set DASHBOARD_ENABLED=true to enable.',
+      );
+      return;
+    }
+
+    const kb = new InlineKeyboard().webApp(
+      'Open Dashboard',
+      dashboardBaseUrl + '/app',
+    );
+
+    await ctx.reply('Tap the button below to open the log dashboard.', {
+      reply_markup: kb,
+    });
   });
 
   bot.command('help', async (ctx) => {
