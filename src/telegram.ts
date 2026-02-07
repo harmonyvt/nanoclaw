@@ -1,5 +1,7 @@
+import { execFile, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import { promisify } from 'util';
 import { Bot, InputFile } from 'grammy';
 
 import {
@@ -33,13 +35,36 @@ export interface SessionManager {
 }
 
 // Read version from package.json at startup
-const pkgPath = path.resolve(import.meta.dir ?? path.dirname(new URL(import.meta.url).pathname), '..', 'package.json');
-const APP_VERSION: string = JSON.parse(fs.readFileSync(pkgPath, 'utf-8')).version;
+const PROJECT_ROOT = path.resolve(
+  import.meta.dir ?? path.dirname(new URL(import.meta.url).pathname),
+  '..',
+);
+const pkgPath = path.join(PROJECT_ROOT, 'package.json');
+const APP_VERSION: string = JSON.parse(
+  fs.readFileSync(pkgPath, 'utf-8'),
+).version;
+const SELF_UPDATE_SCRIPT = path.join(PROJECT_ROOT, 'scripts', 'self-update.sh');
+const SELF_UPDATE_LOG = path.join(PROJECT_ROOT, 'logs', 'self-update.log');
+const SELF_UPDATE_CONFIRM_WINDOW_MS = 5 * 60 * 1000;
+const SELF_UPDATE_ENABLED = process.env.SELF_UPDATE_ENABLED !== 'false';
+const SELF_UPDATE_BRANCH = process.env.SELF_UPDATE_BRANCH || 'main';
+const SELF_UPDATE_REMOTE = process.env.SELF_UPDATE_REMOTE || 'origin';
+const execFileAsync = promisify(execFile);
+
+type PendingUpdate = {
+  behind: number;
+  localHead: string;
+  remoteHead: string;
+  expiresAt: number;
+};
+const pendingUpdatesByChat = new Map<string, PendingUpdate>();
 
 let bot: Bot | undefined;
 
 const verboseChats = new Set<string>();
-export function isVerbose(chatJid: string): boolean { return verboseChats.has(chatJid); }
+export function isVerbose(chatJid: string): boolean {
+  return verboseChats.has(chatJid);
+}
 
 const TELEGRAM_MAX_LENGTH = 4096;
 
@@ -81,6 +106,56 @@ function getMediaDir(group: RegisteredGroup): string {
   return path.join(GROUPS_DIR, group.folder, 'media');
 }
 
+async function runGit(args: string[]): Promise<string> {
+  const { stdout } = await execFileAsync('git', args, { cwd: PROJECT_ROOT });
+  return stdout.trim();
+}
+
+async function checkForServiceUpdate(): Promise<{
+  behind: number;
+  localHead: string;
+  remoteHead: string;
+}> {
+  await runGit(['fetch', '--quiet', SELF_UPDATE_REMOTE, SELF_UPDATE_BRANCH]);
+  const remoteRef = `${SELF_UPDATE_REMOTE}/${SELF_UPDATE_BRANCH}`;
+  const [localHead, remoteHead, behindRaw] = await Promise.all([
+    runGit(['rev-parse', 'HEAD']),
+    runGit(['rev-parse', remoteRef]),
+    runGit(['rev-list', '--count', `HEAD..${remoteRef}`]),
+  ]);
+  const behind = Number.parseInt(behindRaw, 10);
+  if (Number.isNaN(behind)) {
+    throw new Error(`Unexpected git rev-list output: ${behindRaw}`);
+  }
+  return { behind, localHead, remoteHead };
+}
+
+function startSelfUpdateProcess(): void {
+  if (!fs.existsSync(SELF_UPDATE_SCRIPT)) {
+    throw new Error(`Self-update script is missing: ${SELF_UPDATE_SCRIPT}`);
+  }
+
+  fs.mkdirSync(path.dirname(SELF_UPDATE_LOG), { recursive: true });
+  fs.appendFileSync(
+    SELF_UPDATE_LOG,
+    `[${new Date().toISOString()}] Triggered update from Telegram\n`,
+  );
+
+  const outputFd = fs.openSync(SELF_UPDATE_LOG, 'a');
+  const child = spawn('bash', [SELF_UPDATE_SCRIPT], {
+    cwd: PROJECT_ROOT,
+    detached: true,
+    stdio: ['ignore', outputFd, outputFd],
+    env: {
+      ...process.env,
+      SELF_UPDATE_BRANCH,
+      SELF_UPDATE_REMOTE,
+    },
+  });
+  child.unref();
+  fs.closeSync(outputFd);
+}
+
 /**
  * Connect to Telegram via long-polling.
  * Auto-registers the owner's private chat on first message.
@@ -95,28 +170,26 @@ export async function connectTelegram(
   sessionManager?: SessionManager,
 ): Promise<void> {
   bot = new Bot(TELEGRAM_BOT_TOKEN);
+  const commandList = [
+    { command: 'new', description: 'Start a new conversation thread' },
+    { command: 'clear', description: 'Clear conversation history' },
+    { command: 'status', description: 'Show session info' },
+    { command: 'update', description: 'Check and apply service update' },
+    {
+      command: 'verbose',
+      description: 'Toggle verbose mode (show agent tool use)',
+    },
+    { command: 'help', description: 'List commands' },
+  ] as const;
 
   // Register slash commands with Telegram immediately so they appear in the command menu.
   // This runs before bot.start() since bot.api only needs the token, not full initialization.
   try {
-    await bot.api.setMyCommands([
-      { command: 'new', description: 'Start a new conversation thread' },
-      { command: 'clear', description: 'Clear conversation history' },
-      { command: 'status', description: 'Show session info' },
-      { command: 'verbose', description: 'Toggle verbose mode (show agent tool use)' },
-      { command: 'help', description: 'List commands' },
-    ]);
+    await bot.api.setMyCommands(commandList);
     // Also set commands specifically for private chats so they appear in the / menu
-    await bot.api.setMyCommands(
-      [
-        { command: 'new', description: 'Start a new conversation thread' },
-        { command: 'clear', description: 'Clear conversation history' },
-        { command: 'status', description: 'Show session info' },
-        { command: 'verbose', description: 'Toggle verbose mode (show agent tool use)' },
-        { command: 'help', description: 'List commands' },
-      ],
-      { scope: { type: 'all_private_chats' } },
-    );
+    await bot.api.setMyCommands(commandList, {
+      scope: { type: 'all_private_chats' },
+    });
     logger.info('Bot commands registered with Telegram');
   } catch (err) {
     logger.error({ err }, 'Failed to register bot commands');
@@ -125,7 +198,10 @@ export async function connectTelegram(
   /**
    * Ensure the owner's chat is registered. Auto-registers as "main" on first contact.
    */
-  function ensureRegistered(chatId: string, senderName: string): RegisteredGroup | null {
+  function ensureRegistered(
+    chatId: string,
+    senderName: string,
+  ): RegisteredGroup | null {
     const group = registeredGroups()[chatId];
     if (group) return group;
 
@@ -164,7 +240,9 @@ export async function connectTelegram(
       sessionManager.clearSession(chatId);
     }
     logger.info({ chatId, deleted }, 'History cleared via /clear command');
-    await ctx.reply(`Cleared ${deleted} message${deleted === 1 ? '' : 's'} and reset session.`);
+    await ctx.reply(
+      `Cleared ${deleted} message${deleted === 1 ? '' : 's'} and reset session.`,
+    );
   });
 
   bot.command('status', async (ctx) => {
@@ -172,7 +250,9 @@ export async function connectTelegram(
     const chatId = makeTelegramChatId(ctx.chat.id);
     const group = registeredGroups()[chatId];
 
-    const sessionId = sessionManager ? sessionManager.getSession(chatId) : undefined;
+    const sessionId = sessionManager
+      ? sessionManager.getSession(chatId)
+      : undefined;
     const messageCount = getMessageCount(chatId);
     const uptimeMs = Date.now() - startTime;
     const uptimeHours = Math.floor(uptimeMs / 3600000);
@@ -197,6 +277,9 @@ export async function connectTelegram(
       '/new - Start a new conversation thread',
       '/clear - Clear conversation history and reset session',
       '/status - Show session info, message count, uptime',
+      '/update - Check for updates and request confirmation',
+      '/update confirm - Apply latest update',
+      '/update cancel - Cancel pending update',
       '/verbose - Toggle verbose mode (show agent tool use)',
       '/help - List available commands',
     ];
@@ -215,10 +298,101 @@ export async function connectTelegram(
     }
   });
 
+  bot.command('update', async (ctx) => {
+    if (!shouldAccept(ctx)) return;
+
+    if (!SELF_UPDATE_ENABLED) {
+      await ctx.reply('Self-update is disabled (SELF_UPDATE_ENABLED=false).');
+      return;
+    }
+
+    const chatId = makeTelegramChatId(ctx.chat.id);
+    const action = ctx.match.trim().toLowerCase();
+
+    if (action === 'confirm') {
+      const pending = pendingUpdatesByChat.get(chatId);
+      if (!pending) {
+        await ctx.reply('No pending update confirmation. Run /update first.');
+        return;
+      }
+      if (Date.now() > pending.expiresAt) {
+        pendingUpdatesByChat.delete(chatId);
+        await ctx.reply('Update confirmation expired. Run /update again.');
+        return;
+      }
+
+      pendingUpdatesByChat.delete(chatId);
+      await ctx.reply(
+        'Starting update now. I will pull latest code, rebuild, and restart the service.',
+      );
+
+      try {
+        startSelfUpdateProcess();
+      } catch (err) {
+        logger.error({ err }, 'Failed to start self-update process');
+        await ctx.reply('Failed to start update. Check logs and try again.');
+      }
+      return;
+    }
+
+    if (action === 'cancel') {
+      const hadPending = pendingUpdatesByChat.delete(chatId);
+      await ctx.reply(
+        hadPending
+          ? 'Pending update canceled.'
+          : 'No pending update to cancel.',
+      );
+      return;
+    }
+
+    if (action.length > 0) {
+      await ctx.reply(
+        'Unknown option. Use /update, /update confirm, or /update cancel.',
+      );
+      return;
+    }
+
+    try {
+      const { behind, localHead, remoteHead } = await checkForServiceUpdate();
+      if (behind <= 0) {
+        pendingUpdatesByChat.delete(chatId);
+        await ctx.reply(
+          `Already up to date on ${SELF_UPDATE_REMOTE}/${SELF_UPDATE_BRANCH}.`,
+        );
+        return;
+      }
+
+      pendingUpdatesByChat.set(chatId, {
+        behind,
+        localHead,
+        remoteHead,
+        expiresAt: Date.now() + SELF_UPDATE_CONFIRM_WINDOW_MS,
+      });
+
+      const lines = [
+        `Update available on ${SELF_UPDATE_REMOTE}/${SELF_UPDATE_BRANCH}.`,
+        `Behind by ${behind} commit${behind === 1 ? '' : 's'}.`,
+        `Current: ${localHead.slice(0, 8)}`,
+        `Latest: ${remoteHead.slice(0, 8)}`,
+        'Reply /update confirm within 5 minutes to apply it.',
+      ];
+      await ctx.reply(lines.join('\n'));
+    } catch (err) {
+      logger.error({ err }, 'Failed to check for updates');
+      await ctx.reply(
+        'Could not check for updates. Verify git remote access and try again.',
+      );
+    }
+  });
+
   // --- Message handlers ---
 
   bot.on('message:text', (ctx) => {
     if (!shouldAccept(ctx)) return;
+    const firstEntity = ctx.message.entities?.[0];
+    const isSlashCommand =
+      firstEntity?.type === 'bot_command' && firstEntity.offset === 0;
+    if (isSlashCommand) return;
 
     const { chatId, timestamp, sender, senderName, msgId } = extractMeta(ctx);
     const content = ctx.message.text;
