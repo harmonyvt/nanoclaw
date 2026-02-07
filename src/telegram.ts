@@ -323,7 +323,7 @@ export async function connectTelegram(
 
       pendingUpdatesByChat.delete(chatId);
       await ctx.reply(
-        'Starting update now. I will pull latest code, rebuild, and restart the service.',
+        `Starting update now. I will pull latest code, rebuild, and restart the service.\nIf anything fails, check ${SELF_UPDATE_LOG}.`,
       );
 
       try {

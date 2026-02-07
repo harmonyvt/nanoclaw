@@ -40,7 +40,10 @@ echo "[nanoclaw] pulling latest (${BEHIND} commit(s) behind)"
 git pull --ff-only "$REMOTE" "$BRANCH"
 
 echo "[nanoclaw] installing dependencies"
-"$BUN_PATH" install --frozen-lockfile
+if ! "$BUN_PATH" install --frozen-lockfile; then
+  echo "[nanoclaw] frozen lockfile install failed; retrying without --frozen-lockfile"
+  "$BUN_PATH" install
+fi
 
 echo "[nanoclaw] building"
 "$BUN_PATH" run build
