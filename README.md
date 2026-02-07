@@ -73,7 +73,10 @@ From the main channel (your self-chat), you can manage groups and tasks:
 @Andy list all scheduled tasks across groups
 @Andy pause the Monday briefing task
 @Andy join the Family Chat group
+/update
 ```
+
+`/update` checks `origin/main` and asks for confirmation before it pulls, rebuilds, and restarts the service.
 
 ## Customizing
 
