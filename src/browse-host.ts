@@ -559,6 +559,15 @@ export function buildElementSearchQueries(selector: string): string[] {
     addQueryCandidate(candidates, 'search box');
   }
 
+  // Split multi-word descriptors into individual words as candidates.
+  // e.g. "Search Input" → also try "Search" and "Input" individually.
+  const words = raw.split(/\s+/).filter((w) => w.length >= 3);
+  if (words.length > 1) {
+    for (const word of words) {
+      addQueryCandidate(candidates, word);
+    }
+  }
+
   return [...candidates.values()];
 }
 
@@ -592,10 +601,8 @@ async function findElementCoordinates(
       let found: unknown;
       try {
         found = await runCuaCommandWithFallback([
-          { command: 'find_element', args: { description: query } },
-          { command: 'find_element', args: { query } },
           { command: 'find_element', args: { title: query } },
-          { command: 'find_element', args: { selector: query } },
+          { command: 'find_element', args: { role: 'entry', title: query } },
         ]);
       } catch {
         continue;
@@ -608,7 +615,124 @@ async function findElementCoordinates(
     }
   }
 
+  // Fallback: parse the accessibility tree ourselves to find the element.
+  const treeMatch = await findElementInAccessibilityTree(queries);
+  if (treeMatch) return treeMatch;
+
   return null;
+}
+
+const LABEL_FIELDS = [
+  'title',
+  'label',
+  'name',
+  'text',
+  'description',
+  'value',
+  'content',
+  'aria_label',
+  'ariaLabel',
+  'placeholder',
+];
+
+async function findElementInAccessibilityTree(
+  queries: string[],
+): Promise<LocatedElement | null> {
+  if (queries.length === 0) return null;
+
+  const snapshot = await getAccessibilitySnapshotSafe();
+  if (!snapshot) return null;
+
+  const screenSize =
+    (await getScreenSizeSafe()) || { width: 1024, height: 768 };
+
+  return matchElementInSnapshot(snapshot, queries, screenSize);
+}
+
+export function matchElementInSnapshot(
+  snapshot: unknown,
+  queries: string[],
+  screenSize: { width: number; height: number },
+): LocatedElement | null {
+  if (queries.length === 0) return null;
+
+  const root = resolveAccessibilityRoot(snapshot);
+  if (!root) return null;
+
+  const nodes: Record<string, unknown>[] = [];
+  collectAccessibilityNodes(root, nodes);
+
+  type Candidate = LocatedElement & {
+    interactive: boolean;
+    area: number;
+    exact: boolean;
+  };
+  const candidates: Candidate[] = [];
+
+  for (const node of nodes) {
+    const bounds = extractBoundsFromNode(node);
+    if (!bounds) continue;
+
+    const resolved = resolvePixelBounds(bounds, screenSize.width, screenSize.height);
+    if (!resolved) continue;
+
+    const role = firstNonEmptyString(node, [
+      'role',
+      'class',
+      'type',
+      'controlType',
+      'control_type',
+    ]);
+
+    // Collect all label-like text from the node for matching.
+    const labelTexts: string[] = [];
+    for (const field of LABEL_FIELDS) {
+      const raw = node[field];
+      if (typeof raw === 'string' && raw.trim()) {
+        labelTexts.push(raw.trim());
+      }
+    }
+    if (labelTexts.length === 0) continue;
+
+    const normalizedLabels = labelTexts.map(normalizeForSearch);
+
+    for (const query of queries) {
+      const normalizedQuery = normalizeForSearch(query);
+      if (!normalizedQuery) continue;
+
+      const exact = normalizedLabels.some((l) => l === normalizedQuery);
+      const partial = !exact && normalizedLabels.some((l) => l.includes(normalizedQuery));
+      if (!exact && !partial) continue;
+
+      const centerX = Math.round(resolved.x + resolved.width / 2);
+      const centerY = Math.round(resolved.y + resolved.height / 2);
+      const interactive = nodeIsInteractive(node, role);
+      const area = resolved.width * resolved.height;
+
+      candidates.push({
+        coords: { x: centerX, y: centerY },
+        matchedQuery: query,
+        interactive,
+        area,
+        exact,
+      });
+      break; // One match per node is enough
+    }
+  }
+
+  if (candidates.length === 0) return null;
+
+  // Prefer: exact match > interactive > smallest area
+  candidates.sort((a, b) => {
+    if (a.exact !== b.exact) return a.exact ? -1 : 1;
+    if (a.interactive !== b.interactive) return a.interactive ? -1 : 1;
+    return a.area - b.area;
+  });
+
+  return {
+    coords: candidates[0].coords,
+    matchedQuery: candidates[0].matchedQuery,
+  };
 }
 
 function extractCoordinates(input: unknown): { x: number; y: number } | null {
@@ -1154,7 +1278,7 @@ function nodeIsInteractive(
   const roleText = (role || '').toLowerCase();
   if (node.clickable === true) return true;
   if (node.interactive === true || node.interactivity === true) return true;
-  return /button|input|link|checkbox|textbox|tab|menuitem|combobox|search/i.test(
+  return /button|input|entry|link|checkbox|textbox|tab|menuitem|combobox|search/i.test(
     roleText,
   );
 }
