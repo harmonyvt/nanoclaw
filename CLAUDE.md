@@ -241,6 +241,7 @@ Requires `SUPERMEMORY_API_KEY`. When enabled, memories are also automatically re
 | `SUPERMEMORY_API_KEY`       | --                       | Supermemory long-term memory (preferred) |
 | `SUPERMEMORY_OPENCLAW_API_KEY` | --                    | Supermemory key alias (accepted fallback) |
 | `SUPERMEMORY_CC_API_KEY`    | --                       | Supermemory key alias (accepted fallback) |
+| `FREYA_TTS_ENABLED`         | `false`                  | Enable Freya TTS (`true` to enable)     |
 | `FREYA_API_KEY`             | --                       | Freya TTS voice synthesis               |
 | `FREYA_CHARACTER_ID`        | `Amika2`                 | Freya TTS character voice               |
 | `FREYA_LANGUAGE`            | `English`                | Freya TTS language                      |

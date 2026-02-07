@@ -5,6 +5,7 @@ import {
   FREYA_CHARACTER_ID,
   FREYA_LANGUAGE,
   FREYA_RATE_LIMIT_PER_MIN,
+  FREYA_TTS_ENABLED,
 } from './config.js';
 import { logger } from './logger.js';
 
@@ -267,9 +268,9 @@ function parseLengthPrefixedOgg(buffer: ArrayBuffer): Uint8Array {
 // Public API
 // ---------------------------------------------------------------------------
 
-/** Check if Freya TTS is configured. */
+/** Check if Freya TTS is enabled (requires FREYA_TTS_ENABLED=true and FREYA_API_KEY). */
 export function isFreyaEnabled(): boolean {
-  return FREYA_API_KEY.length > 0;
+  return FREYA_TTS_ENABLED && FREYA_API_KEY.length > 0;
 }
 
 /** Check if text looks like code/structured content unsuitable for TTS. */

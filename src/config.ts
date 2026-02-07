@@ -88,7 +88,8 @@ export const CUA_SANDBOX_SCREEN_DEPTH = parseInt(
 export const CUA_SANDBOX_SHM_SIZE = process.env.CUA_SANDBOX_SHM_SIZE || '512m';
 export const CUA_API_KEY = process.env.CUA_API_KEY || '';
 
-// Freya TTS configuration
+// Freya TTS configuration (disabled by default, set FREYA_TTS_ENABLED=true to enable)
+export const FREYA_TTS_ENABLED = process.env.FREYA_TTS_ENABLED === 'true';
 export const FREYA_API_KEY = process.env.FREYA_API_KEY || '';
 export const FREYA_CHARACTER_ID = process.env.FREYA_CHARACTER_ID || 'Amika2';
 export const FREYA_LANGUAGE = process.env.FREYA_LANGUAGE || 'English';
