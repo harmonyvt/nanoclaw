@@ -7,6 +7,7 @@ import {
   getWaitForUserRequest,
   getWaitForUserRequestByToken,
   hasWaitingRequests,
+  matchElementInSnapshot,
   processBrowseRequest,
   resolveWaitForUser,
   resolveWaitForUserByToken,
@@ -218,5 +219,184 @@ describe('buildScreenshotAnalysis', () => {
     expect(analysis.elementCount).toBe(6);
     expect(analysis.elements).toHaveLength(3);
     expect(analysis.truncated).toBe(true);
+  });
+});
+
+describe('buildElementSearchQueries word splitting', () => {
+  test('splits multi-word descriptions into individual word candidates', () => {
+    const queries = buildElementSearchQueries('Search Input');
+    expect(queries).toContain('Search Input');
+    expect(queries).toContain('search');
+    expect(queries).toContain('search box');
+    // "Search" is deduplicated with "search" (case-insensitive dedup),
+    // but "Input" is a unique word candidate.
+    expect(queries).toContain('Input');
+    expect(queries.length).toBeGreaterThanOrEqual(4);
+  });
+
+  test('does not split single-word selectors', () => {
+    const queries = buildElementSearchQueries('Login');
+    expect(queries).toEqual(['Login']);
+  });
+
+  test('ignores words shorter than 3 characters', () => {
+    const queries = buildElementSearchQueries('Go to it');
+    expect(queries).toContain('Go to it');
+    // "Go" and "to" and "it" are all < 3 chars, so no word splitting
+    expect(queries).toHaveLength(1);
+  });
+});
+
+describe('matchElementInSnapshot', () => {
+  const screenSize = { width: 1024, height: 768 };
+
+  test('finds element by exact title match', () => {
+    const snapshot = {
+      tree: {
+        role: 'window',
+        children: [
+          {
+            role: 'entry',
+            title: 'Search',
+            position: { x: 200, y: 50 },
+            size: { width: 300, height: 30 },
+          },
+        ],
+      },
+    };
+
+    const result = matchElementInSnapshot(snapshot, ['Search'], screenSize);
+    expect(result).not.toBeNull();
+    expect(result!.coords).toEqual({ x: 350, y: 65 });
+    expect(result!.matchedQuery).toBe('Search');
+  });
+
+  test('finds element by placeholder match', () => {
+    const snapshot = {
+      tree: {
+        role: 'window',
+        children: [
+          {
+            role: 'entry',
+            placeholder: 'Search',
+            position: { x: 200, y: 50 },
+            size: { width: 300, height: 30 },
+          },
+        ],
+      },
+    };
+
+    const result = matchElementInSnapshot(snapshot, ['Search'], screenSize);
+    expect(result).not.toBeNull();
+    expect(result!.matchedQuery).toBe('Search');
+  });
+
+  test('returns null when no match found', () => {
+    const snapshot = {
+      tree: {
+        role: 'window',
+        children: [
+          {
+            role: 'button',
+            title: 'Login',
+            position: { x: 100, y: 100 },
+            size: { width: 80, height: 30 },
+          },
+        ],
+      },
+    };
+
+    const result = matchElementInSnapshot(
+      snapshot,
+      ['Search', 'search box'],
+      screenSize,
+    );
+    expect(result).toBeNull();
+  });
+
+  test('prefers exact match over partial match', () => {
+    const snapshot = {
+      tree: {
+        role: 'window',
+        children: [
+          {
+            role: 'button',
+            title: 'Search Results',
+            position: { x: 100, y: 200 },
+            size: { width: 120, height: 30 },
+          },
+          {
+            role: 'entry',
+            title: 'Search',
+            position: { x: 300, y: 50 },
+            size: { width: 200, height: 30 },
+          },
+        ],
+      },
+    };
+
+    const result = matchElementInSnapshot(snapshot, ['Search'], screenSize);
+    expect(result).not.toBeNull();
+    // Should prefer the exact "Search" match (entry at x=300) over partial "Search Results"
+    expect(result!.coords).toEqual({ x: 400, y: 65 });
+  });
+
+  test('prefers interactive elements over non-interactive', () => {
+    const snapshot = {
+      tree: {
+        role: 'window',
+        children: [
+          {
+            role: 'label',
+            title: 'Search',
+            position: { x: 100, y: 50 },
+            size: { width: 80, height: 20 },
+          },
+          {
+            role: 'entry',
+            title: 'Search',
+            position: { x: 200, y: 50 },
+            size: { width: 300, height: 30 },
+          },
+        ],
+      },
+    };
+
+    const result = matchElementInSnapshot(snapshot, ['Search'], screenSize);
+    expect(result).not.toBeNull();
+    // entry (interactive) should be preferred over label (non-interactive)
+    expect(result!.coords).toEqual({ x: 350, y: 65 });
+  });
+
+  test('case-insensitive matching', () => {
+    const snapshot = {
+      tree: {
+        role: 'window',
+        children: [
+          {
+            role: 'entry',
+            title: 'SEARCH',
+            position: { x: 200, y: 50 },
+            size: { width: 300, height: 30 },
+          },
+        ],
+      },
+    };
+
+    const result = matchElementInSnapshot(snapshot, ['search'], screenSize);
+    expect(result).not.toBeNull();
+    expect(result!.matchedQuery).toBe('search');
+  });
+
+  test('returns null for empty queries', () => {
+    const snapshot = {
+      tree: { role: 'window', children: [] },
+    };
+    expect(matchElementInSnapshot(snapshot, [], screenSize)).toBeNull();
+  });
+
+  test('returns null for null/invalid snapshot', () => {
+    expect(matchElementInSnapshot(null, ['Search'], screenSize)).toBeNull();
+    expect(matchElementInSnapshot('', ['Search'], screenSize)).toBeNull();
   });
 });
