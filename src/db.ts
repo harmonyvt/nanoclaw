@@ -75,6 +75,18 @@ export function initDatabase(): void {
   } catch {
     /* column already exists */
   }
+
+  // Add media columns if they don't exist (migration for existing DBs)
+  try {
+    db.exec(`ALTER TABLE messages ADD COLUMN media_type TEXT`);
+  } catch {
+    /* column already exists */
+  }
+  try {
+    db.exec(`ALTER TABLE messages ADD COLUMN media_path TEXT`);
+  } catch {
+    /* column already exists */
+  }
 }
 
 /**
@@ -108,7 +120,6 @@ export function storeChatMetadata(
   }
 }
 
-
 export interface ChatInfo {
   jid: string;
   name: string;
@@ -130,7 +141,6 @@ export function getAllChats(): ChatInfo[] {
     .all() as ChatInfo[];
 }
 
-
 /**
  * Store a text message (channel-agnostic).
  * Used by all transports to insert messages into the DB.
@@ -146,9 +156,46 @@ export function storeTextMessage(
 ): void {
   db.prepare(
     `INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run(msgId, chatJid, sender, senderName, content, timestamp, isFromMe ? 1 : 0);
+  ).run(
+    msgId,
+    chatJid,
+    sender,
+    senderName,
+    content,
+    timestamp,
+    isFromMe ? 1 : 0,
+  );
 }
 
+/**
+ * Store a media message (channel-agnostic).
+ * Extends storeTextMessage with media_type and media_path columns.
+ */
+export function storeMediaMessage(
+  msgId: string,
+  chatJid: string,
+  sender: string,
+  senderName: string,
+  content: string,
+  timestamp: string,
+  isFromMe: boolean,
+  mediaType: string,
+  mediaPath: string,
+): void {
+  db.prepare(
+    `INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, media_type, media_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    msgId,
+    chatJid,
+    sender,
+    senderName,
+    content,
+    timestamp,
+    isFromMe ? 1 : 0,
+    mediaType,
+    mediaPath,
+  );
+}
 
 export function getNewMessages(
   jids: string[],
@@ -160,7 +207,7 @@ export function getNewMessages(
   const placeholders = jids.map(() => '?').join(',');
   // Filter out bot's own messages by checking content prefix (not is_from_me, since user shares the account)
   const sql = `
-    SELECT id, chat_jid, sender, sender_name, content, timestamp
+    SELECT id, chat_jid, sender, sender_name, content, timestamp, media_type, media_path
     FROM messages
     WHERE timestamp > ? AND chat_jid IN (${placeholders}) AND content NOT LIKE ?
     ORDER BY timestamp
@@ -185,7 +232,7 @@ export function getMessagesSince(
 ): NewMessage[] {
   // Filter out bot's own messages by checking content prefix
   const sql = `
-    SELECT id, chat_jid, sender, sender_name, content, timestamp
+    SELECT id, chat_jid, sender, sender_name, content, timestamp, media_type, media_path
     FROM messages
     WHERE chat_jid = ? AND timestamp > ? AND content NOT LIKE ?
     ORDER BY timestamp
@@ -340,4 +387,24 @@ export function getTaskRunLogs(taskId: string, limit = 10): TaskRunLog[] {
   `,
     )
     .all(taskId, limit) as TaskRunLog[];
+}
+
+/**
+ * Delete all messages for a given chat.
+ */
+export function clearMessages(chatJid: string): number {
+  const result = db
+    .prepare('DELETE FROM messages WHERE chat_jid = ?')
+    .run(chatJid);
+  return result.changes;
+}
+
+/**
+ * Get the total message count for a given chat.
+ */
+export function getMessageCount(chatJid: string): number {
+  const row = db
+    .prepare('SELECT COUNT(*) as count FROM messages WHERE chat_jid = ?')
+    .get(chatJid) as { count: number } | undefined;
+  return row?.count ?? 0;
 }

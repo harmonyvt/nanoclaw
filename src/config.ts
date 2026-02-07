@@ -4,6 +4,9 @@ export const ASSISTANT_NAME = process.env.ASSISTANT_NAME || 'Andy';
 export const POLL_INTERVAL = 2000;
 export const SCHEDULER_POLL_INTERVAL = 60000;
 
+// When true, appends the session/thread ID to outgoing messages for debugging
+export const DEBUG_THREADS = process.env.DEBUG_THREADS === 'true';
+
 // Absolute paths needed for container mounts
 const PROJECT_ROOT = process.cwd();
 const HOME_DIR = process.env.HOME || '/Users/user';
