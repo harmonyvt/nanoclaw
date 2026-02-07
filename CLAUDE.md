@@ -56,6 +56,12 @@ Telegram <-> Host (Bun) <-> SQLite
 | `groups/{name}/logs/`          | Per-container run logs                              |
 | `groups/global/CLAUDE.md`      | Global memory shared read-only to non-main groups   |
 
+### SOUL.md
+
+Per-group personality file. Read by the agent-runner at the start of every query and injected as a `<soul>` XML block before the user's messages. The agent can modify this file to update its own personality at the user's request.
+
+If SOUL.md doesn't exist for a group, the agent is prompted to ask the user to define a personality. The file is freeform markdown. SOUL.md is NOT auto-loaded by the Claude Agent SDK's `settingSources: ['project']` mechanism (which only discovers CLAUDE.md) — the agent-runner manually reads and injects it.
+
 ## Credential Flow
 
 Credentials are resolved with a fallback chain in `container-runner.ts:resolveCredentials()`:
