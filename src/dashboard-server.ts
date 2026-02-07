@@ -245,6 +245,52 @@ function handleTaskRunLogsList(url: URL): Response {
   );
 }
 
+function handleSkillsList(): Response {
+  const skillsDir = path.resolve(process.cwd(), '.claude', 'skills');
+  try {
+    if (!fs.existsSync(skillsDir)) return jsonResponse([]);
+    const dirs = fs
+      .readdirSync(skillsDir, { withFileTypes: true })
+      .filter((d) => d.isDirectory());
+
+    const skills: {
+      name: string;
+      description: string;
+      hasCode: boolean;
+    }[] = [];
+
+    for (const dir of dirs) {
+      const skillMd = path.join(skillsDir, dir.name, 'SKILL.md');
+      if (!fs.existsSync(skillMd)) continue;
+
+      const content = fs.readFileSync(skillMd, 'utf8');
+      // Parse YAML frontmatter
+      const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+      let name = dir.name;
+      let description = '';
+      if (fmMatch) {
+        const nameMatch = fmMatch[1].match(/^name:\s*(.+)$/m);
+        const descMatch = fmMatch[1].match(/^description:\s*(.+)$/m);
+        if (nameMatch) name = nameMatch[1].trim();
+        if (descMatch) description = descMatch[1].trim();
+      }
+
+      // Check if skill has code files beyond SKILL.md
+      const files = fs.readdirSync(path.join(skillsDir, dir.name));
+      const hasCode = files.some(
+        (f) => f !== 'SKILL.md' && !f.startsWith('.'),
+      );
+
+      skills.push({ name, description, hasCode });
+    }
+
+    skills.sort((a, b) => a.name.localeCompare(b.name));
+    return jsonResponse(skills);
+  } catch {
+    return jsonResponse([]);
+  }
+}
+
 // ── Dashboard HTML ──────────────────────────────────────────────────────
 
 function renderDashboardPage(): string {
@@ -471,6 +517,7 @@ function renderDashboardPage(): string {
   <div class="tab active" data-tab="logs">Logs</div>
   <div class="tab" data-tab="containers">Containers</div>
   <div class="tab" data-tab="tasks">Tasks</div>
+  <div class="tab" data-tab="skills">Skills</div>
 </div>
 
 <!-- Filters (Logs tab) -->
@@ -515,6 +562,13 @@ function renderDashboardPage(): string {
 <div class="pane" id="pane-tasks">
   <div class="card-list" id="taskList">
     <div class="loading">Loading tasks...</div>
+  </div>
+</div>
+
+<!-- Skills pane -->
+<div class="pane" id="pane-skills">
+  <div class="card-list" id="skillList">
+    <div class="loading">Loading skills...</div>
   </div>
 </div>
 
@@ -688,6 +742,7 @@ function renderDashboardPage(): string {
 
     if (name === 'containers') loadContainers();
     if (name === 'tasks') loadTasks();
+    if (name === 'skills') loadSkills();
   });
 
   // ── Filters ──────────────────────────────────────────────────
@@ -846,6 +901,38 @@ function renderDashboardPage(): string {
       });
   }
 
+  // ── Skills Tab ───────────────────────────────────────────────
+  function loadSkills() {
+    var list = $('skillList');
+    list.innerHTML = '<div class="loading">Loading...</div>';
+
+    fetch('/api/skills', {
+      headers: authToken !== 'dev' ? { 'Authorization': 'Bearer ' + authToken } : {}
+    })
+      .then(function(r) { return r.json(); })
+      .then(function(skills) {
+        list.innerHTML = '';
+        if (skills.length === 0) {
+          list.innerHTML = '<div class="empty">No skills found</div>';
+          return;
+        }
+        skills.forEach(function(s) {
+          var card = document.createElement('div');
+          card.className = 'card';
+          card.innerHTML =
+            '<div class="card-header">' +
+              '<span class="card-title" style="color:var(--accent)">/' + escapeH(s.name) + '</span>' +
+              (s.hasCode ? '<span class="badge badge-active">code</span>' : '<span class="badge badge-ok">prompt</span>') +
+            '</div>' +
+            (s.description ? '<div class="card-meta">' + escapeH(s.description) + '</div>' : '');
+          list.appendChild(card);
+        });
+      })
+      .catch(function() {
+        list.innerHTML = '<div class="empty">Failed to load skills</div>';
+      });
+  }
+
   // ── Helpers ──────────────────────────────────────────────────
   function timeAgo(iso) {
     const ms = Date.now() - new Date(iso).getTime();
@@ -947,6 +1034,7 @@ function handleRequest(req: Request): Response | Promise<Response> {
     return handleContainerLog(pathname);
   if (pathname === '/api/tasks') return handleTasksList(url);
   if (pathname === '/api/tasks/runs') return handleTaskRunLogsList(url);
+  if (pathname === '/api/skills') return handleSkillsList();
 
   return new Response('Not Found', { status: 404 });
 }
