@@ -8,6 +8,7 @@ import { z } from 'zod';
 import fs from 'fs';
 import path from 'path';
 import { CronExpressionParser } from 'cron-parser';
+import Supermemory from 'supermemory';
 
 const IPC_DIR = '/workspace/ipc';
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
@@ -838,7 +839,7 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
         },
       ),
 
-      // --- Supermemory tools (direct API calls, no IPC needed) ---
+      // --- Supermemory tools (using official SDK) ---
 
       tool(
         'memory_save',
@@ -871,49 +872,15 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
           }
 
           try {
-            const res = await fetch(
-              'https://api.supermemory.ai/v3/documents',
-              {
-                method: 'POST',
-                headers: {
-                  Authorization: `Bearer ${smApiKey}`,
-                  'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                  content: args.content,
-                  containerTags: [`nanoclaw_${groupFolder}`],
-                  metadata: {
-                    type: 'explicit_save',
-                    ...args.metadata,
-                  },
-                }),
+            const sm = new Supermemory({ apiKey: smApiKey });
+            await sm.add({
+              content: args.content,
+              containerTags: [`nanoclaw_${groupFolder}`],
+              metadata: {
+                type: 'explicit_save',
+                ...args.metadata,
               },
-            );
-
-            if (res.status === 429) {
-              return {
-                content: [
-                  {
-                    type: 'text',
-                    text: 'Supermemory rate limit exceeded. Please wait a moment and try again.',
-                  },
-                ],
-                isError: true,
-              };
-            }
-
-            if (!res.ok) {
-              const body = await res.text();
-              return {
-                content: [
-                  {
-                    type: 'text',
-                    text: `Supermemory save failed (HTTP ${res.status}): ${body.slice(0, 500)}`,
-                  },
-                ],
-                isError: true,
-              };
-            }
+            });
 
             return {
               content: [
@@ -966,62 +933,20 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
           }
 
           try {
-            const res = await fetch('https://api.supermemory.ai/v4/search', {
-              method: 'POST',
-              headers: {
-                Authorization: `Bearer ${smApiKey}`,
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({
-                q: args.query,
-                containerTag: `nanoclaw_${groupFolder}`,
-                searchMode: 'hybrid',
-                limit: args.limit ?? 10,
-                threshold: 0.5,
-                rerank: true,
-                rewriteQuery: false,
-              }),
+            const sm = new Supermemory({ apiKey: smApiKey });
+            const response = await sm.search.memories({
+              q: args.query,
+              containerTag: `nanoclaw_${groupFolder}`,
+              searchMode: 'hybrid',
+              limit: args.limit ?? 10,
             });
 
-            if (res.status === 429) {
-              return {
-                content: [
-                  {
-                    type: 'text',
-                    text: 'Supermemory rate limit exceeded. Please wait a moment and try again.',
-                  },
-                ],
-                isError: true,
-              };
-            }
-
-            if (!res.ok) {
-              const body = await res.text();
-              return {
-                content: [
-                  {
-                    type: 'text',
-                    text: `Supermemory search failed (HTTP ${res.status}): ${body.slice(0, 500)}`,
-                  },
-                ],
-                isError: true,
-              };
-            }
-
-            const data = (await res.json()) as {
-              results?: Array<{
-                memory?: string;
-                chunk?: string;
-                similarity?: number;
-              }>;
-            };
-
-            const results = (data.results || [])
-              .map((r) => ({
+            const results = (response.results || [])
+              .map((r: { memory?: string; chunk?: string; similarity?: number }) => ({
                 text: r.memory || r.chunk || '',
                 similarity: r.similarity ?? 0,
               }))
-              .filter((r) => r.text.trim());
+              .filter((r: { text: string }) => r.text.trim());
 
             if (results.length === 0) {
               return {
@@ -1036,7 +961,7 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
 
             const formatted = results
               .map(
-                (r, i) =>
+                (r: { text: string; similarity: number }, i: number) =>
                   `${i + 1}. [relevance: ${r.similarity.toFixed(2)}] ${r.text}`,
               )
               .join('\n\n');
