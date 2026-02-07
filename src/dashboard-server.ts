@@ -245,50 +245,53 @@ function handleTaskRunLogsList(url: URL): Response {
   );
 }
 
-function handleSkillsList(): Response {
-  const skillsDir = path.resolve(process.cwd(), '.claude', 'skills');
-  try {
-    if (!fs.existsSync(skillsDir)) return jsonResponse([]);
-    const dirs = fs
-      .readdirSync(skillsDir, { withFileTypes: true })
-      .filter((d) => d.isDirectory());
+interface ToolInfo {
+  name: string;
+  description: string;
+  category: string;
+}
 
-    const skills: {
-      name: string;
-      description: string;
-      hasCode: boolean;
-    }[] = [];
-
-    for (const dir of dirs) {
-      const skillMd = path.join(skillsDir, dir.name, 'SKILL.md');
-      if (!fs.existsSync(skillMd)) continue;
-
-      const content = fs.readFileSync(skillMd, 'utf8');
-      // Parse YAML frontmatter
-      const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-      let name = dir.name;
-      let description = '';
-      if (fmMatch) {
-        const nameMatch = fmMatch[1].match(/^name:\s*(.+)$/m);
-        const descMatch = fmMatch[1].match(/^description:\s*(.+)$/m);
-        if (nameMatch) name = nameMatch[1].trim();
-        if (descMatch) description = descMatch[1].trim();
-      }
-
-      // Check if skill has code files beyond SKILL.md
-      const files = fs.readdirSync(path.join(skillsDir, dir.name));
-      const hasCode = files.some(
-        (f) => f !== 'SKILL.md' && !f.startsWith('.'),
-      );
-
-      skills.push({ name, description, hasCode });
-    }
-
-    skills.sort((a, b) => a.name.localeCompare(b.name));
-    return jsonResponse(skills);
-  } catch {
-    return jsonResponse([]);
-  }
+function handleToolsList(): Response {
+  const tools: ToolInfo[] = [
+    // Communication
+    { name: 'send_message', description: 'Send a message to the current chat', category: 'Communication' },
+    // Task Scheduling
+    { name: 'schedule_task', description: 'Schedule recurring or one-time task (cron, interval, once)', category: 'Tasks' },
+    { name: 'list_tasks', description: 'List all scheduled tasks', category: 'Tasks' },
+    { name: 'pause_task', description: 'Pause a scheduled task', category: 'Tasks' },
+    { name: 'resume_task', description: 'Resume a paused task', category: 'Tasks' },
+    { name: 'cancel_task', description: 'Cancel and delete a scheduled task', category: 'Tasks' },
+    // Group Management
+    { name: 'register_group', description: 'Register a new Telegram chat (main only)', category: 'Groups' },
+    // Browser Automation
+    { name: 'browse_navigate', description: 'Navigate to a URL', category: 'Browser' },
+    { name: 'browse_snapshot', description: 'Get accessibility tree / UI snapshot', category: 'Browser' },
+    { name: 'browse_click', description: 'Click an element by description', category: 'Browser' },
+    { name: 'browse_fill', description: 'Fill a form field with a value', category: 'Browser' },
+    { name: 'browse_scroll', description: 'Scroll the page', category: 'Browser' },
+    { name: 'browse_screenshot', description: 'Capture screenshot (also sent to Telegram)', category: 'Browser' },
+    { name: 'browse_wait_for_user', description: 'Hand off to user via takeover URL', category: 'Browser' },
+    { name: 'browse_go_back', description: 'Navigate back in browser history', category: 'Browser' },
+    { name: 'browse_evaluate', description: 'Execute JavaScript in page (legacy)', category: 'Browser' },
+    { name: 'browse_close', description: 'Close the current browser page', category: 'Browser' },
+    // Web Scraping
+    { name: 'firecrawl_scrape', description: 'Scrape a single URL to markdown (50KB max)', category: 'Web Scraping' },
+    { name: 'firecrawl_crawl', description: 'Multi-page crawl with depth/limit (100KB max)', category: 'Web Scraping' },
+    { name: 'firecrawl_map', description: 'Discover all URLs on a website', category: 'Web Scraping' },
+    // Long-term Memory
+    { name: 'memory_save', description: 'Save a note or fact to long-term memory', category: 'Memory' },
+    { name: 'memory_search', description: 'Search past memories and conversations', category: 'Memory' },
+    // Built-in Claude Tools
+    { name: 'Bash', description: 'Execute shell commands in the container', category: 'Built-in' },
+    { name: 'Read', description: 'Read files from the filesystem', category: 'Built-in' },
+    { name: 'Write', description: 'Write files to the filesystem', category: 'Built-in' },
+    { name: 'Edit', description: 'Edit existing files with string replacements', category: 'Built-in' },
+    { name: 'Glob', description: 'Find files by glob pattern', category: 'Built-in' },
+    { name: 'Grep', description: 'Search file contents with regex', category: 'Built-in' },
+    { name: 'WebSearch', description: 'Search the web for information', category: 'Built-in' },
+    { name: 'WebFetch', description: 'Fetch and analyze a URL', category: 'Built-in' },
+  ];
+  return jsonResponse(tools);
 }
 
 // ── Dashboard HTML ──────────────────────────────────────────────────────
@@ -998,6 +1001,11 @@ function renderDashboardPage(): string {
 </html>`;
 }
 
+function handleSkillsList(): Response {
+  // TODO: populate when skills infrastructure is added
+  return jsonResponse([]);
+}
+
 // ── Request router ──────────────────────────────────────────────────────
 
 function handleRequest(req: Request): Response | Promise<Response> {
@@ -1075,7 +1083,7 @@ export function startDashboardServer(): void {
       : {};
 
   dashboardServer = Bun.serve({
-    hostname: '0.0.0.0',
+    hostname: '127.0.0.1',
     port: DASHBOARD_PORT,
     ...tlsOptions,
     fetch: handleRequest,

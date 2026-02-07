@@ -10,6 +10,7 @@ import {
   resolveWaitForUserByToken,
 } from './browse-host.js';
 import { logger } from './logger.js';
+import { validateSession } from './dashboard-auth.js';
 
 let takeoverServer: ReturnType<typeof Bun.serve> | null = null;
 
@@ -67,13 +68,19 @@ export function getTakeoverBaseUrl(): string | null {
   return `http://${getSandboxHostIp()}:${CUA_TAKEOVER_WEB_PORT}`;
 }
 
-export function getTakeoverUrl(token: string): string | null {
+export function getTakeoverUrl(
+  token: string,
+  sessionToken?: string,
+): string | null {
   const base = getTakeoverBaseUrl();
   if (!base) return null;
-  return `${base}/cua/takeover/${encodeURIComponent(token)}`;
+  const url = `${base}/cua/takeover/${encodeURIComponent(token)}`;
+  return sessionToken
+    ? `${url}?session=${encodeURIComponent(sessionToken)}`
+    : url;
 }
 
-function renderTakeoverPage(token: string): string {
+function renderTakeoverPage(token: string, sessionToken?: string): string {
   const pending = getWaitForUserRequestByToken(token);
   if (!pending) {
     return `<!doctype html>
@@ -365,6 +372,8 @@ function renderTakeoverPage(token: string): string {
 
   <script>
     const token = ${JSON.stringify(token)};
+    const session = ${JSON.stringify(sessionToken || '')};
+    const authHeaders = session ? { 'Authorization': 'Bearer ' + session } : {};
     const continueBtn = document.getElementById('continueBtn');
     const statusText = document.getElementById('statusText');
 
@@ -375,7 +384,7 @@ function renderTakeoverPage(token: string): string {
 
     async function pollStatus() {
       try {
-        const res = await fetch('/api/cua/takeover/' + encodeURIComponent(token), { cache: 'no-store' });
+        const res = await fetch('/api/cua/takeover/' + encodeURIComponent(token), { cache: 'no-store', headers: authHeaders });
         if (!res.ok) {
           setStatus('Takeover session is no longer active.', false);
           continueBtn.disabled = true;
@@ -404,7 +413,7 @@ function renderTakeoverPage(token: string): string {
       try {
         const res = await fetch('/api/cua/takeover/' + encodeURIComponent(token) + '/continue', {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          headers: { 'content-type': 'application/json', ...authHeaders },
         });
         if (!res.ok) {
           const payload = await res.json().catch(() => null);
@@ -427,7 +436,10 @@ function renderTakeoverPage(token: string): string {
 </html>`;
 }
 
-function buildTakeoverApiPayload(token: string): {
+function buildTakeoverApiPayload(
+  token: string,
+  sessionToken?: string,
+): {
   status: 'pending' | 'not_found';
   requestId?: string;
   groupFolder?: string;
@@ -441,7 +453,7 @@ function buildTakeoverApiPayload(token: string): {
     return {
       status: 'not_found',
       liveViewUrl: getSandboxUrl(),
-      takeoverUrl: getTakeoverUrl(token),
+      takeoverUrl: getTakeoverUrl(token, sessionToken),
     };
   }
   resetIdleTimer();
@@ -452,8 +464,16 @@ function buildTakeoverApiPayload(token: string): {
     message: pending.message,
     createdAt: pending.createdAt,
     liveViewUrl: getSandboxUrl(),
-    takeoverUrl: getTakeoverUrl(token),
+    takeoverUrl: getTakeoverUrl(token, sessionToken),
   };
+}
+
+function extractSessionToken(req: Request, url: URL): string | null {
+  const authHeader = req.headers.get('authorization');
+  if (authHeader?.startsWith('Bearer ')) {
+    return authHeader.slice(7);
+  }
+  return url.searchParams.get('session');
 }
 
 function handleTakeoverRequest(req: Request): Response {
@@ -468,10 +488,19 @@ function handleTakeoverRequest(req: Request): Response {
     });
   }
 
+  // Require a valid dashboard session for all takeover endpoints
+  const sessionToken = extractSessionToken(req, url);
+  if (!sessionToken || !validateSession(sessionToken)) {
+    return jsonResponse(
+      { status: 'error', error: 'unauthorized' },
+      401,
+    );
+  }
+
   if (req.method === 'GET') {
     const apiToken = extractToken(pathname, '/api/cua/takeover/');
     if (apiToken) {
-      const payload = buildTakeoverApiPayload(apiToken);
+      const payload = buildTakeoverApiPayload(apiToken, sessionToken);
       if (payload.status === 'not_found') {
         return jsonResponse(
           { status: 'error', error: 'takeover session not found' },
@@ -505,7 +534,7 @@ function handleTakeoverRequest(req: Request): Response {
   if (req.method === 'GET') {
     const pageToken = extractToken(pathname, '/cua/takeover/');
     if (pageToken) {
-      return htmlResponse(renderTakeoverPage(pageToken));
+      return htmlResponse(renderTakeoverPage(pageToken, sessionToken));
     }
   }
 
@@ -520,7 +549,7 @@ export function startCuaTakeoverServer(): void {
   if (takeoverServer) return;
 
   takeoverServer = Bun.serve({
-    hostname: '0.0.0.0',
+    hostname: '127.0.0.1',
     port: CUA_TAKEOVER_WEB_PORT,
     fetch: handleTakeoverRequest,
   });

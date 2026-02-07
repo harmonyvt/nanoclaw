@@ -84,6 +84,7 @@ import {
   startCuaTakeoverServer,
   stopCuaTakeoverServer,
 } from './cua-takeover-server.js';
+import { createSessionForOwner } from './dashboard-auth.js';
 import {
   initLogSync,
   stopLogSync,
@@ -702,7 +703,8 @@ function startIpcWatcher(): void {
                 );
 
                 if (chatJid) {
-                  const takeoverUrl = getTakeoverUrl(waitRequest.token);
+                  const ownerSession = createSessionForOwner();
+                  const takeoverUrl = getTakeoverUrl(waitRequest.token, ownerSession?.token);
                   const sandboxUrl = getSandboxUrl();
                   const takeoverPart = takeoverUrl
                     ? `\nTake over CUA: ${takeoverUrl}`

@@ -104,6 +104,14 @@ export function validateSession(
   return { userId: session.userId };
 }
 
+export function createSessionForOwner(): {
+  token: string;
+  expiresAt: number;
+} | null {
+  if (!TELEGRAM_OWNER_ID) return null;
+  return createSession(Number(TELEGRAM_OWNER_ID));
+}
+
 export function cleanExpiredSessions(): void {
   const now = Date.now();
   for (const [token, session] of sessions) {

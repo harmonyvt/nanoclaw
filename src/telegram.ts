@@ -32,6 +32,7 @@ import {
   getOldestWaitForUserRequest,
 } from './browse-host.js';
 import { getTakeoverUrl } from './cua-takeover-server.js';
+import { createSessionForOwner } from './dashboard-auth.js';
 import { getDashboardUrl } from './dashboard-server.js';
 import { downloadTelegramFile, transcribeAudio } from './media.js';
 import { logger } from './logger.js';
@@ -618,7 +619,8 @@ export async function connectTelegram(
         'Manual forced takeover requested from Telegram command.',
       );
 
-    const takeoverUrl = getTakeoverUrl(request.token);
+    const ownerSession = createSessionForOwner();
+    const takeoverUrl = getTakeoverUrl(request.token, ownerSession?.token);
     const sandboxUrl = getSandboxUrl();
     const takeoverLine = takeoverUrl
       ? `Take over CUA: ${takeoverUrl}`
