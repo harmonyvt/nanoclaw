@@ -43,11 +43,20 @@ import {
   isVerbose,
   sendTelegramMessage,
   sendTelegramPhoto,
+  sendTelegramVoice,
   setTelegramTyping,
   stopTelegram,
 } from './telegram.js';
 import type { SessionManager, TaskActionHandler } from './telegram.js';
 import { NewMessage, RegisteredGroup, Session } from './types.js';
+import {
+  detectEmotionFromText,
+  formatFreyaText,
+  isFreyaEnabled,
+  looksLikeCode,
+  parseEmotion,
+  synthesizeSpeech,
+} from './tts.js';
 import { loadJson, saveJson } from './utils.js';
 import { logger } from './logger.js';
 import {
@@ -258,7 +267,54 @@ async function processMessage(msg: NewMessage): Promise<void> {
         text += `\n[thread: ${threadId.slice(0, 8)}]`;
       }
     }
-    await sendMessage(msg.chat_jid, text);
+
+    // Auto-TTS: parse structured voice response (---voice--- separator)
+    const voiceSep = '---voice---';
+    const sepIndex = text.indexOf(voiceSep);
+
+    if (isFreyaEnabled()) {
+      let voicePart: string;
+      let textPart: string | null;
+
+      if (sepIndex !== -1) {
+        // Structured: voice summary + text follow-up
+        voicePart = text.slice(0, sepIndex).trim();
+        textPart = text.slice(sepIndex + voiceSep.length).trim();
+      } else if (!looksLikeCode(text) && text.length <= 500) {
+        // Short non-code response: voice only
+        voicePart = text;
+        textPart = null;
+      } else {
+        // Long or code-heavy with no separator: text only
+        voicePart = '';
+        textPart = text;
+      }
+
+      if (voicePart) {
+        try {
+          const emotion = detectEmotionFromText(voicePart);
+          const markedText = formatFreyaText(voicePart, emotion);
+          const mediaDir = path.join(GROUPS_DIR, group.folder, 'media');
+          const oggPath = await synthesizeSpeech(markedText, mediaDir);
+          await sendTelegramVoice(msg.chat_jid, oggPath);
+        } catch (err) {
+          logger.error({ err }, 'Auto-TTS failed, sending as text');
+          // On TTS failure, prepend voice part back to text
+          textPart = textPart
+            ? `${voicePart}\n\n${textPart}`
+            : voicePart;
+        }
+      }
+
+      if (textPart) {
+        await sendMessage(msg.chat_jid, textPart);
+      }
+    } else {
+      // Freya disabled: strip separator and send as plain text
+      const cleanText =
+        sepIndex !== -1 ? text.replace(voiceSep, '').trim() : text;
+      await sendMessage(msg.chat_jid, cleanText);
+    }
 
     // Store interaction to Supermemory (non-blocking)
     if (isSupermemoryEnabled()) {
@@ -469,6 +525,74 @@ function startIpcWatcher(): void {
                   logger.warn(
                     { chatJid: data.chatJid, sourceGroup },
                     'Unauthorized IPC message attempt blocked',
+                  );
+                }
+              } else if (
+                data.type === 'voice' &&
+                data.chatJid &&
+                data.text
+              ) {
+                // Voice message via Freya TTS
+                const targetGroup = registeredGroups[data.chatJid];
+                if (
+                  isMain ||
+                  (targetGroup && targetGroup.folder === sourceGroup)
+                ) {
+                  if (isFreyaEnabled()) {
+                    try {
+                      // Resolve emotion: agent-specified or keyword fallback
+                      let emotion;
+                      if (data.emotion) {
+                        const parsed = parseEmotion(data.emotion);
+                        if ('error' in parsed) {
+                          logger.warn(
+                            { emotion: data.emotion, error: parsed.error },
+                            'Invalid emotion from agent, auto-detecting',
+                          );
+                          emotion = detectEmotionFromText(data.text);
+                        } else {
+                          emotion = parsed;
+                        }
+                      } else {
+                        emotion = detectEmotionFromText(data.text);
+                      }
+                      const markedText = formatFreyaText(data.text, emotion);
+                      const mediaDir = path.join(
+                        GROUPS_DIR,
+                        sourceGroup,
+                        'media',
+                      );
+                      const oggPath = await synthesizeSpeech(
+                        markedText,
+                        mediaDir,
+                      );
+                      await sendTelegramVoice(data.chatJid, oggPath);
+                      logger.info(
+                        {
+                          chatJid: data.chatJid,
+                          sourceGroup,
+                          emotion: emotion.name,
+                        },
+                        'IPC voice message sent',
+                      );
+                    } catch (err) {
+                      logger.error(
+                        { err, chatJid: data.chatJid },
+                        'TTS failed, falling back to text',
+                      );
+                      await sendMessage(data.chatJid, data.text);
+                    }
+                  } else {
+                    logger.warn(
+                      { sourceGroup },
+                      'send_voice used but FREYA_API_KEY not set, sending as text',
+                    );
+                    await sendMessage(data.chatJid, data.text);
+                  }
+                } else {
+                  logger.warn(
+                    { chatJid: data.chatJid, sourceGroup },
+                    'Unauthorized IPC voice message attempt blocked',
                   );
                 }
               }

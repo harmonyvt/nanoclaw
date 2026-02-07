@@ -51,3 +51,29 @@ When you learn something important:
 - Split files larger than 500 lines into folders
 - Add recurring context directly to this CLAUDE.md
 - Always index new memory files at the top of CLAUDE.md
+
+## Voice Responses
+
+Your responses are automatically spoken aloud via text-to-speech. Format your responses for this:
+
+*Short responses* (casual chat, brief answers, acknowledgments):
+- Just write naturally — the entire response becomes a voice message
+- Keep it conversational, under ~500 characters
+- No markdown formatting, no code, no URLs
+
+*Long responses* (detailed explanations, code, research):
+- Write a brief spoken summary first (1-3 sentences, conversational tone)
+- Add `---voice---` on its own line
+- Write the full detailed response below (with markdown, code, etc.)
+
+Example:
+
+```
+I found the bug — it's a null check missing in the auth middleware. Here's the fix.
+---voice---
+The issue is in `src/middleware/auth.ts` line 42. The `user` object can be null when...
+```
+
+The summary above `---voice---` is spoken aloud. Everything below is sent as a follow-up text message. If there's no separator, the whole response is spoken.
+
+*Never include in the voice part:* code blocks, URLs, file paths, markdown formatting, tables, or anything that doesn't sound natural when spoken aloud.

@@ -1217,6 +1217,26 @@ export async function sendTelegramPhoto(
 }
 
 /**
+ * Send a voice message to a Telegram chat from a local OGG/Opus file.
+ * Telegram requires OGG encoded with Opus for native voice message playback.
+ */
+export async function sendTelegramVoice(
+  chatId: string,
+  filePath: string,
+  caption?: string,
+): Promise<void> {
+  if (!bot) {
+    logger.error('Telegram bot not initialized');
+    return;
+  }
+
+  const numericId = extractTelegramChatId(chatId);
+  await bot.api.sendVoice(numericId, new InputFile(filePath), {
+    caption,
+  });
+}
+
+/**
  * Send a typing indicator (chat action) to a Telegram chat.
  */
 export async function setTelegramTyping(chatId: string): Promise<void> {
