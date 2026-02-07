@@ -483,6 +483,24 @@ export async function connectTelegram(
     logger.error({ err }, 'Failed to register bot commands');
   }
 
+  // Set the persistent Menu Button (bottom-left "Open" button like BotFather)
+  // This opens the dashboard as a Telegram Web App when tapped.
+  const dashboardUrl = getDashboardUrl();
+  if (dashboardUrl) {
+    try {
+      await bot.api.setChatMenuButton({
+        menu_button: {
+          type: 'web_app',
+          text: 'Dashboard',
+          web_app: { url: dashboardUrl + '/app' },
+        },
+      });
+      logger.info({ url: dashboardUrl }, 'Dashboard menu button set');
+    } catch (err) {
+      logger.warn({ err }, 'Failed to set dashboard menu button');
+    }
+  }
+
   /**
    * Ensure the owner's chat is registered. Auto-registers as "main" on first contact.
    */
