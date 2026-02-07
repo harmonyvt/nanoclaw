@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { Bot, InputFile } from 'grammy';
+import { Bot, InlineKeyboard, InputFile } from 'grammy';
 
 import {
   GROUPS_DIR,
@@ -12,14 +12,21 @@ import {
 
 import {
   clearMessages,
+  getAllTasks,
   getMessageCount,
+  getTaskById,
+  getTaskByShortId,
+  getTaskRunLogs,
+  getTasksForGroup,
+  updateTask,
+  deleteTask,
   storeChatMetadata,
   storeMediaMessage,
   storeTextMessage,
 } from './db.js';
 import { downloadTelegramFile, transcribeAudio } from './media.js';
 import { logger } from './logger.js';
-import { RegisteredGroup } from './types.js';
+import { RegisteredGroup, ScheduledTask } from './types.js';
 
 /**
  * Interface for managing sessions from telegram command handlers.
@@ -30,6 +37,139 @@ export interface SessionManager {
   getSession(chatJid: string): string | undefined;
   /** Clear (delete) the sessionId for a chat's group folder so the next message starts fresh. */
   clearSession(chatJid: string): void;
+}
+
+/**
+ * Interface for triggering task actions from telegram command handlers.
+ * Passed in by the host (index.ts) so telegram.ts doesn't depend on task-scheduler.
+ */
+export interface TaskActionHandler {
+  runTaskNow(taskId: string): Promise<{ success: boolean; error?: string; durationMs?: number }>;
+}
+
+// --- Task formatting helpers ---
+
+function shortId(taskId: string): string {
+  return taskId.slice(-8);
+}
+
+function resolveTask(idOrShort: string): ScheduledTask | undefined {
+  return getTaskById(idOrShort) || getTaskByShortId(idOrShort);
+}
+
+function formatSchedule(task: ScheduledTask): string {
+  if (task.schedule_type === 'cron') {
+    return `cron: ${task.schedule_value}`;
+  }
+  if (task.schedule_type === 'interval') {
+    const ms = parseInt(task.schedule_value, 10);
+    if (ms >= 86400000) return `every ${Math.round(ms / 86400000)}d`;
+    if (ms >= 3600000) return `every ${Math.round(ms / 3600000)}h`;
+    if (ms >= 60000) return `every ${Math.round(ms / 60000)}m`;
+    return `every ${Math.round(ms / 1000)}s`;
+  }
+  if (task.schedule_type === 'once') {
+    return `once: ${task.schedule_value.replace('T', ' ').slice(0, 16)}`;
+  }
+  return task.schedule_type;
+}
+
+function formatRelativeTime(iso: string | null): string {
+  if (!iso) return '--';
+  const diff = new Date(iso).getTime() - Date.now();
+  const abs = Math.abs(diff);
+  const suffix = diff > 0 ? '' : ' ago';
+  const prefix = diff > 0 ? 'in ' : '';
+  if (abs < 60000) return `${prefix}${Math.round(abs / 1000)}s${suffix}`;
+  if (abs < 3600000) return `${prefix}${Math.round(abs / 60000)}m${suffix}`;
+  if (abs < 86400000) return `${prefix}${Math.round(abs / 3600000)}h${suffix}`;
+  return `${prefix}${Math.round(abs / 86400000)}d${suffix}`;
+}
+
+function truncatePrompt(prompt: string, max = 60): string {
+  const oneLine = prompt.replace(/\s+/g, ' ').trim();
+  if (oneLine.length <= max) return oneLine;
+  return oneLine.slice(0, max - 1) + '…';
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function formatTaskList(tasks: ScheduledTask[]): string {
+  if (tasks.length === 0) return 'No tasks scheduled. Ask me to create one.';
+
+  const active = tasks.filter(t => t.status === 'active').length;
+  const paused = tasks.filter(t => t.status === 'paused').length;
+  const completed = tasks.filter(t => t.status === 'completed').length;
+
+  const parts = [];
+  if (active) parts.push(`${active} active`);
+  if (paused) parts.push(`${paused} paused`);
+  if (completed) parts.push(`${completed} done`);
+
+  const lines = [`<b>Tasks</b> (${parts.join(', ')})\n`];
+
+  for (let i = 0; i < tasks.length; i++) {
+    const t = tasks[i];
+    const status = t.status === 'active' ? 'active' : t.status === 'paused' ? 'paused' : 'done';
+    const nextInfo = t.next_run ? ` | next: ${formatRelativeTime(t.next_run)}` : '';
+    lines.push(
+      `${i + 1}. <b>${escapeHtml(truncatePrompt(t.prompt, 40))}</b>\n` +
+      `   <code>${formatSchedule(t)}</code> | ${status}${nextInfo}`
+    );
+  }
+
+  return lines.join('\n');
+}
+
+function buildTaskListKeyboard(tasks: ScheduledTask[]): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  for (const t of tasks) {
+    const sid = shortId(t.id);
+    if (t.status === 'active') {
+      kb.text('Pause', `t:pause:${sid}`);
+    } else if (t.status === 'paused') {
+      kb.text('Resume', `t:resume:${sid}`);
+    }
+    kb.text('Run Now', `t:run:${sid}`);
+    kb.text('Details', `t:detail:${sid}`);
+    kb.row();
+  }
+  return kb;
+}
+
+function formatTaskDetail(task: ScheduledTask): string {
+  const lines = [
+    `<b>Task Detail</b>\n`,
+    `<b>ID:</b> <code>${escapeHtml(task.id)}</code>`,
+    `<b>Prompt:</b> ${escapeHtml(truncatePrompt(task.prompt, 200))}`,
+    `<b>Schedule:</b> ${escapeHtml(formatSchedule(task))}`,
+    `<b>Context:</b> ${task.context_mode}`,
+    `<b>Status:</b> ${task.status}`,
+    `<b>Next run:</b> ${task.next_run ? formatRelativeTime(task.next_run) : '--'}`,
+    `<b>Last run:</b> ${task.last_run ? formatRelativeTime(task.last_run) : 'never'}`,
+  ];
+  if (task.last_result) {
+    lines.push(`<b>Last result:</b> ${escapeHtml(task.last_result.slice(0, 200))}`);
+  }
+  return lines.join('\n');
+}
+
+function buildTaskDetailKeyboard(task: ScheduledTask): InlineKeyboard {
+  const sid = shortId(task.id);
+  const kb = new InlineKeyboard();
+  if (task.status === 'active') {
+    kb.text('Pause', `t:pause:${sid}`);
+  } else if (task.status === 'paused') {
+    kb.text('Resume', `t:resume:${sid}`);
+  }
+  kb.text('Run Now', `t:run:${sid}`);
+  kb.row();
+  kb.text('Run Logs', `t:logs:${sid}`);
+  kb.text('Delete', `t:del:${sid}`);
+  kb.text('Back', `t:back:_`);
+  return kb;
 }
 
 // Read version from package.json at startup
@@ -93,30 +233,23 @@ export async function connectTelegram(
   registeredGroups: () => Record<string, RegisteredGroup>,
   onRegisterGroup?: (jid: string, group: RegisteredGroup) => void,
   sessionManager?: SessionManager,
+  taskActions?: TaskActionHandler,
 ): Promise<void> {
   bot = new Bot(TELEGRAM_BOT_TOKEN);
 
   // Register slash commands with Telegram immediately so they appear in the command menu.
   // This runs before bot.start() since bot.api only needs the token, not full initialization.
   try {
-    await bot.api.setMyCommands([
+    const commandList = [
+      { command: 'tasks', description: 'List scheduled tasks and automations' },
       { command: 'new', description: 'Start a new conversation thread' },
       { command: 'clear', description: 'Clear conversation history' },
       { command: 'status', description: 'Show session info' },
       { command: 'verbose', description: 'Toggle verbose mode (show agent tool use)' },
       { command: 'help', description: 'List commands' },
-    ]);
-    // Also set commands specifically for private chats so they appear in the / menu
-    await bot.api.setMyCommands(
-      [
-        { command: 'new', description: 'Start a new conversation thread' },
-        { command: 'clear', description: 'Clear conversation history' },
-        { command: 'status', description: 'Show session info' },
-        { command: 'verbose', description: 'Toggle verbose mode (show agent tool use)' },
-        { command: 'help', description: 'List commands' },
-      ],
-      { scope: { type: 'all_private_chats' } },
-    );
+    ];
+    await bot.api.setMyCommands(commandList);
+    await bot.api.setMyCommands(commandList, { scope: { type: 'all_private_chats' } });
     logger.info('Bot commands registered with Telegram');
   } catch (err) {
     logger.error({ err }, 'Failed to register bot commands');
@@ -194,13 +327,15 @@ export async function connectTelegram(
   bot.command('help', async (ctx) => {
     if (!shouldAccept(ctx)) return;
     const lines = [
+      '/tasks - List scheduled tasks and automations',
+      '/runtask &lt;id&gt; - Trigger a task immediately',
       '/new - Start a new conversation thread',
       '/clear - Clear conversation history and reset session',
       '/status - Show session info, message count, uptime',
       '/verbose - Toggle verbose mode (show agent tool use)',
       '/help - List available commands',
     ];
-    await ctx.reply(lines.join('\n'));
+    await ctx.reply(lines.join('\n'), { parse_mode: 'HTML' });
   });
 
   bot.command('verbose', async (ctx) => {
@@ -212,6 +347,205 @@ export async function connectTelegram(
     } else {
       verboseChats.add(chatId);
       await ctx.reply('Verbose mode on');
+    }
+  });
+
+  // --- Task commands ---
+
+  bot.command('tasks', async (ctx) => {
+    if (!shouldAccept(ctx)) return;
+    const chatId = makeTelegramChatId(ctx.chat.id);
+    const group = registeredGroups()[chatId];
+    const isMain = group && group.folder === 'main';
+
+    // Main sees all, others see only their group
+    const tasks = isMain
+      ? getAllTasks().filter(t => t.status !== 'completed')
+      : group
+        ? getTasksForGroup(group.folder).filter(t => t.status !== 'completed')
+        : [];
+
+    const text = formatTaskList(tasks);
+    const kb = tasks.length > 0 ? buildTaskListKeyboard(tasks) : undefined;
+
+    await ctx.reply(text, {
+      parse_mode: 'HTML',
+      ...(kb ? { reply_markup: kb } : {}),
+    });
+  });
+
+  bot.command('runtask', async (ctx) => {
+    if (!shouldAccept(ctx)) return;
+    const idArg = ctx.match?.trim();
+    if (!idArg) {
+      await ctx.reply('Usage: /runtask <task-id>');
+      return;
+    }
+
+    const task = resolveTask(idArg);
+    if (!task) {
+      await ctx.reply('Task not found.');
+      return;
+    }
+
+    if (!taskActions) {
+      await ctx.reply('Task runner not available.');
+      return;
+    }
+
+    await ctx.reply(`Running task: ${truncatePrompt(task.prompt, 60)}...`);
+    const result = await taskActions.runTaskNow(task.id);
+    if (result.success) {
+      const dur = result.durationMs ? ` (${Math.round(result.durationMs / 1000)}s)` : '';
+      await ctx.reply(`Task completed${dur}.`);
+    } else {
+      await ctx.reply(`Task failed: ${result.error || 'Unknown error'}`);
+    }
+  });
+
+  // --- Inline keyboard callback handler ---
+
+  bot.on('callback_query:data', async (ctx) => {
+    if (!shouldAccept(ctx)) return;
+    const data = ctx.callbackQuery.data;
+    if (!data.startsWith('t:')) return;
+
+    const parts = data.split(':');
+    if (parts.length < 3) {
+      await ctx.answerCallbackQuery({ text: 'Invalid action' });
+      return;
+    }
+
+    const action = parts[1];
+    const sid = parts[2];
+    const chatId = makeTelegramChatId(ctx.callbackQuery.from.id);
+    const group = registeredGroups()[chatId];
+    const isMain = group && group.folder === 'main';
+
+    // "back" action returns to task list
+    if (action === 'back') {
+      const tasks = isMain
+        ? getAllTasks().filter(t => t.status !== 'completed')
+        : group
+          ? getTasksForGroup(group.folder).filter(t => t.status !== 'completed')
+          : [];
+      const text = formatTaskList(tasks);
+      const kb = tasks.length > 0 ? buildTaskListKeyboard(tasks) : undefined;
+      await ctx.editMessageText(text, {
+        parse_mode: 'HTML',
+        ...(kb ? { reply_markup: kb } : {}),
+      });
+      await ctx.answerCallbackQuery();
+      return;
+    }
+
+    // Resolve task from short ID
+    const task = getTaskByShortId(sid);
+    if (!task) {
+      await ctx.answerCallbackQuery({ text: 'Task not found' });
+      return;
+    }
+
+    switch (action) {
+      case 'pause': {
+        updateTask(task.id, { status: 'paused' });
+        const updated = getTaskById(task.id)!;
+        await ctx.editMessageText(formatTaskDetail(updated), {
+          parse_mode: 'HTML',
+          reply_markup: buildTaskDetailKeyboard(updated),
+        });
+        await ctx.answerCallbackQuery({ text: 'Task paused' });
+        break;
+      }
+
+      case 'resume': {
+        updateTask(task.id, { status: 'active' });
+        const updated = getTaskById(task.id)!;
+        await ctx.editMessageText(formatTaskDetail(updated), {
+          parse_mode: 'HTML',
+          reply_markup: buildTaskDetailKeyboard(updated),
+        });
+        await ctx.answerCallbackQuery({ text: 'Task resumed' });
+        break;
+      }
+
+      case 'run': {
+        await ctx.answerCallbackQuery({ text: 'Task triggered!' });
+        if (!taskActions) return;
+        const result = await taskActions.runTaskNow(task.id);
+        const numericId = extractTelegramChatId(chatId);
+        if (result.success) {
+          const dur = result.durationMs ? ` (${Math.round(result.durationMs / 1000)}s)` : '';
+          await bot!.api.sendMessage(numericId, `Task completed${dur}: ${truncatePrompt(task.prompt, 60)}`);
+        } else {
+          await bot!.api.sendMessage(numericId, `Task failed: ${result.error || 'Unknown error'}`);
+        }
+        break;
+      }
+
+      case 'detail': {
+        await ctx.editMessageText(formatTaskDetail(task), {
+          parse_mode: 'HTML',
+          reply_markup: buildTaskDetailKeyboard(task),
+        });
+        await ctx.answerCallbackQuery();
+        break;
+      }
+
+      case 'logs': {
+        const logs = getTaskRunLogs(task.id, 5);
+        let text = `<b>Run Logs</b> - ${escapeHtml(truncatePrompt(task.prompt, 40))}\n\n`;
+        if (logs.length === 0) {
+          text += 'No runs yet.';
+        } else {
+          for (const log of logs) {
+            const dur = `${(log.duration_ms / 1000).toFixed(1)}s`;
+            const time = log.run_at.replace('T', ' ').slice(0, 16);
+            const status = log.status === 'success' ? 'ok' : 'err';
+            text += `${time} - ${status} (${dur})\n`;
+            if (log.error) text += `  ${escapeHtml(log.error.slice(0, 100))}\n`;
+          }
+        }
+        const kb = new InlineKeyboard()
+          .text('Back to Task', `t:detail:${sid}`)
+          .text('Back to List', `t:back:_`);
+        await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
+        await ctx.answerCallbackQuery();
+        break;
+      }
+
+      case 'del': {
+        const text = `Delete this task?\n\n<b>${escapeHtml(truncatePrompt(task.prompt, 80))}</b>\n\nThis cannot be undone.`;
+        const kb = new InlineKeyboard()
+          .text('Yes, Delete', `t:confirm_del:${sid}`)
+          .text('No, Keep', `t:detail:${sid}`);
+        await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
+        await ctx.answerCallbackQuery();
+        break;
+      }
+
+      case 'confirm_del': {
+        deleteTask(task.id);
+        // Return to task list
+        const tasks = isMain
+          ? getAllTasks().filter(t => t.status !== 'completed')
+          : group
+            ? getTasksForGroup(group.folder).filter(t => t.status !== 'completed')
+            : [];
+        const text = tasks.length > 0
+          ? `Task deleted.\n\n${formatTaskList(tasks)}`
+          : 'Task deleted. No tasks remaining.';
+        const kb = tasks.length > 0 ? buildTaskListKeyboard(tasks) : undefined;
+        await ctx.editMessageText(text, {
+          parse_mode: 'HTML',
+          ...(kb ? { reply_markup: kb } : {}),
+        });
+        await ctx.answerCallbackQuery({ text: 'Task deleted' });
+        break;
+      }
+
+      default:
+        await ctx.answerCallbackQuery({ text: 'Unknown action' });
     }
   });
 
