@@ -211,7 +211,7 @@ function parseSsePayload(raw: string): unknown {
   return last;
 }
 
-async function runCuaCommand(
+export async function runCuaCommand(
   command: string,
   args: Record<string, unknown> = {},
 ): Promise<unknown> {
@@ -328,7 +328,7 @@ async function sleep(ms: number): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
-function shellSingleQuote(value: string): string {
+export function shellSingleQuote(value: string): string {
   return `'${value.replace(/'/g, `'\"'\"'`)}'`;
 }
 
@@ -1895,7 +1895,7 @@ async function processCuaRequest(
         };
       }
 
-      const MAX_FILE_SIZE = 40 * 1024 * 1024 * 1024; // 40GB
+      const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
 
       // Check file exists and get size
       let fileSize: number;
@@ -1921,7 +1921,7 @@ async function processCuaRequest(
       if (fileSize > MAX_FILE_SIZE) {
         return {
           status: 'error',
-          error: `File too large: ${(fileSize / 1024 / 1024 / 1024).toFixed(1)}GB exceeds 40GB limit`,
+          error: `File too large: ${(fileSize / 1024 / 1024).toFixed(1)}MB exceeds 100MB limit`,
         };
       }
 
@@ -2011,12 +2011,12 @@ async function processCuaRequest(
         };
       }
 
-      const MAX_FILE_SIZE = 40 * 1024 * 1024 * 1024; // 40GB
-      const fileBuffer = fs.readFileSync(hostPath);
-      if (fileBuffer.length > MAX_FILE_SIZE) {
+      const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
+      const fileStat = fs.statSync(hostPath);
+      if (fileStat.size > MAX_FILE_SIZE) {
         return {
           status: 'error',
-          error: `File too large: ${(fileBuffer.length / 1024 / 1024 / 1024).toFixed(1)}GB exceeds 40GB limit`,
+          error: `File too large: ${(fileStat.size / 1024 / 1024).toFixed(1)}MB exceeds 100MB limit`,
         };
       }
 
@@ -2043,56 +2043,52 @@ async function processCuaRequest(
         // Best effort — directory may already exist
       }
 
-      // Upload file via base64 chunks to avoid shell argument limits
-      const CHUNK_SIZE = 64 * 1024; // 64KB chunks
-      const base64Content = fileBuffer.toString('base64');
+      // Stream file in chunks to CUA to avoid loading entire file into memory.
+      // Chunk size must be a multiple of 3 so base64 encoding produces no
+      // padding (except the final chunk), preventing corruption on append.
+      const RAW_CHUNK_SIZE = 48 * 1024; // 48KB raw → 64KB base64
+      const fd = fs.openSync(hostPath, 'r');
+      const chunkBuf = Buffer.alloc(RAW_CHUNK_SIZE);
+      let readOffset = 0;
+      let chunkIndex = 0;
 
-      if (base64Content.length <= CHUNK_SIZE) {
-        // Small file: single write
-        try {
-          await runCuaCommand('run_command', {
-            command: `echo '${base64Content}' | base64 -d > ${shellSingleQuote(destPath)}`,
-          });
-        } catch (err) {
-          return {
-            status: 'error',
-            error: `Failed to write file to CUA: ${err instanceof Error ? err.message : String(err)}`,
-          };
-        }
-      } else {
-        // Large file: chunked write
-        const totalChunks = Math.ceil(base64Content.length / CHUNK_SIZE);
-        for (let i = 0; i < totalChunks; i++) {
-          const chunk = base64Content.slice(
-            i * CHUNK_SIZE,
-            (i + 1) * CHUNK_SIZE,
-          );
-          const redirect = i === 0 ? '>' : '>>';
+      try {
+        while (true) {
+          const bytesRead = fs.readSync(fd, chunkBuf, 0, RAW_CHUNK_SIZE, readOffset);
+          if (bytesRead === 0) break;
+
+          const b64Chunk = chunkBuf.subarray(0, bytesRead).toString('base64');
+          const redirect = chunkIndex === 0 ? '>' : '>>';
           try {
             await runCuaCommand('run_command', {
-              command: `echo '${chunk}' | base64 -d ${redirect} ${shellSingleQuote(destPath)}`,
+              command: `printf '%s' ${shellSingleQuote(b64Chunk)} | base64 -d ${redirect} ${shellSingleQuote(destPath)}`,
             });
           } catch (err) {
             return {
               status: 'error',
-              error: `Failed to write file chunk ${i + 1}/${totalChunks} to CUA: ${err instanceof Error ? err.message : String(err)}`,
+              error: `Failed to write file chunk ${chunkIndex + 1} to CUA: ${err instanceof Error ? err.message : String(err)}`,
             };
           }
+
+          readOffset += bytesRead;
+          chunkIndex++;
         }
+      } finally {
+        fs.closeSync(fd);
       }
 
       logger.info(
         {
           sourcePath,
           destPath,
-          size: fileBuffer.length,
+          size: fileStat.size,
           groupFolder,
         },
         'Uploaded file to CUA sandbox',
       );
       return {
         status: 'ok',
-        result: `Uploaded ${filename} (${(fileBuffer.length / 1024).toFixed(1)}KB) to ${destPath}`,
+        result: `Uploaded ${filename} (${(fileStat.size / 1024).toFixed(1)}KB) to ${destPath}`,
       };
     }
 
