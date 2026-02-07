@@ -26,9 +26,10 @@ export interface IpcMcpContext {
   isMain: boolean;
 }
 
-function resolveSupermemoryApiKey():
-  | { key: string; envVar: (typeof SUPERMEMORY_KEY_ENV_VARS)[number] }
-  | null {
+function resolveSupermemoryApiKey(): {
+  key: string;
+  envVar: (typeof SUPERMEMORY_KEY_ENV_VARS)[number];
+} | null {
   for (const envVar of SUPERMEMORY_KEY_ENV_VARS) {
     const raw = process.env[envVar];
     if (typeof raw !== 'string') continue;
@@ -57,7 +58,12 @@ async function writeBrowseRequest(
   action: string,
   params: Record<string, unknown>,
   timeoutMs = 60000,
-): Promise<{ status: string; result?: unknown; error?: string }> {
+): Promise<{
+  status: string;
+  result?: unknown;
+  error?: string;
+  analysis?: { summary?: string; metadataPath?: string };
+}> {
   fs.mkdirSync(BROWSE_DIR, { recursive: true });
 
   const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -960,10 +966,16 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
             });
 
             const results = (response.results || [])
-              .map((r: { memory?: string; chunk?: string; similarity?: number }) => ({
-                text: r.memory || r.chunk || '',
-                similarity: r.similarity ?? 0,
-              }))
+              .map(
+                (r: {
+                  memory?: string;
+                  chunk?: string;
+                  similarity?: number;
+                }) => ({
+                  text: r.memory || r.chunk || '',
+                  similarity: r.similarity ?? 0,
+                }),
+              )
               .filter((r: { text: string }) => r.text.trim());
 
             if (results.length === 0) {
@@ -1139,7 +1151,7 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
 
       tool(
         'browse_screenshot',
-        'Take a screenshot of the current browser page. The image is saved to the group media directory and the path is returned.',
+        'Take a screenshot of the current browser page. Returns the saved image path plus labeled UI elements mapped to grid cells.',
         {},
         async () => {
           const res = await writeBrowseRequest('screenshot', {});
@@ -1151,9 +1163,16 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
               isError: true,
             };
           }
+          const summary =
+            res.analysis && typeof res.analysis.summary === 'string'
+              ? res.analysis.summary
+              : null;
           return {
             content: [
-              { type: 'text', text: `Screenshot saved: ${res.result}` },
+              {
+                type: 'text',
+                text: summary || `Screenshot saved: ${res.result}`,
+              },
             ],
           };
         },
