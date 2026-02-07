@@ -41,6 +41,7 @@ import { runTaskNow, startSchedulerLoop } from './task-scheduler.js';
 import {
   connectTelegram,
   isVerbose,
+  sendTelegramDocument,
   sendTelegramMessage,
   sendTelegramPhoto,
   sendTelegramVoice,
@@ -607,6 +608,73 @@ function startIpcWatcher(): void {
                   logger.warn(
                     { chatJid: data.chatJid, sourceGroup },
                     'Unauthorized IPC voice message attempt blocked',
+                  );
+                }
+              } else if (
+                data.type === 'file' &&
+                data.chatJid &&
+                data.filePath
+              ) {
+                // File/document message
+                const targetGroup = registeredGroups[data.chatJid];
+                if (
+                  isMain ||
+                  (targetGroup && targetGroup.folder === sourceGroup)
+                ) {
+                  // Translate container path to host path
+                  const containerPath = String(data.filePath);
+                  let hostFilePath: string;
+                  if (containerPath.startsWith('/workspace/group/')) {
+                    hostFilePath = path.join(
+                      GROUPS_DIR,
+                      sourceGroup,
+                      containerPath.slice('/workspace/group/'.length),
+                    );
+                  } else if (containerPath.startsWith('/workspace/global/')) {
+                    hostFilePath = path.join(
+                      GROUPS_DIR,
+                      'global',
+                      containerPath.slice('/workspace/global/'.length),
+                    );
+                  } else {
+                    logger.warn(
+                      { containerPath, sourceGroup },
+                      'IPC file path must start with /workspace/group/ or /workspace/global/',
+                    );
+                    hostFilePath = '';
+                  }
+
+                  if (hostFilePath && fs.existsSync(hostFilePath)) {
+                    try {
+                      await sendTelegramDocument(
+                        data.chatJid,
+                        hostFilePath,
+                        data.caption || undefined,
+                      );
+                      logger.info(
+                        {
+                          chatJid: data.chatJid,
+                          sourceGroup,
+                          file: hostFilePath,
+                        },
+                        'IPC file message sent',
+                      );
+                    } catch (err) {
+                      logger.error(
+                        { err, chatJid: data.chatJid, file: hostFilePath },
+                        'Failed to send file via Telegram',
+                      );
+                    }
+                  } else {
+                    logger.warn(
+                      { containerPath, hostFilePath, sourceGroup },
+                      'IPC file not found on host',
+                    );
+                  }
+                } else {
+                  logger.warn(
+                    { chatJid: data.chatJid, sourceGroup },
+                    'Unauthorized IPC file message attempt blocked',
                   );
                 }
               }

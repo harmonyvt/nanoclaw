@@ -1309,6 +1309,25 @@ export async function sendTelegramVoice(
 }
 
 /**
+ * Send a document/file to a Telegram chat from a local file path.
+ */
+export async function sendTelegramDocument(
+  chatId: string,
+  filePath: string,
+  caption?: string,
+): Promise<void> {
+  if (!bot) {
+    logger.error('Telegram bot not initialized');
+    return;
+  }
+
+  const numericId = extractTelegramChatId(chatId);
+  await bot.api.sendDocument(numericId, new InputFile(filePath), {
+    caption,
+  });
+}
+
+/**
  * Send a typing indicator (chat action) to a Telegram chat.
  */
 export async function setTelegramTyping(chatId: string): Promise<void> {

@@ -211,7 +211,7 @@ function parseSsePayload(raw: string): unknown {
   return last;
 }
 
-async function runCuaCommand(
+export async function runCuaCommand(
   command: string,
   args: Record<string, unknown> = {},
 ): Promise<unknown> {
@@ -328,7 +328,7 @@ async function sleep(ms: number): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
-function shellSingleQuote(value: string): string {
+export function shellSingleQuote(value: string): string {
   return `'${value.replace(/'/g, `'\"'\"'`)}'`;
 }
 
@@ -1882,6 +1882,217 @@ async function processCuaRequest(
         { command: 'hotkey', args: { keys: 'ctrl+w' } },
       ]);
       return { status: 'ok', result: 'closed' };
+
+    case 'extract_file': {
+      const filePath = String(params.path || '').trim();
+      if (!filePath) {
+        return { status: 'error', error: 'extract_file requires a path' };
+      }
+      if (filePath.includes('..')) {
+        return {
+          status: 'error',
+          error: 'Path traversal (..) is not allowed',
+        };
+      }
+
+      const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
+
+      // Check file exists and get size
+      let fileSize: number;
+      try {
+        const statResult = await runCuaCommand('run_command', {
+          command: `stat -c '%s' ${shellSingleQuote(filePath)} 2>/dev/null || stat -f '%z' ${shellSingleQuote(filePath)} 2>/dev/null`,
+        });
+        const sizeStr = String(statResult).trim().replace(/'/g, '');
+        fileSize = parseInt(sizeStr, 10);
+        if (isNaN(fileSize)) {
+          return {
+            status: 'error',
+            error: `File not found or cannot stat: ${filePath}`,
+          };
+        }
+      } catch (err) {
+        return {
+          status: 'error',
+          error: `File not found: ${filePath} (${err instanceof Error ? err.message : String(err)})`,
+        };
+      }
+
+      if (fileSize > MAX_FILE_SIZE) {
+        return {
+          status: 'error',
+          error: `File too large: ${(fileSize / 1024 / 1024).toFixed(1)}MB exceeds 100MB limit`,
+        };
+      }
+
+      // Read file as base64
+      let base64Content: string;
+      try {
+        const result = await runCuaCommand('run_command', {
+          command: `base64 -w0 ${shellSingleQuote(filePath)} 2>/dev/null || base64 ${shellSingleQuote(filePath)} 2>/dev/null | tr -d '\\n'`,
+        });
+        base64Content = String(result).trim();
+        if (!base64Content) {
+          return {
+            status: 'error',
+            error: `Failed to read file contents: ${filePath}`,
+          };
+        }
+      } catch (err) {
+        return {
+          status: 'error',
+          error: `Failed to read file: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
+
+      // Save to group media directory
+      const originalFilename = path.basename(filePath);
+      const mediaDir = path.join(GROUPS_DIR, groupFolder, 'media');
+      fs.mkdirSync(mediaDir, { recursive: true });
+
+      // Deduplicate filename with timestamp
+      const ext = path.extname(originalFilename);
+      const stem = path.basename(originalFilename, ext);
+      const destFilename = `${stem}-${Date.now()}${ext}`;
+      const destPath = path.join(mediaDir, destFilename);
+
+      const fileBuffer = Buffer.from(base64Content, 'base64');
+      base64Content = ''; // free base64 string for GC
+      fs.writeFileSync(destPath, fileBuffer);
+
+      const containerPath = `/workspace/group/media/${destFilename}`;
+      logger.info(
+        { filePath, destPath, size: fileBuffer.length, groupFolder },
+        'Extracted file from CUA sandbox',
+      );
+      return { status: 'ok', result: containerPath };
+    }
+
+    case 'upload_file': {
+      const sourcePath = String(params.source_path || '').trim();
+      if (!sourcePath) {
+        return {
+          status: 'error',
+          error: 'upload_file requires a source_path',
+        };
+      }
+      if (sourcePath.includes('..')) {
+        return {
+          status: 'error',
+          error: 'Path traversal (..) is not allowed',
+        };
+      }
+
+      // Translate container path to host path
+      const filename = path.basename(sourcePath);
+      let hostPath: string;
+      if (sourcePath.startsWith('/workspace/group/')) {
+        hostPath = path.join(
+          GROUPS_DIR,
+          groupFolder,
+          sourcePath.slice('/workspace/group/'.length),
+        );
+      } else if (sourcePath.startsWith('/workspace/global/')) {
+        hostPath = path.join(
+          GROUPS_DIR,
+          'global',
+          sourcePath.slice('/workspace/global/'.length),
+        );
+      } else {
+        return {
+          status: 'error',
+          error: `Source path must start with /workspace/group/ or /workspace/global/: ${sourcePath}`,
+        };
+      }
+
+      if (!fs.existsSync(hostPath)) {
+        return {
+          status: 'error',
+          error: `Source file not found on host: ${sourcePath}`,
+        };
+      }
+
+      const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
+      const fileStat = fs.statSync(hostPath);
+      if (fileStat.size > MAX_FILE_SIZE) {
+        return {
+          status: 'error',
+          error: `File too large: ${(fileStat.size / 1024 / 1024).toFixed(1)}MB exceeds 100MB limit`,
+        };
+      }
+
+      const destPath = params.destination_path
+        ? String(params.destination_path).trim()
+        : `~/Downloads/${filename}`;
+
+      if (destPath.includes('..')) {
+        return {
+          status: 'error',
+          error: 'Destination path traversal (..) is not allowed',
+        };
+      }
+
+      // Ensure destination directory exists
+      const destDir = destPath.includes('/')
+        ? destPath.substring(0, destPath.lastIndexOf('/'))
+        : '~/Downloads';
+      try {
+        await runCuaCommand('run_command', {
+          command: `mkdir -p ${shellSingleQuote(destDir)}`,
+        });
+      } catch {
+        // Best effort — directory may already exist
+      }
+
+      // Stream file in chunks to CUA to avoid loading entire file into memory.
+      // Chunk size must be a multiple of 3 so base64 encoding produces no
+      // padding (except the final chunk), preventing corruption on append.
+      const RAW_CHUNK_SIZE = 48 * 1024; // 48KB raw → 64KB base64
+      const fd = fs.openSync(hostPath, 'r');
+      const chunkBuf = Buffer.alloc(RAW_CHUNK_SIZE);
+      let readOffset = 0;
+      let chunkIndex = 0;
+
+      try {
+        while (true) {
+          const bytesRead = fs.readSync(fd, chunkBuf, 0, RAW_CHUNK_SIZE, readOffset);
+          if (bytesRead === 0) break;
+
+          const b64Chunk = chunkBuf.subarray(0, bytesRead).toString('base64');
+          const redirect = chunkIndex === 0 ? '>' : '>>';
+          try {
+            await runCuaCommand('run_command', {
+              command: `printf '%s' ${shellSingleQuote(b64Chunk)} | base64 -d ${redirect} ${shellSingleQuote(destPath)}`,
+            });
+          } catch (err) {
+            return {
+              status: 'error',
+              error: `Failed to write file chunk ${chunkIndex + 1} to CUA: ${err instanceof Error ? err.message : String(err)}`,
+            };
+          }
+
+          readOffset += bytesRead;
+          chunkIndex++;
+        }
+      } finally {
+        fs.closeSync(fd);
+      }
+
+      logger.info(
+        {
+          sourcePath,
+          destPath,
+          size: fileStat.size,
+          groupFolder,
+        },
+        'Uploaded file to CUA sandbox',
+      );
+      return {
+        status: 'ok',
+        result: `Uploaded ${filename} (${(fileStat.size / 1024).toFixed(1)}KB) to ${destPath}`,
+      };
+    }
+
     default:
       return { status: 'error', error: `Unknown action: ${action}` };
   }
