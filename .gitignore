@@ -9,6 +9,10 @@ store/
 data/
 /logs/
 
+# Runtime data inside groups (media downloads, container logs)
+groups/*/media/
+groups/*/logs/
+
 # Secrets
 *.keys.json
 .env

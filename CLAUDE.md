@@ -2,20 +2,171 @@
 
 Personal Claude assistant. See [README.md](README.md) for philosophy and setup. See [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) for architecture decisions.
 
-## Quick Context
+## Architecture
 
-Single Bun process that connects to Telegram, routes messages to Claude Agent SDK running in containers (Linux VMs). Each group has isolated filesystem and memory.
+Single Bun process (host) connects to Telegram, stores messages in SQLite, and spawns ephemeral Docker containers per message. Each container runs the Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`) with an IPC-based MCP server for tools. A persistent browser sandbox sidecar provides web automation via Playwright CDP.
+
+```
+Telegram <-> Host (Bun) <-> SQLite
+                |
+                +-- Docker containers (ephemeral, per-message)
+                |     \-- Claude Agent SDK + IPC MCP tools
+                |
+                +-- Browser sandbox (persistent sidecar)
+                      \-- Xvfb + Chromium + x11vnc + noVNC
+                      \-- Host connects via Playwright CDP (localhost:9222)
+```
 
 ## Key Files
 
+### Host Process
+
 | File | Purpose |
 |------|---------|
-| `src/index.ts` | Main app: message routing, IPC |
-| `src/config.ts` | Trigger pattern, paths, intervals |
-| `src/container-runner.ts` | Spawns agent containers with mounts |
-| `src/task-scheduler.ts` | Runs scheduled tasks |
-| `src/db.ts` | SQLite operations |
-| `groups/{name}/CLAUDE.md` | Per-group memory (isolated) |
+| `src/index.ts` | Main app: message routing, IPC watcher (messages/tasks/browse) |
+| `src/config.ts` | Constants, trigger pattern, paths, Telegram helpers |
+| `src/container-runner.ts` | Spawns Docker containers, credential resolution, volume mounts |
+| `src/task-scheduler.ts` | Polls for due tasks, runs them in containers |
+| `src/db.ts` | SQLite operations (bun:sqlite): messages, chats, tasks, run logs |
+| `src/telegram.ts` | grammY bot: text, voice, audio, photo, document handlers |
+| `src/media.ts` | File download (Telegram API), Whisper transcription, media cleanup |
+| `src/browse-host.ts` | Host-side Playwright bridge: processes browse IPC requests via CDP |
+| `src/sandbox-manager.ts` | Browser sandbox lifecycle: start/stop/idle timeout (Docker) |
+| `src/mount-security.ts` | Validates additional mounts against external allowlist |
+| `src/types.ts` | Shared TypeScript interfaces |
+| `src/logger.ts` | Pino logger with pino-pretty |
+| `src/utils.ts` | `loadJson` / `saveJson` helpers |
+
+### Agent Container
+
+| File | Purpose |
+|------|---------|
+| `container/Dockerfile` | Agent image: `oven/bun:1-debian` + Chromium + claude-code |
+| `container/build.sh` | Build script for agent image (`nanoclaw-agent:latest`) |
+| `container/agent-runner/src/index.ts` | Reads JSON from stdin, runs `query()` from Agent SDK, writes result to stdout |
+| `container/agent-runner/src/ipc-mcp.ts` | MCP server exposing all IPC tools to the agent |
+
+### Browser Sandbox
+
+| File | Purpose |
+|------|---------|
+| `container/sandbox/Dockerfile` | Sandbox image: Xvfb + Chromium + x11vnc + noVNC + socat |
+| `container/sandbox/start.sh` | Starts all sandbox services, CDP port forwarding via socat |
+| `container/sandbox/build.sh` | Build script for sandbox image (`nanoclaw-sandbox:latest`) |
+
+### Per-Group
+
+| File | Purpose |
+|------|---------|
+| `groups/{name}/CLAUDE.md` | Per-group agent instructions and memory |
+| `groups/{name}/SOUL.md` | Per-group personality/behavior (optional) |
+| `groups/{name}/media/` | Downloaded photos, voice, docs, screenshots |
+| `groups/{name}/conversations/` | Archived conversation transcripts (PreCompact hook) |
+| `groups/{name}/logs/` | Per-container run logs |
+| `groups/global/CLAUDE.md` | Global memory shared read-only to non-main groups |
+
+## Credential Flow
+
+Credentials are resolved with a fallback chain in `container-runner.ts:resolveCredentials()`:
+
+1. **`.env` file** -- looks for `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`
+2. **macOS Keychain** -- reads `Claude Code-credentials` via `security find-generic-password`
+3. **`~/.claude/.credentials.json`** -- parses `claudeAiOauth.accessToken`
+
+Non-auth API keys (`OPENAI_API_KEY`, `FIRECRAWL_API_KEY`) are always extracted from `.env` regardless of auth source.
+
+Credentials are written to `data/env/env` and mounted read-only at `/workspace/env-dir/env`. The container entrypoint sources this file.
+
+## Container Runtime
+
+Uses **Docker CLI** (`docker run -i --rm`). The codebase was originally written for Apple Container and fully migrated to Docker. Some source comments still reference Apple Container (stale -- see `container-runner.ts:3`, `:241`, `:278`).
+
+- Image: `nanoclaw-agent:latest` (configurable via `CONTAINER_IMAGE`)
+- Runs as non-root user `bun`
+- Input: JSON on stdin, output: JSON on stdout (between sentinel markers)
+- Timeout: 5 minutes default (`CONTAINER_TIMEOUT`)
+- Max output: 10MB default (`CONTAINER_MAX_OUTPUT_SIZE`)
+- Entrypoint: sources env from `/workspace/env-dir/env`, then runs `bun /app/dist/index.js`
+- The env-dir mount (credentials as a file) was originally a workaround for an Apple Container bug with `-e` env vars when using `-i` stdin. Docker doesn't have this bug, but the pattern is harmless and still works.
+- **The host process must NOT be containerized** -- it needs Docker socket access, macOS keychain access, and direct filesystem access.
+
+### Volume Mounts
+
+| Mount | Container Path | Notes |
+|-------|---------------|-------|
+| `groups/{folder}/` | `/workspace/group` | Working directory |
+| `groups/global/` | `/workspace/global` | Read-only (non-main only) |
+| Project root | `/workspace/project` | Main group only |
+| `data/sessions/{folder}/.claude/` | `/home/bun/.claude` | Per-group session isolation |
+| `data/ipc/{folder}/` | `/workspace/ipc` | Per-group IPC namespace |
+| `data/env/` | `/workspace/env-dir` | Read-only credentials |
+| Additional mounts | `/workspace/extra/{name}` | Validated against allowlist |
+
+## Multimodal Input
+
+Voice, audio, photos, and documents sent via Telegram are processed automatically:
+
+- **Voice/Audio**: Downloaded, transcribed via OpenAI Whisper API, stored as `[Voice message: ...]`
+- **Photos**: Saved to `groups/{name}/media/`, path included in prompt (agent uses Claude's Read tool for vision)
+- **Documents**: Saved to `groups/{name}/media/`, filename/caption included in prompt
+
+Media path is translated from host path to container path in the XML prompt (`media_path` attribute). Requires `OPENAI_API_KEY` for transcription. Old media cleaned up after 7 days on startup.
+
+## Browser Sandbox
+
+Persistent Chromium sidecar on a virtual display, accessible via noVNC.
+
+- **Container**: `nanoclaw-sandbox:latest`, named `nanoclaw-sandbox`
+- **Ports**: CDP on 9222, noVNC on 6080
+- **Lazy start**: Sandbox starts on first `browse_*` tool call
+- **Idle timeout**: Stops after 30 min of no browse activity
+- **Persistent profile**: Docker volume `nanoclaw-sandbox-profile` at `/data/chrome-profile`
+- **noVNC URL**: `http://<tailscale-ip>:6080` (falls back to 127.0.0.1)
+- **CDP connection**: Host uses `playwright-core` to connect via `chromium.connectOverCDP()` with retry/backoff
+- **Build**: `./container/sandbox/build.sh`
+
+## IPC Patterns
+
+### Fire-and-forget (messages, tasks)
+Agent writes JSON to `/workspace/ipc/messages/` or `/workspace/ipc/tasks/`. Host polls every 1s, processes, deletes.
+
+### Request/Response (browse)
+Agent writes `req-{id}.json` to `/workspace/ipc/browse/`, polls for `res-{id}.json`. Host processes request, writes response (atomic: temp+rename). Agent cleans up both files.
+
+### Authorization
+Per-group IPC directories prevent cross-group access. Non-main groups can only send messages to their own chat and schedule tasks for themselves. Main group has full access.
+
+## MCP Tools (available to agent)
+
+### Communication
+- `send_message` -- Send message to current chat
+
+### Task Scheduling
+- `schedule_task` -- Create cron/interval/once task (with context_mode: group or isolated)
+- `list_tasks` -- List scheduled tasks (main sees all, others see own)
+- `pause_task` / `resume_task` / `cancel_task` -- Task lifecycle
+
+### Group Management
+- `register_group` -- Register new Telegram chat (main only)
+
+### Browser Automation
+- `browse_navigate` -- Go to URL
+- `browse_snapshot` -- Accessibility tree / aria snapshot
+- `browse_click` -- Click by CSS selector
+- `browse_fill` -- Fill form field
+- `browse_screenshot` -- Capture page (also sent as Telegram photo)
+- `browse_wait_for_user` -- Handoff to user via noVNC, wait for "continue"
+- `browse_go_back` -- Browser back button
+- `browse_evaluate` -- Execute JavaScript on page
+- `browse_close` -- Close browser page
+
+### Web Crawling (Firecrawl)
+- `firecrawl_scrape` -- Single page to markdown (50KB max)
+- `firecrawl_crawl` -- Multi-page crawl with depth/limit (100KB max)
+- `firecrawl_map` -- Discover all URLs on a domain
+
+### Built-in Claude Tools
+- `Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, `WebSearch`, `WebFetch`
 
 ## Skills
 
@@ -28,19 +179,92 @@ Single Bun process that connects to Telegram, routes messages to Claude Agent SD
 | `/restart` | Restart the NanoClaw background service |
 | `/logs` | View recent logs, errors, or follow live output |
 | `/debug` | Container issues, logs, troubleshooting |
+| `/add-gmail` | Add Gmail integration to a group |
+| `/add-parallel` | Add Parallel AI integration |
+| `/convert-to-docker` | Migrate from Apple Container to Docker (historical, migration complete) |
+| `/x-integration` | X (Twitter) integration |
+
+## Environment Variables
+
+### Required
+| Variable | Purpose |
+|----------|---------|
+| `TELEGRAM_BOT_TOKEN` | Bot token from @BotFather |
+| `TELEGRAM_OWNER_ID` | Your numeric Telegram user ID |
+
+### AI Auth (choose one, or leave empty for keychain auto-detect)
+| Variable | Purpose |
+|----------|---------|
+| `ANTHROPIC_API_KEY` | Standard API key from console.anthropic.com |
+| `CLAUDE_CODE_OAUTH_TOKEN` | OAuth token (auto-detected from keychain if empty) |
+
+### Optional
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `OPENAI_API_KEY` | -- | Whisper audio transcription |
+| `FIRECRAWL_API_KEY` | -- | Firecrawl web scraping |
+| `ASSISTANT_NAME` | `Andy` | Bot trigger name (`@Name`) |
+| `CONTAINER_IMAGE` | `nanoclaw-agent:latest` | Docker image for agent containers |
+| `CONTAINER_TIMEOUT` | `300000` (5 min) | Container execution timeout (ms) |
+| `CONTAINER_MAX_OUTPUT_SIZE` | `10485760` (10MB) | Max container stdout/stderr |
+| `LOG_LEVEL` | `info` | Pino log level |
+| `TZ` | system | Timezone for scheduled tasks |
+
+## Data Directory Structure
+
+```
+data/
+  sessions/{group}/.claude/   # Per-group Claude SDK sessions
+  ipc/{group}/                # Per-group IPC namespaces
+    messages/                 # Outgoing message files
+    tasks/                    # Task scheduling files
+    browse/                   # Browse request/response files
+    current_tasks.json        # Tasks snapshot (host writes, agent reads)
+    available_groups.json     # Groups snapshot (main only)
+  env/env                     # Resolved credentials for containers
+  router_state.json           # Last timestamp cursors
+  sessions.json               # Session ID mapping per group
+  registered_groups.json      # Group registration data
+store/
+  messages.db                 # SQLite database
+logs/
+  nanoclaw.log                # stdout (launchd)
+  nanoclaw.error.log          # stderr (launchd)
+```
+
+## Group Isolation
+
+- Each group gets its own folder, session directory, and IPC namespace
+- Non-main groups: read-only access to `groups/global/`, no project root access
+- Main group: full project root mounted, can register groups and schedule cross-group tasks
+- IPC authorization: host verifies source group directory before processing
 
 ## Development
 
-Run commands directly—don't tell the user to run them.
+Run commands directly -- don't tell the user to run them.
 
 ```bash
-bun dev              # Run with hot reload
-bun run build        # Compile TypeScript
-./container/build.sh # Rebuild agent container
+bun dev                      # Run with hot reload (--watch)
+bun run build                # Compile TypeScript
+./container/build.sh         # Rebuild agent container
+./container/sandbox/build.sh # Rebuild sandbox container
 ```
 
-Service management:
+Service management (production via launchd):
 ```bash
+# Template at launchd/com.nanoclaw.plist (replace {{placeholders}})
+# Install to ~/Library/LaunchAgents/com.nanoclaw.plist
 launchctl load ~/Library/LaunchAgents/com.nanoclaw.plist
 launchctl unload ~/Library/LaunchAgents/com.nanoclaw.plist
 ```
+
+## Message Format
+
+Messages are formatted as XML for the agent prompt:
+```xml
+<messages>
+<message sender="Name" time="2026-02-07T..." media_type="photo" media_path="/workspace/group/media/file.jpg">content</message>
+</messages>
+```
+
+Content is XML-escaped. Media attributes are optional. Bot's own messages (prefixed with `ASSISTANT_NAME:`) are filtered out.
