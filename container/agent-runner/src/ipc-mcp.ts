@@ -14,11 +14,29 @@ const IPC_DIR = '/workspace/ipc';
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
 const TASKS_DIR = path.join(IPC_DIR, 'tasks');
 const BROWSE_DIR = path.join(IPC_DIR, 'browse');
+const SUPERMEMORY_KEY_ENV_VARS = [
+  'SUPERMEMORY_API_KEY',
+  'SUPERMEMORY_OPENCLAW_API_KEY',
+  'SUPERMEMORY_CC_API_KEY',
+] as const;
 
 export interface IpcMcpContext {
   chatJid: string;
   groupFolder: string;
   isMain: boolean;
+}
+
+function resolveSupermemoryApiKey():
+  | { key: string; envVar: (typeof SUPERMEMORY_KEY_ENV_VARS)[number] }
+  | null {
+  for (const envVar of SUPERMEMORY_KEY_ENV_VARS) {
+    const raw = process.env[envVar];
+    if (typeof raw !== 'string') continue;
+    const key = raw.trim();
+    if (!key) continue;
+    return { key, envVar };
+  }
+  return null;
 }
 
 function writeIpcFile(dir: string, data: object): string {
@@ -858,13 +876,13 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
             ),
         },
         async (args) => {
-          const smApiKey = process.env.SUPERMEMORY_API_KEY;
-          if (!smApiKey) {
+          const resolvedSmKey = resolveSupermemoryApiKey();
+          if (!resolvedSmKey) {
             return {
               content: [
                 {
                   type: 'text',
-                  text: 'SUPERMEMORY_API_KEY is not set. Ask the admin to configure the Supermemory API key.',
+                  text: 'No Supermemory API key found. Set SUPERMEMORY_API_KEY (or SUPERMEMORY_OPENCLAW_API_KEY / SUPERMEMORY_CC_API_KEY).',
                 },
               ],
               isError: true,
@@ -872,7 +890,7 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
           }
 
           try {
-            const sm = new Supermemory({ apiKey: smApiKey });
+            const sm = new Supermemory({ apiKey: resolvedSmKey.key });
             await sm.add({
               content: args.content,
               containerTags: [`nanoclaw_${groupFolder}`],
@@ -919,13 +937,13 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
             .describe('Maximum number of results to return (default: 10)'),
         },
         async (args) => {
-          const smApiKey = process.env.SUPERMEMORY_API_KEY;
-          if (!smApiKey) {
+          const resolvedSmKey = resolveSupermemoryApiKey();
+          if (!resolvedSmKey) {
             return {
               content: [
                 {
                   type: 'text',
-                  text: 'SUPERMEMORY_API_KEY is not set. Ask the admin to configure the Supermemory API key.',
+                  text: 'No Supermemory API key found. Set SUPERMEMORY_API_KEY (or SUPERMEMORY_OPENCLAW_API_KEY / SUPERMEMORY_CC_API_KEY).',
                 },
               ],
               isError: true,
@@ -933,7 +951,7 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
           }
 
           try {
-            const sm = new Supermemory({ apiKey: smApiKey });
+            const sm = new Supermemory({ apiKey: resolvedSmKey.key });
             const response = await sm.search.memories({
               q: args.query,
               containerTag: `nanoclaw_${groupFolder}`,

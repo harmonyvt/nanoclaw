@@ -218,7 +218,9 @@ Requires `SUPERMEMORY_API_KEY`. When enabled, memories are also automatically re
 | --------------------------- | ------------------------ | --------------------------------------- |
 | `OPENAI_API_KEY`            | --                       | Whisper audio transcription             |
 | `FIRECRAWL_API_KEY`         | --                       | Firecrawl web scraping                  |
-| `SUPERMEMORY_API_KEY`       | --                       | Supermemory long-term memory            |
+| `SUPERMEMORY_API_KEY`       | --                       | Supermemory long-term memory (preferred) |
+| `SUPERMEMORY_OPENCLAW_API_KEY` | --                    | Supermemory key alias (accepted fallback) |
+| `SUPERMEMORY_CC_API_KEY`    | --                       | Supermemory key alias (accepted fallback) |
 | `ASSISTANT_NAME`            | `Andy`                   | Bot trigger name (`@Name`)              |
 | `CONTAINER_IMAGE`           | `nanoclaw-agent:latest`  | Docker image for agent containers       |
 | `CONTAINER_TIMEOUT`         | `300000` (5 min)         | Container execution timeout (ms)        |

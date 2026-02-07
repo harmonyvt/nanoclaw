@@ -4,21 +4,47 @@ import { logger } from './logger.js';
 const RETRIEVE_TIMEOUT = 5000; // 5s — don't delay agent start
 const STORE_TIMEOUT = 10000; // 10s for storage
 
+const SUPERMEMORY_KEY_ENV_VARS = [
+  'SUPERMEMORY_API_KEY',
+  'SUPERMEMORY_OPENCLAW_API_KEY',
+  'SUPERMEMORY_CC_API_KEY',
+] as const;
+
 let client: Supermemory | null = null;
 
+function resolveSupermemoryApiKey():
+  | { key: string; envVar: (typeof SUPERMEMORY_KEY_ENV_VARS)[number] }
+  | null {
+  for (const envVar of SUPERMEMORY_KEY_ENV_VARS) {
+    const raw = process.env[envVar];
+    if (typeof raw !== 'string') continue;
+    const key = raw.trim();
+    if (!key) continue;
+    return { key, envVar };
+  }
+  return null;
+}
+
 function getClient(): Supermemory | null {
-  if (!process.env.SUPERMEMORY_API_KEY) return null;
+  const resolved = resolveSupermemoryApiKey();
+  if (!resolved) return null;
   if (!client) {
     client = new Supermemory({
-      apiKey: process.env.SUPERMEMORY_API_KEY,
+      apiKey: resolved.key,
       timeout: STORE_TIMEOUT,
     });
+    if (resolved.envVar !== 'SUPERMEMORY_API_KEY') {
+      logger.info(
+        { envVar: resolved.envVar },
+        'Using alternate Supermemory API key environment variable',
+      );
+    }
   }
   return client;
 }
 
 export function isSupermemoryEnabled(): boolean {
-  return !!process.env.SUPERMEMORY_API_KEY;
+  return !!resolveSupermemoryApiKey();
 }
 
 export interface MemoryResult {
