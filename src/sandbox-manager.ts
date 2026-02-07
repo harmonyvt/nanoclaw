@@ -134,7 +134,7 @@ export function getSandboxUrl(): string | null {
   return `http://${ip}:${CUA_SANDBOX_NOVNC_PORT}`;
 }
 
-function getSandboxHostIp(): string {
+export function getSandboxHostIp(): string {
   if (!SANDBOX_TAILSCALE_ENABLED) return '127.0.0.1';
   return getTailscaleIp();
 }

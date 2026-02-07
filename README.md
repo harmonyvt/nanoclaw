@@ -55,6 +55,7 @@ bun run deploy:linux          # build + install/reload systemd user service
 - **Web access** - Search and fetch content
 - **Container isolation** - Agents sandboxed in Docker containers (macOS/Linux)
 - **Desktop sandbox option (CUA)** - Optional CUA Docker desktop sandbox for full-computer browser workflows with screenshot feedback
+- **CUA takeover web handoff** - `browse_wait_for_user` shares a Tailscale-accessible takeover page with embedded live desktop + return-control button
 - **Optional integrations** - Add Gmail (`/add-gmail`) and more via skills
 
 ## Usage
@@ -131,6 +132,7 @@ Single Bun process. Agents execute in isolated Linux containers with mounted dir
 Key files:
 
 - `src/index.ts` - Main app: message routing, IPC
+- `src/cua-takeover-server.ts` - Browser takeover web UI for CUA handoff
 - `src/container-runner.ts` - Spawns agent containers
 - `src/task-scheduler.ts` - Runs scheduled tasks
 - `src/db.ts` - SQLite operations
