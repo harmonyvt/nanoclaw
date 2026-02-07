@@ -62,20 +62,26 @@ Messages and task operations are verified against group identity:
 
 ### 5. Credential Handling
 
-**Mounted Credentials:**
-- Claude auth tokens (filtered from `.env`, read-only)
+Credential behavior now depends on runtime mode:
+
+**Default Mode (`SECRETLESS_MODE=false`)**
+- Claude auth tokens may be mounted read-only for in-container Claude auth.
+
+**Secretless Mode (`SECRETLESS_MODE=true`)**
+- No API keys or auth tokens are mounted into agent containers.
+- Secret-bearing API calls are routed through a host-side capability gateway over IPC.
+- Container networking is disabled by default (`CONTAINER_NETWORK_MODE=none`).
 
 **NOT Mounted:**
 - Mount allowlist - external, never mounted
 - Any credentials matching blocked patterns
 
-**Credential Filtering:**
-Only these environment variables are exposed to containers:
-```typescript
-const allowedVars = ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'];
-```
-
-> **Note:** Anthropic credentials are mounted so that Claude Code can authenticate when the agent runs. However, this means the agent itself can discover these credentials via Bash or file operations. Ideally, Claude Code would authenticate without exposing credentials to the agent's execution environment, but I couldn't figure this out. **PRs welcome** if you have ideas for credential isolation.
+**Host Capability Gateway (Secretless Mode):**
+- Firecrawl tools execute on host using host `FIRECRAWL_API_KEY`
+- Supermemory tools execute on host using host `SUPERMEMORY_*` key
+- Anthropic messages execute on host using host `ANTHROPIC_API_KEY` or Claude Code OAuth credentials
+- OpenAI chat completions execute on host using host `OPENAI_API_KEY`
+- Container receives only request results, never raw secrets
 
 ## Privilege Comparison
 
@@ -85,7 +91,7 @@ const allowedVars = ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'];
 | Group folder | `/workspace/group` (rw) | `/workspace/group` (rw) |
 | Global memory | Implicit via project | `/workspace/global` (ro) |
 | Additional mounts | Configurable | Read-only unless allowed |
-| Network access | Unrestricted | Unrestricted |
+| Network access | Configurable (`default` or `none`) | Configurable (`default` or `none`) |
 | MCP tools | All | All |
 
 ## Security Architecture Diagram

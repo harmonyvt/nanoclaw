@@ -231,7 +231,9 @@ The token can be extracted from `~/.claude/.credentials.json` if you're logged i
 ANTHROPIC_API_KEY=sk-ant-api03-...
 ```
 
-Only the authentication variables (`CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_API_KEY`) are extracted from `.env` and mounted into the container at `/workspace/env-dir/env`, then sourced by the entrypoint script. This ensures other environment variables in `.env` are not exposed to the agent. This workaround is needed because Apple Container loses `-e` environment variables when using `-i` (interactive mode with piped stdin).
+When `SECRETLESS_MODE=false`, authentication variables (`CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_API_KEY`) may be mounted into the container at `/workspace/env-dir/env`.
+
+When `SECRETLESS_MODE=true`, no credentials are mounted into containers. Instead, secret-bearing calls are handled on host via IPC capability requests.
 
 ### Changing the Assistant Name
 
@@ -582,7 +584,7 @@ Messages could contain malicious instructions attempting to manipulate Claude's 
 
 | Credential | Storage Location | Notes |
 |------------|------------------|-------|
-| Claude CLI Auth | data/sessions/{group}/.claude/ | Per-group isolation, mounted to /home/bun/.claude/ |
+| Claude CLI Auth | data/sessions/{group}/.claude/ | Per-group isolation; mounted only when `SECRETLESS_MODE=false` |
 
 ### File Permissions
 

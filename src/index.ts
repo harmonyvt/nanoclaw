@@ -60,6 +60,7 @@ import {
 } from './tts.js';
 import { loadJson, saveJson } from './utils.js';
 import { logger } from './logger.js';
+import { processCapabilityRequest } from './capability-gateway.js';
 import {
   isSupermemoryEnabled,
   retrieveMemories,
@@ -889,6 +890,84 @@ function startIpcWatcher(): void {
         logger.error(
           { err, sourceGroup },
           'Error reading IPC browse directory',
+        );
+      }
+
+      // Process capability requests from this group's IPC directory
+      const capabilitiesDir = path.join(ipcBaseDir, sourceGroup, 'capabilities');
+      try {
+        if (fs.existsSync(capabilitiesDir)) {
+          const reqFiles = fs
+            .readdirSync(capabilitiesDir)
+            .filter((f) => f.startsWith('req-') && f.endsWith('.json'));
+          for (const file of reqFiles) {
+            const filePath = path.join(capabilitiesDir, file);
+            try {
+              const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+              const requestId = String(data.id || '').trim();
+              const action = String(data.action || '').trim();
+              const params = (data.params || {}) as Record<string, unknown>;
+              if (!requestId || !action) {
+                throw new Error('Capability request missing id or action');
+              }
+
+              const startedAt = Date.now();
+              const result = await processCapabilityRequest(
+                requestId,
+                action,
+                params,
+                sourceGroup,
+              );
+              const durationMs = Date.now() - startedAt;
+
+              const resFile = path.join(capabilitiesDir, `res-${requestId}.json`);
+              const tmpFile = `${resFile}.tmp`;
+              fs.writeFileSync(tmpFile, JSON.stringify(result));
+              fs.renameSync(tmpFile, resFile);
+              fs.unlinkSync(filePath);
+
+              logger.debug(
+                {
+                  sourceGroup,
+                  requestId,
+                  action,
+                  status: result.status,
+                  durationMs,
+                },
+                'Capability request processed',
+              );
+            } catch (err) {
+              logger.error(
+                { file, sourceGroup, err },
+                'Error processing capability request',
+              );
+              try {
+                const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+                const resFile = path.join(capabilitiesDir, `res-${data.id}.json`);
+                const tmpFile = `${resFile}.tmp`;
+                fs.writeFileSync(
+                  tmpFile,
+                  JSON.stringify({
+                    status: 'error',
+                    error: err instanceof Error ? err.message : String(err),
+                  }),
+                );
+                fs.renameSync(tmpFile, resFile);
+              } catch {
+                // Can't write capability error response.
+              }
+              try {
+                fs.unlinkSync(filePath);
+              } catch {
+                // Already cleaned up.
+              }
+            }
+          }
+        }
+      } catch (err) {
+        logger.error(
+          { err, sourceGroup },
+          'Error reading IPC capabilities directory',
         );
       }
 

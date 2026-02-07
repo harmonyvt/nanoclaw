@@ -6,8 +6,9 @@
  * ContainerInput maps correctly to AdapterInput.
  */
 
-import { describe, test, expect } from 'bun:test';
+import { afterEach, beforeEach, describe, test, expect } from 'bun:test';
 import { createAdapter } from './index.js';
+import { AnthropicProxyAdapter } from './anthropic-proxy-adapter.js';
 import { ClaudeAdapter } from './claude-adapter.js';
 import { OpenAIAdapter } from './openai-adapter.js';
 import type { AdapterInput, ContainerInput } from '../types.js';
@@ -27,6 +28,21 @@ function makeMockAdapterInput(overrides: Partial<AdapterInput> = {}): AdapterInp
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 describe('adapter integration', () => {
+  let savedSecretless: string | undefined;
+
+  beforeEach(() => {
+    savedSecretless = process.env.NANOCLAW_SECRETLESS;
+    delete process.env.NANOCLAW_SECRETLESS;
+  });
+
+  afterEach(() => {
+    if (savedSecretless === undefined) {
+      delete process.env.NANOCLAW_SECRETLESS;
+    } else {
+      process.env.NANOCLAW_SECRETLESS = savedSecretless;
+    }
+  });
+
   // ─── createAdapter() factory ──────────────────────────────────────────────
 
   describe('createAdapter() factory', () => {
@@ -48,6 +64,12 @@ describe('adapter integration', () => {
     test('handles all known providers without throwing', () => {
       expect(() => createAdapter('anthropic')).not.toThrow();
       expect(() => createAdapter('openai')).not.toThrow();
+    });
+
+    test('secretless anthropic provider returns AnthropicProxyAdapter', () => {
+      process.env.NANOCLAW_SECRETLESS = '1';
+      const adapter = createAdapter('anthropic');
+      expect(adapter).toBeInstanceOf(AnthropicProxyAdapter);
     });
   });
 

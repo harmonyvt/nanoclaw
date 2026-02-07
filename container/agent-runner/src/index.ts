@@ -25,6 +25,17 @@ const HEARTBEAT_FILE = '/workspace/ipc/agent-heartbeat';
 const INPUT_POLL_INTERVAL = 200;  // ms - fast polling for responsive feel
 const HEARTBEAT_INTERVAL = 10000; // ms - 10 seconds
 
+const SECRET_ENV_KEYS = [
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'ANTHROPIC_API_KEY',
+  'OPENAI_API_KEY',
+  'FIRECRAWL_API_KEY',
+  'SUPERMEMORY_API_KEY',
+  'SUPERMEMORY_OPENCLAW_API_KEY',
+  'SUPERMEMORY_CC_API_KEY',
+  'TELEGRAM_BOT_TOKEN',
+] as const;
+
 // ─── Utilities ───────────────────────────────────────────────────────────────
 
 function log(message: string): void {
@@ -68,6 +79,26 @@ function updateHeartbeat(): void {
   } catch (err) {
     log(`Failed to update heartbeat: ${err instanceof Error ? err.message : String(err)}`);
   }
+}
+
+export function findLeakedSecretEnvKeys(
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  return SECRET_ENV_KEYS.filter((key) => {
+    const value = env[key];
+    return typeof value === 'string' && value.trim().length > 0;
+  });
+}
+
+export function assertSecretlessRuntimeEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  if (env.NANOCLAW_SECRETLESS !== '1') return;
+  const leakedKeys = findLeakedSecretEnvKeys(env);
+  if (leakedKeys.length === 0) return;
+  throw new Error(
+    `Secretless mode violation: unexpected secret env vars present: ${leakedKeys.join(', ')}`,
+  );
 }
 
 // ─── Prompt Preparation ─────────────────────────────────────────────────────
@@ -294,6 +325,8 @@ async function runPersistentMode(): Promise<void> {
 // ─── Mode Detection & Entry Point ────────────────────────────────────────────
 
 async function main(): Promise<void> {
+  assertSecretlessRuntimeEnv();
+
   // Mode detection:
   // - NANOCLAW_PERSISTENT=1 env var -> persistent mode
   // - stdin is a TTY (no piped data) -> persistent mode

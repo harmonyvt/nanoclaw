@@ -61,7 +61,7 @@ describe('Tool definitions completeness', () => {
   });
 });
 
-// ─── 2. All 22 Tools Present ──────────────────────────────────────────────────
+// ─── 2. All Tools Present ─────────────────────────────────────────────────────
 
 describe('All tools present', () => {
   const EXPECTED_TOOLS = [
@@ -80,6 +80,8 @@ describe('All tools present', () => {
     'browse_navigate',
     'browse_snapshot',
     'browse_click',
+    'browse_click_xy',
+    'browse_type_at_xy',
     'browse_fill',
     'browse_scroll',
     'browse_screenshot',
@@ -89,8 +91,8 @@ describe('All tools present', () => {
     'browse_close',
   ] as const;
 
-  test('NANOCLAW_TOOLS contains exactly 22 tools', () => {
-    expect(NANOCLAW_TOOLS.length).toBe(22);
+  test('NANOCLAW_TOOLS contains exactly expected tools', () => {
+    expect(NANOCLAW_TOOLS.length).toBe(EXPECTED_TOOLS.length);
   });
 
   test.each(EXPECTED_TOOLS)('tool "%s" exists', (name) => {

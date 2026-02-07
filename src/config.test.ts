@@ -8,8 +8,10 @@ import {
   STORE_DIR,
   GROUPS_DIR,
   DATA_DIR,
+  CONTAINER_NETWORK_MODE,
   CONTAINER_TIMEOUT,
   CONTAINER_MAX_OUTPUT_SIZE,
+  SECRETLESS_MODE,
 } from './config.js';
 
 describe('makeTelegramChatId', () => {
@@ -84,5 +86,13 @@ describe('container defaults', () => {
 
   test('CONTAINER_MAX_OUTPUT_SIZE is a positive number', () => {
     expect(CONTAINER_MAX_OUTPUT_SIZE).toBeGreaterThan(0);
+  });
+
+  test('CONTAINER_NETWORK_MODE is either default or none', () => {
+    expect(['default', 'none']).toContain(CONTAINER_NETWORK_MODE);
+  });
+
+  test('SECRETLESS_MODE is a boolean', () => {
+    expect(typeof SECRETLESS_MODE).toBe('boolean');
   });
 });

@@ -40,6 +40,10 @@ Object.defineProperty(process.stdin, 'isTTY', { value: true, writable: true, con
 // Dynamic imports so our mocks are in place before module evaluation
 let preparePrompt: (input: ContainerInput) => string;
 let createAdapter: (provider: string) => ProviderAdapter;
+let findLeakedSecretEnvKeys: (
+  env?: NodeJS.ProcessEnv,
+) => string[];
+let assertSecretlessRuntimeEnv: (env?: NodeJS.ProcessEnv) => void;
 
 // We load the modules once -- the main() side-effect runs but is harmless
 const indexMod = await import('./index.js');
@@ -47,6 +51,8 @@ const adaptersMod = await import('./adapters/index.js');
 
 preparePrompt = indexMod.preparePrompt;
 createAdapter = adaptersMod.createAdapter;
+findLeakedSecretEnvKeys = indexMod.findLeakedSecretEnvKeys;
+assertSecretlessRuntimeEnv = indexMod.assertSecretlessRuntimeEnv;
 
 // Restore process.exit and fs.mkdirSync after import
 (process as any).exit = origExit;
@@ -244,6 +250,21 @@ describe('preparePrompt scheduled task prefix', () => {
 // ─── 5-7. createAdapter dispatch ─────────────────────────────────────────────
 
 describe('createAdapter dispatch', () => {
+  let savedSecretless: string | undefined;
+
+  beforeEach(() => {
+    savedSecretless = process.env.NANOCLAW_SECRETLESS;
+    delete process.env.NANOCLAW_SECRETLESS;
+  });
+
+  afterEach(() => {
+    if (savedSecretless === undefined) {
+      delete process.env.NANOCLAW_SECRETLESS;
+    } else {
+      process.env.NANOCLAW_SECRETLESS = savedSecretless;
+    }
+  });
+
   test("createAdapter('anthropic') returns an adapter with a run method", () => {
     const adapter = createAdapter('anthropic');
 
@@ -285,6 +306,12 @@ describe('createAdapter dispatch', () => {
   test('default fallback is ClaudeAdapter', () => {
     const adapter = createAdapter('anything-else');
     expect(adapter.constructor.name).toBe('ClaudeAdapter');
+  });
+
+  test('secretless mode returns AnthropicProxyAdapter for anthropic provider', () => {
+    process.env.NANOCLAW_SECRETLESS = '1';
+    const adapter = createAdapter('anthropic');
+    expect(adapter.constructor.name).toBe('AnthropicProxyAdapter');
   });
 });
 
@@ -339,5 +366,35 @@ describe('ContainerInput type with provider/model', () => {
     expect(input.assistantName).toBe('Andy');
     expect(input.provider).toBe('anthropic');
     expect(input.model).toBe('claude-sonnet-4-20250514');
+  });
+});
+
+describe('secretless env guards', () => {
+  test('findLeakedSecretEnvKeys returns leaked key names', () => {
+    const leaked = findLeakedSecretEnvKeys({
+      OPENAI_API_KEY: 'sk-test',
+      FIRECRAWL_API_KEY: '',
+      NANOCLAW_SECRETLESS: '1',
+    });
+    expect(leaked).toContain('OPENAI_API_KEY');
+    expect(leaked).not.toContain('FIRECRAWL_API_KEY');
+  });
+
+  test('assertSecretlessRuntimeEnv throws when leaked keys are present', () => {
+    expect(() =>
+      assertSecretlessRuntimeEnv({
+        NANOCLAW_SECRETLESS: '1',
+        OPENAI_API_KEY: 'sk-test',
+      }),
+    ).toThrow('Secretless mode violation');
+  });
+
+  test('assertSecretlessRuntimeEnv is a no-op outside secretless mode', () => {
+    expect(() =>
+      assertSecretlessRuntimeEnv({
+        NANOCLAW_SECRETLESS: '0',
+        OPENAI_API_KEY: 'sk-test',
+      }),
+    ).not.toThrow();
   });
 });

@@ -14,9 +14,11 @@ import path from 'path';
 import {
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
+  CONTAINER_NETWORK_MODE,
   CONTAINER_TIMEOUT,
   DATA_DIR,
   GROUPS_DIR,
+  SECRETLESS_MODE,
 } from './config.js';
 import { logger } from './logger.js';
 import { validateAdditionalMounts } from './mount-security.js';
@@ -159,7 +161,7 @@ function checkTokenExpiry(expiresAt: number | undefined): void {
 
 /**
  * Resolve auth credentials with fallback chain:
- * 1. .env file (allowed API keys and tokens)
+ * 1. .env file (Claude auth tokens only)
  * 2. macOS keychain (Claude Code's OAuth token)
  * 3. ~/.claude/.credentials.json (Claude Code's cached OAuth token)
  */
@@ -167,32 +169,6 @@ function resolveCredentials(): CredentialResult {
   const projectRoot = process.cwd();
   const homeDir = getHomeDir();
   const envFile = path.join(projectRoot, '.env');
-
-  // Collect non-auth API keys from .env (always included regardless of auth source)
-  const extraVars = [
-    'OPENAI_API_KEY',
-    'FIRECRAWL_API_KEY',
-    'SUPERMEMORY_API_KEY',
-    'SUPERMEMORY_OPENCLAW_API_KEY',
-    'SUPERMEMORY_CC_API_KEY',
-  ];
-  const extraLines: string[] = [];
-  if (fs.existsSync(envFile)) {
-    const envContent = fs.readFileSync(envFile, 'utf-8');
-    for (const line of envContent.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('#')) continue;
-      if (extraVars.some((v) => trimmed.startsWith(`${v}=`))) {
-        const eqIdx = line.indexOf('=');
-        if (eqIdx === -1) continue;
-        const key = line.slice(0, eqIdx);
-        const val = line.slice(eqIdx + 1);
-        if (!val) continue;
-        const escaped = val.replace(/'/g, "'\\''");
-        extraLines.push(`${key}='${escaped}'`);
-      }
-    }
-  }
 
   // Priority 1: .env file for Claude auth (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY)
   const authVars = ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'];
@@ -213,7 +189,7 @@ function resolveCredentials(): CredentialResult {
       }
     }
     if (authLines.length > 0) {
-      return { lines: [...authLines, ...extraLines], source: 'dotenv' };
+      return { lines: authLines, source: 'dotenv' };
     }
   }
 
@@ -224,7 +200,7 @@ function resolveCredentials(): CredentialResult {
     const escaped = keychainCreds.accessToken.replace(/'/g, "'\\''");
     logger.info('Using Claude Code OAuth token from macOS keychain');
     return {
-      lines: [`CLAUDE_CODE_OAUTH_TOKEN='${escaped}'`, ...extraLines],
+      lines: [`CLAUDE_CODE_OAUTH_TOKEN='${escaped}'`],
       source: 'keychain',
     };
   }
@@ -240,14 +216,14 @@ function resolveCredentials(): CredentialResult {
         logger.debug(
           'Credentials file found but missing claudeAiOauth.accessToken',
         );
-        return { lines: extraLines, source: 'none' };
+        return { lines: [], source: 'none' };
       }
 
       checkTokenExpiry(credentials?.claudeAiOauth?.expiresAt);
 
       const escaped = accessToken.replace(/'/g, "'\\''");
       return {
-        lines: [`CLAUDE_CODE_OAUTH_TOKEN='${escaped}'`, ...extraLines],
+        lines: [`CLAUDE_CODE_OAUTH_TOKEN='${escaped}'`],
         source: 'claude-credentials',
       };
     }
@@ -258,9 +234,6 @@ function resolveCredentials(): CredentialResult {
     );
   }
 
-  if (extraLines.length > 0) {
-    return { lines: extraLines, source: 'none' };
-  }
   return { lines: [], source: 'none' };
 }
 
@@ -308,26 +281,30 @@ function buildVolumeMounts(
     }
   }
 
-  // Per-group Claude sessions directory (isolated from other groups)
-  // Each group gets their own .claude/ to prevent cross-group session access
-  const groupSessionsDir = path.join(
-    DATA_DIR,
-    'sessions',
-    group.folder,
-    '.claude',
-  );
-  fs.mkdirSync(groupSessionsDir, { recursive: true });
-  mounts.push({
-    hostPath: groupSessionsDir,
-    containerPath: '/home/bun/.claude',
-    readonly: false,
-  });
+  if (!SECRETLESS_MODE) {
+    // Per-group Claude sessions directory (isolated from other groups)
+    // Each group gets their own .claude/ to prevent cross-group session access
+    const groupSessionsDir = path.join(
+      DATA_DIR,
+      'sessions',
+      group.folder,
+      '.claude',
+    );
+    fs.mkdirSync(groupSessionsDir, { recursive: true });
+    mounts.push({
+      hostPath: groupSessionsDir,
+      containerPath: '/home/bun/.claude',
+      readonly: false,
+    });
+  }
 
   // Per-group IPC namespace: each group gets its own IPC directory
   // This prevents cross-group privilege escalation via IPC
   const groupIpcDir = path.join(DATA_DIR, 'ipc', group.folder);
   fs.mkdirSync(path.join(groupIpcDir, 'messages'), { recursive: true });
   fs.mkdirSync(path.join(groupIpcDir, 'tasks'), { recursive: true });
+  fs.mkdirSync(path.join(groupIpcDir, 'browse'), { recursive: true });
+  fs.mkdirSync(path.join(groupIpcDir, 'capabilities'), { recursive: true });
   // Persistent mode IPC subdirectories
   fs.mkdirSync(path.join(groupIpcDir, 'agent-input'), { recursive: true });
   fs.mkdirSync(path.join(groupIpcDir, 'agent-output'), { recursive: true });
@@ -338,28 +315,35 @@ function buildVolumeMounts(
     readonly: false,
   });
 
-  // Environment file directory (workaround for Apple Container -i env var bug)
-  // Only expose specific auth variables needed by Claude Code, not the entire .env
-  const envDir = path.join(DATA_DIR, 'env');
-  fs.mkdirSync(envDir, { recursive: true });
-  const credentials = resolveCredentials();
-  if (credentials.lines.length > 0) {
-    logger.debug(
-      { source: credentials.source },
-      'Container auth credentials resolved',
-    );
-    fs.writeFileSync(
-      path.join(envDir, 'env'),
-      credentials.lines.join('\n') + '\n',
-    );
-    mounts.push({
-      hostPath: envDir,
-      containerPath: '/workspace/env-dir',
-      readonly: true,
-    });
+  if (!SECRETLESS_MODE) {
+    // Environment file directory (workaround for Apple Container -i env var bug)
+    // Only expose specific auth variables needed by Claude Code, not the entire .env
+    const envDir = path.join(DATA_DIR, 'env');
+    fs.mkdirSync(envDir, { recursive: true });
+    const credentials = resolveCredentials();
+    if (credentials.lines.length > 0) {
+      logger.debug(
+        { source: credentials.source },
+        'Container auth credentials resolved',
+      );
+      fs.writeFileSync(
+        path.join(envDir, 'env'),
+        credentials.lines.join('\n') + '\n',
+      );
+      mounts.push({
+        hostPath: envDir,
+        containerPath: '/workspace/env-dir',
+        readonly: true,
+      });
+    } else {
+      logger.warn(
+        'No auth credentials found — check .env or Claude Code login (claude login)',
+      );
+    }
   } else {
-    logger.warn(
-      'No auth credentials found — check .env or Claude Code login (claude login)',
+    logger.info(
+      { group: group.folder },
+      'Secretless mode enabled: skipping credential mounts into container',
     );
   }
 
@@ -385,6 +369,12 @@ function buildOneShotContainerArgs(
   const args: string[] = ['run', '-i', '--rm'];
   if (containerName) {
     args.push('--name', containerName);
+  }
+  if (CONTAINER_NETWORK_MODE === 'none') {
+    args.push('--network', 'none');
+  }
+  if (SECRETLESS_MODE) {
+    args.push('-e', 'NANOCLAW_SECRETLESS=1');
   }
 
   for (const mount of mounts) {
@@ -677,6 +667,12 @@ function buildPersistentContainerArgs(
     '-e',
     'NANOCLAW_PERSISTENT=1',
   ];
+  if (CONTAINER_NETWORK_MODE === 'none') {
+    args.push('--network', 'none');
+  }
+  if (SECRETLESS_MODE) {
+    args.push('-e', 'NANOCLAW_SECRETLESS=1');
+  }
 
   for (const mount of mounts) {
     if (mount.readonly) {
