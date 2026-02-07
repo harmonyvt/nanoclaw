@@ -1276,6 +1276,10 @@ async function main(): Promise<void> {
     runTaskNow: (taskId: string) => runTaskNow(taskId, schedulerDeps),
   };
 
+  startCuaTakeoverServer();
+  startDashboardServer();
+  initTailscaleServe();
+
   await connectTelegram(
     () => registeredGroups,
     registerGroup,
@@ -1283,9 +1287,6 @@ async function main(): Promise<void> {
     taskActions,
   );
   startSchedulerLoop(schedulerDeps);
-  startCuaTakeoverServer();
-  startDashboardServer();
-  initTailscaleServe();
   startIpcWatcher();
   startIdleWatcher();
   startContainerIdleCleanup();
