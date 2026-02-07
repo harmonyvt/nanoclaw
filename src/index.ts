@@ -49,6 +49,12 @@ import { NewMessage, RegisteredGroup, Session } from './types.js';
 import { loadJson, saveJson } from './utils.js';
 import { logger } from './logger.js';
 import {
+  isSupermemoryEnabled,
+  retrieveMemories,
+  storeInteraction,
+  formatMemoryContext,
+} from './supermemory.js';
+import {
   processBrowseRequest,
   resolveWaitForUser,
   hasWaitingRequests,
@@ -188,6 +194,15 @@ async function processMessage(msg: NewMessage): Promise<void> {
     ASSISTANT_NAME,
   );
 
+  // Retrieve relevant memories from Supermemory (non-blocking)
+  let memoryXml = '';
+  if (isSupermemoryEnabled()) {
+    const latestMessage =
+      missedMessages[missedMessages.length - 1]?.content || '';
+    const memories = await retrieveMemories(group.folder, latestMessage);
+    if (memories) memoryXml = formatMemoryContext(memories);
+  }
+
   const lines = missedMessages.map((m) => {
     // Escape XML special characters in content
     const escapeXml = (s: string) =>
@@ -210,7 +225,10 @@ async function processMessage(msg: NewMessage): Promise<void> {
 
     return `<message sender="${escapeXml(m.sender_name)}" time="${m.timestamp}"${mediaAttrs}>${escapeXml(m.content)}</message>`;
   });
-  const prompt = `<messages>\n${lines.join('\n')}\n</messages>`;
+  const messagesXml = `<messages>\n${lines.join('\n')}\n</messages>`;
+  const prompt = memoryXml
+    ? `${memoryXml}\n${messagesXml}`
+    : messagesXml;
 
   if (!prompt) return;
 
@@ -233,6 +251,15 @@ async function processMessage(msg: NewMessage): Promise<void> {
       }
     }
     await sendMessage(msg.chat_jid, text);
+
+    // Store interaction to Supermemory (non-blocking)
+    if (isSupermemoryEnabled()) {
+      void storeInteraction(group.folder, messagesXml, response, {
+        threadId: sessions[group.folder],
+        timestamp: msg.timestamp,
+        groupName: group.name,
+      });
+    }
   }
 }
 

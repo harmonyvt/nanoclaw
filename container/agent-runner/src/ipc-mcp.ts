@@ -8,16 +8,35 @@ import { z } from 'zod';
 import fs from 'fs';
 import path from 'path';
 import { CronExpressionParser } from 'cron-parser';
+import Supermemory from 'supermemory';
 
 const IPC_DIR = '/workspace/ipc';
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
 const TASKS_DIR = path.join(IPC_DIR, 'tasks');
 const BROWSE_DIR = path.join(IPC_DIR, 'browse');
+const SUPERMEMORY_KEY_ENV_VARS = [
+  'SUPERMEMORY_API_KEY',
+  'SUPERMEMORY_OPENCLAW_API_KEY',
+  'SUPERMEMORY_CC_API_KEY',
+] as const;
 
 export interface IpcMcpContext {
   chatJid: string;
   groupFolder: string;
   isMain: boolean;
+}
+
+function resolveSupermemoryApiKey():
+  | { key: string; envVar: (typeof SUPERMEMORY_KEY_ENV_VARS)[number] }
+  | null {
+  for (const envVar of SUPERMEMORY_KEY_ENV_VARS) {
+    const raw = process.env[envVar];
+    if (typeof raw !== 'string') continue;
+    const key = raw.trim();
+    if (!key) continue;
+    return { key, envVar };
+  }
+  return null;
 }
 
 function writeIpcFile(dir: string, data: object): string {
@@ -830,6 +849,155 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
                 {
                   type: 'text',
                   text: `Firecrawl map error: ${err instanceof Error ? err.message : String(err)}`,
+                },
+              ],
+              isError: true,
+            };
+          }
+        },
+      ),
+
+      // --- Supermemory tools (using official SDK) ---
+
+      tool(
+        'memory_save',
+        'Save a note, fact, or piece of information to long-term memory (Supermemory). Use this to explicitly remember important context, preferences, or decisions that should persist across conversations.',
+        {
+          content: z
+            .string()
+            .describe(
+              'The text content to save to memory. Can be a fact, note, summary, or any information worth remembering.',
+            ),
+          metadata: z
+            .record(z.string(), z.string())
+            .optional()
+            .describe(
+              'Optional key-value metadata (e.g., {"category": "preference", "topic": "coding"})',
+            ),
+        },
+        async (args) => {
+          const resolvedSmKey = resolveSupermemoryApiKey();
+          if (!resolvedSmKey) {
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: 'No Supermemory API key found. Set SUPERMEMORY_API_KEY (or SUPERMEMORY_OPENCLAW_API_KEY / SUPERMEMORY_CC_API_KEY).',
+                },
+              ],
+              isError: true,
+            };
+          }
+
+          try {
+            const sm = new Supermemory({ apiKey: resolvedSmKey.key });
+            await sm.add({
+              content: args.content,
+              containerTags: [`nanoclaw_${groupFolder}`],
+              metadata: {
+                type: 'explicit_save',
+                ...args.metadata,
+              },
+            });
+
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: 'Memory saved successfully.',
+                },
+              ],
+            };
+          } catch (err) {
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: `Supermemory save error: ${err instanceof Error ? err.message : String(err)}`,
+                },
+              ],
+              isError: true,
+            };
+          }
+        },
+      ),
+
+      tool(
+        'memory_search',
+        'Search long-term memory (Supermemory) for relevant past information, conversations, and facts. Use this to recall context from previous conversations or explicitly saved memories.',
+        {
+          query: z
+            .string()
+            .describe(
+              'Natural language search query describing what you want to recall',
+            ),
+          limit: z
+            .number()
+            .optional()
+            .describe('Maximum number of results to return (default: 10)'),
+        },
+        async (args) => {
+          const resolvedSmKey = resolveSupermemoryApiKey();
+          if (!resolvedSmKey) {
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: 'No Supermemory API key found. Set SUPERMEMORY_API_KEY (or SUPERMEMORY_OPENCLAW_API_KEY / SUPERMEMORY_CC_API_KEY).',
+                },
+              ],
+              isError: true,
+            };
+          }
+
+          try {
+            const sm = new Supermemory({ apiKey: resolvedSmKey.key });
+            const response = await sm.search.memories({
+              q: args.query,
+              containerTag: `nanoclaw_${groupFolder}`,
+              searchMode: 'hybrid',
+              limit: args.limit ?? 10,
+            });
+
+            const results = (response.results || [])
+              .map((r: { memory?: string; chunk?: string; similarity?: number }) => ({
+                text: r.memory || r.chunk || '',
+                similarity: r.similarity ?? 0,
+              }))
+              .filter((r: { text: string }) => r.text.trim());
+
+            if (results.length === 0) {
+              return {
+                content: [
+                  {
+                    type: 'text',
+                    text: 'No matching memories found.',
+                  },
+                ],
+              };
+            }
+
+            const formatted = results
+              .map(
+                (r: { text: string; similarity: number }, i: number) =>
+                  `${i + 1}. [relevance: ${r.similarity.toFixed(2)}] ${r.text}`,
+              )
+              .join('\n\n');
+
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: `Found ${results.length} memories:\n\n${formatted}`,
+                },
+              ],
+            };
+          } catch (err) {
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: `Supermemory search error: ${err instanceof Error ? err.message : String(err)}`,
                 },
               ],
               isError: true,

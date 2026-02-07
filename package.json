@@ -12,6 +12,7 @@
     "format": "prettier --write \"src/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.ts\"",
     "test": "bun test",
+    "check:supermemory": "bun scripts/check-supermemory.ts",
     "generate:cua-client": "bun scripts/generate-cua-client.ts",
     "setup:envs": "bun run scripts/setup-envs.ts",
     "docker:requirements": "./scripts/ensure-docker-requirements.sh",
@@ -24,6 +25,7 @@
     "grammy": "^1.39.3",
     "pino": "^9.6.0",
     "pino-pretty": "^13.0.0",
+    "supermemory": "^4.0.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {

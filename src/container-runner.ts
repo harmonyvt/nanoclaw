@@ -167,7 +167,13 @@ function resolveCredentials(): CredentialResult {
   const envFile = path.join(projectRoot, '.env');
 
   // Collect non-auth API keys from .env (always included regardless of auth source)
-  const extraVars = ['OPENAI_API_KEY', 'FIRECRAWL_API_KEY'];
+  const extraVars = [
+    'OPENAI_API_KEY',
+    'FIRECRAWL_API_KEY',
+    'SUPERMEMORY_API_KEY',
+    'SUPERMEMORY_OPENCLAW_API_KEY',
+    'SUPERMEMORY_CC_API_KEY',
+  ];
   const extraLines: string[] = [];
   if (fs.existsSync(envFile)) {
     const envContent = fs.readFileSync(envFile, 'utf-8');
