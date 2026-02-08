@@ -193,6 +193,16 @@ function resolveCredentials(): CredentialResult {
     }
   }
 
+  // Fall back to process.env for extraVars not found in .env
+  // (e.g., loaded from 1Password at startup)
+  for (const varName of extraVars) {
+    const alreadyResolved = extraLines.some((l) => l.startsWith(`${varName}=`));
+    if (!alreadyResolved && process.env[varName]) {
+      const escaped = process.env[varName]!.replace(/'/g, "'\\''");
+      extraLines.push(`${varName}='${escaped}'`);
+    }
+  }
+
   // Priority 1: .env file for Claude auth (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY)
   const authVars = ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'];
   if (fs.existsSync(envFile)) {

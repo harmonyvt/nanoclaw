@@ -11,12 +11,10 @@ import { logger } from './logger.js';
 const SECRET_REFS: Record<string, string> = {
   TELEGRAM_BOT_TOKEN: 'op://Agent/Telegram/bot-token',
   TELEGRAM_OWNER_ID: 'op://Agent/Telegram/owner-id',
-  CLAUDE_CODE_OAUTH_TOKEN: 'op://Agent/Claude-OAuth/credential',
   OPENAI_API_KEY: 'op://Agent/OpenAI/credential',
   FIRECRAWL_API_KEY: 'op://Agent/Firecrawl/credential',
   SUPERMEMORY_API_KEY: 'op://Agent/Supermemory/credential',
   FREYA_API_KEY: 'op://Agent/Freya/credential',
-  CUA_API_KEY: 'op://Agent/CUA/credential',
 };
 
 export function isOnePasswordEnabled(): boolean {
