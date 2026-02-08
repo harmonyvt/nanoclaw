@@ -9,15 +9,14 @@ import { logger } from './logger.js';
 
 /** Maps environment variable names to 1Password secret references. */
 const SECRET_REFS: Record<string, string> = {
-  TELEGRAM_BOT_TOKEN: 'op://NanoClaw/Telegram/bot-token',
-  TELEGRAM_OWNER_ID: 'op://NanoClaw/Telegram/owner-id',
-  ANTHROPIC_API_KEY: 'op://NanoClaw/Anthropic/credential',
-  CLAUDE_CODE_OAUTH_TOKEN: 'op://NanoClaw/Claude-OAuth/credential',
-  OPENAI_API_KEY: 'op://NanoClaw/OpenAI/credential',
-  FIRECRAWL_API_KEY: 'op://NanoClaw/Firecrawl/credential',
-  SUPERMEMORY_API_KEY: 'op://NanoClaw/Supermemory/credential',
-  FREYA_API_KEY: 'op://NanoClaw/Freya/credential',
-  CUA_API_KEY: 'op://NanoClaw/CUA/credential',
+  TELEGRAM_BOT_TOKEN: 'op://Agent/Telegram/bot-token',
+  TELEGRAM_OWNER_ID: 'op://Agent/Telegram/owner-id',
+  CLAUDE_CODE_OAUTH_TOKEN: 'op://Agent/Claude-OAuth/credential',
+  OPENAI_API_KEY: 'op://Agent/OpenAI/credential',
+  FIRECRAWL_API_KEY: 'op://Agent/Firecrawl/credential',
+  SUPERMEMORY_API_KEY: 'op://Agent/Supermemory/credential',
+  FREYA_API_KEY: 'op://Agent/Freya/credential',
+  CUA_API_KEY: 'op://Agent/CUA/credential',
 };
 
 export function isOnePasswordEnabled(): boolean {
@@ -37,7 +36,7 @@ export async function loadSecretsIntoEnv(): Promise<number> {
   try {
     client = await sdk.createClient({
       auth: process.env.OP_SERVICE_ACCOUNT_TOKEN!,
-      integrationName: 'NanoClaw Host',
+      integrationName: 'Agent Host',
       integrationVersion: '1.0.0',
     });
     logger.info('1Password: SDK client ready');

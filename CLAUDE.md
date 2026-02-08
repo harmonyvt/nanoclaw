@@ -78,7 +78,7 @@ If SOUL.md doesn't exist for a group, the agent is prompted to ask the user to d
 
 At startup, the host loads secrets with this priority:
 
-1. **1Password** (if `OP_SERVICE_ACCOUNT_TOKEN` set) -- resolves from NanoClaw vault via `@1password/sdk`
+1. **1Password** (if `OP_SERVICE_ACCOUNT_TOKEN` set) -- resolves from Agent vault via `@1password/sdk`
 2. **`.env` file** -- Bun auto-loads at startup
 3. Explicit environment variables take precedence over 1Password (1Password only fills unset vars)
 
@@ -92,12 +92,12 @@ Container auth credentials are resolved with a fallback chain in `container-runn
 
 ### Container API Keys
 
-API keys for container tools (Firecrawl, Supermemory) are resolved at tool invocation time:
+API keys for container tools (Firecrawl, Supermemory) are proxied through the host via IPC:
 
-1. **1Password** (if `OP_SERVICE_ACCOUNT_TOKEN` is in the container env) -- resolved via `@1password/sdk`
-2. **`process.env`** fallback -- from `data/env/env` (only `OPENAI_API_KEY` is still passed this way)
+1. **Host-side API proxy** -- container writes `req-{id}.json` to `/workspace/ipc/api/`, host resolves secrets and makes API calls, writes `res-{id}.json` back
+2. **`OPENAI_API_KEY`** is the only key still passed directly to containers (needed for OpenAI provider adapter)
 
-Auth credentials and `OP_SERVICE_ACCOUNT_TOKEN` are written to `data/env/env` and mounted read-only at `/workspace/env-dir/env`. The container entrypoint sources this file.
+Auth credentials are written to `data/env/env` and mounted read-only at `/workspace/env-dir/env`. The container entrypoint sources this file.
 
 ## Container Runtime
 
