@@ -395,7 +395,7 @@ function startSelfUpdateProcess(chatId: number): void {
     },
   });
 
-  child.on('close', (code) => {
+  child.on('close', (code, signal) => {
     if (!bot) return;
 
     if (code === 0) {
@@ -407,6 +407,17 @@ function startSelfUpdateProcess(chatId: number): void {
         .catch((err) =>
           logger.error({ module: 'telegram', err }, 'Failed to send update success message'),
         );
+      return;
+    }
+
+    // When systemd restarts the service, it kills the entire cgroup including
+    // this script. The script exits with code=null and signal=SIGTERM. This is
+    // expected behavior -- the update succeeded if the restart step was reached.
+    if (code === null && (signal === 'SIGTERM' || signal === 'SIGKILL')) {
+      logger.info(
+        { module: 'telegram', signal },
+        'Self-update script killed by signal during service restart (expected)',
+      );
       return;
     }
 

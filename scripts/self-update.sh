@@ -107,7 +107,15 @@ elif [[ "$OS" == "Linux" ]]; then
     fail "systemctl not found on Linux host"
   fi
   log_step "restarting systemd user service com.nanoclaw.service"
-  systemctl --user restart com.nanoclaw.service
+  # Use systemd-run to restart from a separate cgroup scope, so this script
+  # isn't killed when systemd tears down the service's cgroup.
+  if command -v systemd-run >/dev/null 2>&1; then
+    systemd-run --user --no-block --unit=nanoclaw-self-update-restart \
+      systemctl --user restart com.nanoclaw.service
+  else
+    # Fallback: direct restart (script will be killed, exit code will be null)
+    systemctl --user restart com.nanoclaw.service
+  fi
 else
   fail "unsupported OS for self-update: ${OS}"
 fi
