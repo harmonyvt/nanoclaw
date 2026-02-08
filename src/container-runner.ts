@@ -147,11 +147,12 @@ function checkTokenExpiry(expiresAt: number | undefined): void {
   const nowMs = Date.now();
   if (expiresAt <= nowMs) {
     logger.warn(
+      { module: 'container' },
       'Claude Code OAuth token has expired — Claude Code should auto-refresh it on next use',
     );
   } else if (expiresAt - nowMs < 10 * 60 * 1000) {
     logger.warn(
-      { expiresIn: Math.round((expiresAt - nowMs) / 1000) },
+      { module: 'container', expiresIn: Math.round((expiresAt - nowMs) / 1000) },
       'Claude Code OAuth token expires within 10 minutes',
     );
   }
@@ -222,7 +223,7 @@ function resolveCredentials(): CredentialResult {
   if (keychainCreds) {
     checkTokenExpiry(keychainCreds.expiresAt);
     const escaped = keychainCreds.accessToken.replace(/'/g, "'\\''");
-    logger.info('Using Claude Code OAuth token from macOS keychain');
+    logger.info({ module: 'container' }, 'Using Claude Code OAuth token from macOS keychain');
     return {
       lines: [`CLAUDE_CODE_OAUTH_TOKEN='${escaped}'`, ...extraLines],
       source: 'keychain',
@@ -238,6 +239,7 @@ function resolveCredentials(): CredentialResult {
       const accessToken = credentials?.claudeAiOauth?.accessToken;
       if (!accessToken) {
         logger.debug(
+          { module: 'container' },
           'Credentials file found but missing claudeAiOauth.accessToken',
         );
         return { lines: extraLines, source: 'none' };
@@ -253,7 +255,7 @@ function resolveCredentials(): CredentialResult {
     }
   } catch (err) {
     logger.debug(
-      { error: err, path: credentialsPath },
+      { module: 'container', error: err, path: credentialsPath },
       'Failed to read credentials file',
     );
   }
@@ -345,7 +347,7 @@ function buildVolumeMounts(
   const credentials = resolveCredentials();
   if (credentials.lines.length > 0) {
     logger.debug(
-      { source: credentials.source },
+      { module: 'container', source: credentials.source },
       'Container auth credentials resolved',
     );
     fs.writeFileSync(
@@ -359,6 +361,7 @@ function buildVolumeMounts(
     });
   } else {
     logger.warn(
+      { module: 'container' },
       'No auth credentials found — check .env or Claude Code login (claude login)',
     );
   }
@@ -418,6 +421,7 @@ async function runOneShotContainer(
 
   logger.debug(
     {
+      module: 'container',
       group: group.name,
       mounts: mounts.map(
         (m) =>
@@ -430,6 +434,7 @@ async function runOneShotContainer(
 
   logger.info(
     {
+      module: 'container',
       group: group.name,
       mountCount: mounts.length,
       isMain: input.isMain,
@@ -462,7 +467,7 @@ async function runOneShotContainer(
         stdout += chunk.slice(0, remaining);
         stdoutTruncated = true;
         logger.warn(
-          { group: group.name, size: stdout.length },
+          { module: 'container', group: group.name, size: stdout.length },
           'Container stdout truncated due to size limit',
         );
       } else {
@@ -474,7 +479,7 @@ async function runOneShotContainer(
       const chunk = data.toString();
       const lines = chunk.trim().split('\n');
       for (const line of lines) {
-        if (line) logger.debug({ container: group.folder }, line);
+        if (line) logger.info({ module: 'container-stderr', group: group.folder }, line);
       }
       if (stderrTruncated) return;
       const remaining = CONTAINER_MAX_OUTPUT_SIZE - stderr.length;
@@ -482,7 +487,7 @@ async function runOneShotContainer(
         stderr += chunk.slice(0, remaining);
         stderrTruncated = true;
         logger.warn(
-          { group: group.name, size: stderr.length },
+          { module: 'container', group: group.name, size: stderr.length },
           'Container stderr truncated due to size limit',
         );
       } else {
@@ -491,7 +496,7 @@ async function runOneShotContainer(
     });
 
     const timeout = setTimeout(() => {
-      logger.error({ group: group.name }, 'Container timeout, killing');
+      logger.error({ module: 'container', group: group.name }, 'Container timeout, killing');
       container.kill('SIGKILL');
       try {
         execSync(`docker rm -f ${oneShotContainerName} 2>/dev/null`, {
@@ -573,11 +578,12 @@ async function runOneShotContainer(
       }
 
       fs.writeFileSync(logFile, logLines.join('\n'));
-      logger.debug({ logFile, verbose: isVerbose }, 'Container log written');
+      logger.debug({ module: 'container', logFile, verbose: isVerbose }, 'Container log written');
 
       if (code !== 0) {
         logger.error(
           {
+            module: 'container',
             group: group.name,
             code,
             duration,
@@ -615,6 +621,7 @@ async function runOneShotContainer(
 
         logger.info(
           {
+            module: 'container',
             group: group.name,
             duration,
             status: output.status,
@@ -627,6 +634,7 @@ async function runOneShotContainer(
       } catch (err) {
         logger.error(
           {
+            module: 'container',
             group: group.name,
             stdout: stdout.slice(-500),
             error: err,
@@ -644,7 +652,7 @@ async function runOneShotContainer(
 
     container.on('error', (err) => {
       clearTimeout(timeout);
-      logger.error({ group: group.name, error: err }, 'Container spawn error (one-shot)');
+      logger.error({ module: 'container', group: group.name, error: err }, 'Container spawn error (one-shot)');
       resolve({
         status: 'error',
         result: null,
@@ -736,7 +744,7 @@ async function waitForHeartbeat(groupFolder: string, containerId: string): Promi
     // Check if container died
     if (!isContainerRunning(containerId)) {
       logger.error(
-        { groupFolder, containerId: containerId.slice(0, 12) },
+        { module: 'container', groupFolder, containerId: containerId.slice(0, 12) },
         'Container exited while waiting for heartbeat',
       );
       return false;
@@ -750,7 +758,7 @@ async function waitForHeartbeat(groupFolder: string, containerId: string): Promi
   }
 
   logger.error(
-    { groupFolder, containerId: containerId.slice(0, 12) },
+    { module: 'container', groupFolder, containerId: containerId.slice(0, 12) },
     'Timed out waiting for container heartbeat',
   );
   return false;
@@ -765,6 +773,7 @@ function killContainer(groupFolder: string, reason: string): void {
 
   logger.info(
     {
+      module: 'container',
       groupFolder,
       containerId: entry.containerId.slice(0, 12),
       reason,
@@ -868,6 +877,7 @@ export function cleanupOrphanPersistentContainers(): void {
 
   logger.warn(
     {
+      module: 'container',
       count: orphanIds.length,
       containerIds: orphanIds.map((id) => id.slice(0, 12)),
     },
@@ -901,7 +911,7 @@ async function getOrStartContainer(
     }
     // Container died or heartbeat stale - clean up and restart
     logger.warn(
-      { groupFolder: group.folder, containerId: existing.containerId.slice(0, 12) },
+      { module: 'container', groupFolder: group.folder, containerId: existing.containerId.slice(0, 12) },
       'Persistent container is dead/stale, restarting',
     );
     killContainer(group.folder, 'dead/stale');
@@ -917,6 +927,7 @@ async function getOrStartContainer(
 
   logger.info(
     {
+      module: 'container',
       group: group.name,
       mountCount: mounts.length,
       isMain,
@@ -927,6 +938,7 @@ async function getOrStartContainer(
 
   logger.debug(
     {
+      module: 'container',
       group: group.name,
       mounts: mounts.map(
         (m) =>
@@ -953,14 +965,14 @@ async function getOrStartContainer(
     }).trim();
   } catch (err) {
     logger.error(
-      { group: group.name, error: err },
+      { module: 'container', group: group.name, error: err },
       'Failed to start persistent container',
     );
     return null;
   }
 
   logger.info(
-    { group: group.name, containerId: containerId.slice(0, 12) },
+    { module: 'container', group: group.name, containerId: containerId.slice(0, 12) },
     'Persistent container started, waiting for heartbeat',
   );
 
@@ -974,7 +986,7 @@ async function getOrStartContainer(
         timeout: 5000,
       });
       logger.error(
-        { group: group.name, containerId: containerId.slice(0, 12), logs },
+        { module: 'container', group: group.name, containerId: containerId.slice(0, 12), logs },
         'Container failed to become ready, dumping logs',
       );
     } catch {}
@@ -995,7 +1007,7 @@ async function getOrStartContainer(
   runningContainers.set(group.folder, entry);
 
   logger.info(
-    { group: group.name, containerId: containerId.slice(0, 12) },
+    { module: 'container', group: group.name, containerId: containerId.slice(0, 12) },
     'Persistent container ready',
   );
 
@@ -1022,7 +1034,7 @@ async function sendToPersistentContainer(
   fs.renameSync(tmpFile, inputFile);
 
   logger.debug(
-    { groupFolder: container.groupFolder, requestId: timestamp },
+    { module: 'container', groupFolder: container.groupFolder, requestId: timestamp },
     'Wrote input file to persistent container',
   );
 
@@ -1041,7 +1053,7 @@ async function sendToPersistentContainer(
         return output;
       } catch (err) {
         logger.error(
-          { outputFile, error: err },
+          { module: 'container', outputFile, error: err },
           'Failed to parse output file from persistent container',
         );
         try { fs.unlinkSync(outputFile); } catch {}
@@ -1090,7 +1102,7 @@ async function runPersistentContainer(
   const container = await getOrStartContainer(group, input.isMain);
   if (!container) {
     logger.warn(
-      { group: group.name },
+      { module: 'container', group: group.name },
       'Failed to start persistent container, falling back to one-shot',
     );
     return runOneShotContainer(group, input);
@@ -1143,6 +1155,7 @@ async function runPersistentContainer(
 
   logger.info(
     {
+      module: 'container',
       group: group.name,
       duration,
       status: output.status,
@@ -1199,6 +1212,7 @@ export function startContainerIdleCleanup(): void {
 
   logger.info(
     {
+      module: 'container',
       idleTimeout: `${CONTAINER_IDLE_TIMEOUT / 1000}s`,
       checkInterval: `${IDLE_CHECK_INTERVAL / 1000}s`,
     },
@@ -1219,7 +1233,7 @@ export function killAllContainers(): void {
   const count = runningContainers.size;
   if (count === 0) return;
 
-  logger.info({ count }, 'Killing all persistent containers');
+  logger.info({ module: 'container', count }, 'Killing all persistent containers');
 
   for (const groupFolder of [...runningContainers.keys()]) {
     killContainer(groupFolder, 'application shutdown');

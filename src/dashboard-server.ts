@@ -200,7 +200,7 @@ function handleLogDetail(pathname: string): Response {
     const parsed = JSON.parse(log.raw);
     const STANDARD_KEYS = new Set([
       'level', 'time', 'msg', 'module', 'name', 'pid', 'hostname', 'v',
-      'group_folder',
+      'group_folder', 'group', 'sourceGroup', 'groupFolder', 'container',
     ]);
     for (const [key, value] of Object.entries(parsed)) {
       if (!STANDARD_KEYS.has(key)) {
@@ -1099,12 +1099,26 @@ function renderDashboardPage(): string {
     }
     .log-entry {
       display: flex; align-items: flex-start; gap: 6px;
-      padding: 3px 12px;
+      padding: 6px 12px;
       font-size: 12px;
       line-height: 1.5;
       border-bottom: 1px solid rgba(255,255,255,0.03);
+      cursor: pointer;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-tap-highlight-color: rgba(34,211,238,0.15);
     }
     .log-entry:hover { background: rgba(255,255,255,0.03); }
+    .log-entry:active { background: rgba(255,255,255,0.06); }
+    .log-entry.expanded { background: rgba(255,255,255,0.04); }
+    .log-expand-indicator {
+      flex-shrink: 0; color: var(--muted); font-size: 10px;
+      transition: transform 0.15s ease; width: 12px; text-align: center;
+      line-height: 1.5;
+    }
+    .log-entry.expanded .log-expand-indicator {
+      transform: rotate(90deg); color: var(--accent);
+    }
     .log-time { color: var(--muted); white-space: nowrap; flex-shrink: 0; }
     .log-level {
       display: inline-block; min-width: 44px;
@@ -1122,17 +1136,21 @@ function renderDashboardPage(): string {
     .log-group { color: var(--accent-2); font-size: 11px; flex-shrink: 0; }
     .log-msg { word-break: break-word; flex: 1; min-width: 0; }
     .log-msg.mono { font-size: 12px; }
-    .log-entry { cursor: pointer; }
-    .log-entry.expanded { background: rgba(255,255,255,0.04); }
     .log-detail {
-      padding: 8px 12px 8px 32px;
+      padding: 0 12px 0 32px;
       background: rgba(255,255,255,0.02);
       border-bottom: 1px solid rgba(255,255,255,0.06);
       font-size: 11px;
       line-height: 1.6;
-      display: none;
+      max-height: 0;
+      overflow: hidden;
+      transition: max-height 0.2s ease, padding 0.2s ease;
     }
-    .log-detail.show { display: block; }
+    .log-detail.show {
+      max-height: 500px;
+      padding: 8px 12px 8px 32px;
+      overflow-y: auto;
+    }
     .log-detail-row { display: flex; gap: 8px; padding: 1px 0; }
     .log-detail-key { color: var(--accent); font-weight: 500; min-width: 80px; flex-shrink: 0; }
     .log-detail-val { color: var(--text); word-break: break-all; }
@@ -1433,6 +1451,7 @@ function renderDashboardPage(): string {
   <div class="header-right">
     <div class="status-dot" id="statusDot"></div>
     <span class="status-label" id="statusLabel">Connecting...</span>
+    <span id="reconnectBtn" style="display:none;color:var(--accent);cursor:pointer;font-size:11px;margin-left:6px;text-decoration:underline">Retry</span>
   </div>
 </div>
 
@@ -1544,6 +1563,8 @@ function renderDashboardPage(): string {
   var autoScroll = true;
   var currentTab = 'logs';
   var eventSource = null;
+  var sseRetryDelay = 1000;
+  var SSE_MAX_RETRY = 30000;
   var searchTimeout = null;
   var isSearchMode = false;
 
@@ -1612,15 +1633,29 @@ function renderDashboardPage(): string {
     eventSource.onopen = function() {
       statusDot.className = 'status-dot live';
       statusLabel.textContent = 'Live';
+      sseRetryDelay = 1000;
+      var rb = $('reconnectBtn');
+      if (rb) rb.style.display = 'none';
     };
 
     eventSource.onerror = function() {
       statusDot.className = 'status-dot error';
       statusLabel.textContent = 'Reconnecting...';
+      var rb = $('reconnectBtn');
+      if (rb) rb.style.display = 'inline';
       eventSource.close();
       eventSource = null;
-      setTimeout(connectSSE, 3000);
+      setTimeout(connectSSE, sseRetryDelay);
+      sseRetryDelay = Math.min(sseRetryDelay * 2 + Math.random() * 1000, SSE_MAX_RETRY);
     };
+  }
+
+  var reconnectBtn = $('reconnectBtn');
+  if (reconnectBtn) {
+    reconnectBtn.addEventListener('click', function() {
+      sseRetryDelay = 1000;
+      connectSSE();
+    });
   }
 
   // ── Log Rendering ────────────────────────────────────────────
@@ -1642,6 +1677,7 @@ function renderDashboardPage(): string {
     var group = log.group_folder || '';
     var msg = log.msg || '';
     el.innerHTML =
+      '<span class="log-expand-indicator">\u25B6</span>' +
       '<span class="log-time mono">' + timeStr + '</span>' +
       '<span class="log-level log-level-' + level + '">' + levelName + '</span>' +
       (module ? '<span class="log-module mono">' + escapeH(module) + '</span>' : '') +

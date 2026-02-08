@@ -46,7 +46,13 @@ function createLogCaptureStream(): Writable {
               time: parsed.time ?? Date.now(),
               msg: parsed.msg ?? '',
               module: parsed.module ?? parsed.name ?? null,
-              group_folder: parsed.group_folder ?? null,
+              group_folder:
+                parsed.group_folder ??
+                parsed.group ??
+                parsed.sourceGroup ??
+                parsed.groupFolder ??
+                parsed.container ??
+                null,
               raw: line,
             };
 
@@ -55,7 +61,7 @@ function createLogCaptureStream(): Writable {
             // Extract extra context fields from raw JSON
             const STANDARD_KEYS = new Set([
               'level', 'time', 'msg', 'module', 'name', 'pid', 'hostname', 'v',
-              'group_folder',
+              'group_folder', 'group', 'sourceGroup', 'groupFolder', 'container',
             ]);
             const extra: Record<string, unknown> = {};
             for (const [key, value] of Object.entries(parsed)) {
