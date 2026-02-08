@@ -21,6 +21,7 @@ RUN mkdir -p /data/chrome-profile
 EXPOSE 9222 6080
 
 COPY start.sh /start.sh
-RUN chmod +x /start.sh
+COPY rotate-vnc-pw.sh /rotate-vnc-pw.sh
+RUN chmod +x /start.sh /rotate-vnc-pw.sh
 
 ENTRYPOINT ["/start.sh"]

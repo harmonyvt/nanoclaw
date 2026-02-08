@@ -4,7 +4,7 @@ import { randomBytes } from 'crypto';
 import { GROUPS_DIR, DATA_DIR } from './config.js';
 import { CuaClient } from './cua-client.js';
 import { logger } from './logger.js';
-import { ensureSandbox, resetIdleTimer } from './sandbox-manager.js';
+import { ensureSandbox, resetIdleTimer, rotateSandboxVncPassword } from './sandbox-manager.js';
 
 type PendingWaitForUser = {
   requestId: string;
@@ -12,6 +12,7 @@ type PendingWaitForUser = {
   token: string;
   createdAt: string;
   message: string | null;
+  vncPassword: string | null;
   promise: Promise<BrowseResponse>;
   resolve: (result: BrowseResponse) => void;
 };
@@ -22,6 +23,7 @@ export type PendingWaitForUserView = {
   token: string;
   createdAt: string;
   message: string | null;
+  vncPassword: string | null;
 };
 
 // Pending wait-for-user requests: requestId -> metadata + resolver
@@ -95,6 +97,7 @@ function toPendingView(pending: PendingWaitForUser): PendingWaitForUserView {
     token: pending.token,
     createdAt: pending.createdAt,
     message: pending.message,
+    vncPassword: pending.vncPassword,
   };
 }
 
@@ -136,12 +139,26 @@ function ensurePendingWaitForUser(
     token,
     createdAt: new Date().toISOString(),
     message: normalizeWaitMessage(message),
+    vncPassword: null,
     promise,
     resolve: resolvePromise,
   };
 
   waitingForUser.set(requestId, pending);
   waitingForUserByToken.set(token, requestId);
+
+  // Rotate VNC password for this takeover session (async, updates entry in-place)
+  rotateSandboxVncPassword()
+    .then((password) => {
+      pending.vncPassword = password;
+    })
+    .catch((err) => {
+      logger.warn(
+        { err: err instanceof Error ? err.message : String(err) },
+        'Failed to rotate VNC password for new takeover session',
+      );
+    });
+
   return pending;
 }
 
@@ -152,6 +169,15 @@ function completePendingWaitForUser(
   waitingForUser.delete(pending.requestId);
   waitingForUserByToken.delete(pending.token);
   pending.resolve(result);
+
+  // Rotate VNC password to invalidate the old takeover session's credential.
+  // Fire-and-forget: don't block the resolve on this.
+  rotateSandboxVncPassword().catch((err) => {
+    logger.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      'Failed to rotate VNC password after takeover completion',
+    );
+  });
 }
 
 function detectImageMimeFromBytes(bytes: Buffer): string | null {

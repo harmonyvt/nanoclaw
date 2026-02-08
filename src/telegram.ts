@@ -36,7 +36,7 @@ import { createSessionForOwner } from './dashboard-auth.js';
 import { getDashboardUrl } from './dashboard-server.js';
 import { downloadTelegramFile, transcribeAudio } from './media.js';
 import { logger } from './logger.js';
-import { ensureSandbox, getSandboxUrl } from './sandbox-manager.js';
+import { ensureSandbox } from './sandbox-manager.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
 
 /**
@@ -641,17 +641,15 @@ export async function connectTelegram(
 
     const ownerSession = createSessionForOwner();
     const takeoverUrl = getTakeoverUrl(request.token, ownerSession?.token);
-    const sandboxUrl = getSandboxUrl();
     const takeoverLine = takeoverUrl
       ? `Take over CUA: ${takeoverUrl}`
       : 'Takeover URL unavailable (takeover web UI may be disabled).';
-    const noVncLine = sandboxUrl ? `\nDirect noVNC: ${sandboxUrl}` : '';
     const requestLine = existing
       ? `\nReusing active request: ${request.requestId}`
       : `\nCreated request: ${request.requestId}`;
 
     await ctx.reply(
-      `Forced takeover ready.\n${takeoverLine}${noVncLine}${requestLine}\n\nWhen done, click "Return Control To Agent" in the takeover page.\nFallback: reply "continue ${request.requestId}".`,
+      `Forced takeover ready.\n${takeoverLine}${requestLine}\n\nWhen done, click "Return Control To Agent" in the takeover page.\nFallback: reply "continue ${request.requestId}".`,
     );
   });
 

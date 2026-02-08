@@ -68,8 +68,17 @@ for i in $(seq 1 5); do
   sleep 1
 done
 
-# Start x11vnc
-x11vnc -display :99 -forever -nopw -shared -rfbport 5900 &
+# Set up VNC password authentication
+PASSWD_FILE="/tmp/vncpasswd"
+if [ -z "$VNC_PW" ]; then
+  VNC_PW=$(head -c 16 /dev/urandom | base64 | tr -d '/+=' | head -c 16)
+  echo "Generated random VNC password"
+fi
+x11vnc -storepasswd "$VNC_PW" "$PASSWD_FILE" 2>/dev/null
+echo "VNC password configured"
+
+# Start x11vnc with password authentication
+x11vnc -display :99 -forever -shared -rfbport 5900 -rfbauth "$PASSWD_FILE" &
 PIDS+=($!)
 sleep 1
 
