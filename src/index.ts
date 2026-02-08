@@ -130,7 +130,7 @@ function loadState(): void {
     {},
   );
   logger.info(
-    { groupCount: Object.keys(registeredGroups).length },
+    { module: 'index', groupCount: Object.keys(registeredGroups).length },
     'State loaded',
   );
 }
@@ -152,7 +152,7 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
   fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
 
   logger.info(
-    { jid, name: group.name, folder: group.folder },
+    { module: 'index', jid, name: group.name, folder: group.folder },
     'Group registered',
   );
 }
@@ -191,7 +191,7 @@ async function processMessage(msg: NewMessage): Promise<void> {
     const resolved = resolveWaitForUser(group.folder, requestId);
     if (resolved) {
       logger.info(
-        { chatJid: msg.chat_jid, groupFolder: group.folder, requestId },
+        { module: 'index', chatJid: msg.chat_jid, groupFolder: group.folder, requestId },
         'Browse wait_for_user resolved by user',
       );
       return;
@@ -265,7 +265,7 @@ async function processMessage(msg: NewMessage): Promise<void> {
   if (!prompt) return;
 
   logger.info(
-    { group: group.name, messageCount: missedMessages.length },
+    { module: 'index', group: group.name, messageCount: missedMessages.length },
     'Processing message',
   );
 
@@ -313,7 +313,7 @@ async function processMessage(msg: NewMessage): Promise<void> {
           const oggPath = await synthesizeSpeech(markedText, mediaDir);
           await sendTelegramVoice(msg.chat_jid, oggPath);
         } catch (err) {
-          logger.error({ err }, 'Auto-TTS failed, sending as text');
+          logger.error({ module: 'index', err }, 'Auto-TTS failed, sending as text');
           // On TTS failure, prepend voice part back to text
           textPart = textPart
             ? `${voicePart}\n\n${textPart}`
@@ -397,7 +397,7 @@ async function runAgent(
 
     if (output.status === 'error') {
       logger.error(
-        { group: group.name, error: output.error },
+        { module: 'index', group: group.name, error: output.error },
         'Container agent error',
       );
       return null;
@@ -405,7 +405,7 @@ async function runAgent(
 
     return output.result;
   } catch (err) {
-    logger.error({ group: group.name, err }, 'Agent error');
+    logger.error({ module: 'index', group: group.name, err }, 'Agent error');
     return null;
   }
 }
@@ -413,9 +413,9 @@ async function runAgent(
 async function sendMessage(jid: string, text: string): Promise<void> {
   try {
     await sendTelegramMessage(jid, text);
-    logger.info({ jid, length: text.length }, 'Message sent');
+    logger.info({ module: 'index', jid, length: text.length }, 'Message sent');
   } catch (err) {
-    logger.error({ jid, err }, 'Failed to send message');
+    logger.error({ module: 'index', jid, err }, 'Failed to send message');
   }
 }
 
@@ -504,7 +504,7 @@ function startIpcWatcher(): void {
         return stat.isDirectory() && f !== 'errors';
       });
     } catch (err) {
-      logger.error({ err }, 'Error reading IPC base directory');
+      logger.error({ module: 'index', err }, 'Error reading IPC base directory');
       setTimeout(processIpcFiles, IPC_POLL_INTERVAL);
       return;
     }
@@ -533,12 +533,12 @@ function startIpcWatcher(): void {
                 ) {
                   await sendMessage(data.chatJid, data.text);
                   logger.info(
-                    { chatJid: data.chatJid, sourceGroup },
+                    { module: 'index', chatJid: data.chatJid, sourceGroup },
                     'IPC message sent',
                   );
                 } else {
                   logger.warn(
-                    { chatJid: data.chatJid, sourceGroup },
+                    { module: 'index', chatJid: data.chatJid, sourceGroup },
                     'Unauthorized IPC message attempt blocked',
                   );
                 }
@@ -561,7 +561,7 @@ function startIpcWatcher(): void {
                         const parsed = parseEmotion(data.emotion);
                         if ('error' in parsed) {
                           logger.warn(
-                            { emotion: data.emotion, error: parsed.error },
+                            { module: 'index', emotion: data.emotion, error: parsed.error },
                             'Invalid emotion from agent, auto-detecting',
                           );
                           emotion = detectEmotionFromText(data.text);
@@ -584,6 +584,7 @@ function startIpcWatcher(): void {
                       await sendTelegramVoice(data.chatJid, oggPath);
                       logger.info(
                         {
+                          module: 'index',
                           chatJid: data.chatJid,
                           sourceGroup,
                           emotion: emotion.name,
@@ -592,21 +593,21 @@ function startIpcWatcher(): void {
                       );
                     } catch (err) {
                       logger.error(
-                        { err, chatJid: data.chatJid },
+                        { module: 'index', err, chatJid: data.chatJid },
                         'TTS failed, falling back to text',
                       );
                       await sendMessage(data.chatJid, data.text);
                     }
                   } else {
                     logger.warn(
-                      { sourceGroup },
+                      { module: 'index', sourceGroup },
                       'send_voice used but FREYA_API_KEY not set, sending as text',
                     );
                     await sendMessage(data.chatJid, data.text);
                   }
                 } else {
                   logger.warn(
-                    { chatJid: data.chatJid, sourceGroup },
+                    { module: 'index', chatJid: data.chatJid, sourceGroup },
                     'Unauthorized IPC voice message attempt blocked',
                   );
                 }
@@ -638,7 +639,7 @@ function startIpcWatcher(): void {
                     );
                   } else {
                     logger.warn(
-                      { containerPath, sourceGroup },
+                      { module: 'index', containerPath, sourceGroup },
                       'IPC file path must start with /workspace/group/ or /workspace/global/',
                     );
                     hostFilePath = '';
@@ -653,6 +654,7 @@ function startIpcWatcher(): void {
                       );
                       logger.info(
                         {
+                          module: 'index',
                           chatJid: data.chatJid,
                           sourceGroup,
                           file: hostFilePath,
@@ -661,19 +663,19 @@ function startIpcWatcher(): void {
                       );
                     } catch (err) {
                       logger.error(
-                        { err, chatJid: data.chatJid, file: hostFilePath },
+                        { module: 'index', err, chatJid: data.chatJid, file: hostFilePath },
                         'Failed to send file via Telegram',
                       );
                     }
                   } else {
                     logger.warn(
-                      { containerPath, hostFilePath, sourceGroup },
+                      { module: 'index', containerPath, hostFilePath, sourceGroup },
                       'IPC file not found on host',
                     );
                   }
                 } else {
                   logger.warn(
-                    { chatJid: data.chatJid, sourceGroup },
+                    { module: 'index', chatJid: data.chatJid, sourceGroup },
                     'Unauthorized IPC file message attempt blocked',
                   );
                 }
@@ -681,7 +683,7 @@ function startIpcWatcher(): void {
               fs.unlinkSync(filePath);
             } catch (err) {
               logger.error(
-                { file, sourceGroup, err },
+                { module: 'index', file, sourceGroup, err },
                 'Error processing IPC message',
               );
               const errorDir = path.join(ipcBaseDir, 'errors');
@@ -695,7 +697,7 @@ function startIpcWatcher(): void {
         }
       } catch (err) {
         logger.error(
-          { err, sourceGroup },
+          { module: 'index', err, sourceGroup },
           'Error reading IPC messages directory',
         );
       }
@@ -715,7 +717,7 @@ function startIpcWatcher(): void {
               fs.unlinkSync(filePath);
             } catch (err) {
               logger.error(
-                { file, sourceGroup, err },
+                { module: 'index', file, sourceGroup, err },
                 'Error processing IPC task',
               );
               const errorDir = path.join(ipcBaseDir, 'errors');
@@ -728,7 +730,7 @@ function startIpcWatcher(): void {
           }
         }
       } catch (err) {
-        logger.error({ err, sourceGroup }, 'Error reading IPC tasks directory');
+        logger.error({ module: 'index', err, sourceGroup }, 'Error reading IPC tasks directory');
       }
 
       // Process browse requests from this group's IPC directory
@@ -759,7 +761,7 @@ function startIpcWatcher(): void {
                   await ensureSandbox();
                 } catch (err) {
                   logger.warn(
-                    { err, sourceGroup },
+                    { module: 'index', err, sourceGroup },
                     'Failed to prestart sandbox for wait_for_user',
                   );
                 }
@@ -845,7 +847,7 @@ function startIpcWatcher(): void {
                     await sendTelegramPhoto(chatJid, hostPath, 'Screenshot');
                   } catch (photoErr) {
                     logger.warn(
-                      { photoErr, hostPath },
+                      { module: 'index', photoErr, hostPath },
                       'Failed to send screenshot as Telegram photo',
                     );
                   }
@@ -853,12 +855,12 @@ function startIpcWatcher(): void {
               }
 
               logger.debug(
-                { requestId, action, sourceGroup, status: result.status },
+                { module: 'index', requestId, action, sourceGroup, status: result.status },
                 'Browse request processed',
               );
             } catch (err) {
               logger.error(
-                { file, sourceGroup, err },
+                { module: 'index', file, sourceGroup, err },
                 'Error processing browse request',
               );
               // Write error response so agent doesn't hang
@@ -887,7 +889,7 @@ function startIpcWatcher(): void {
         }
       } catch (err) {
         logger.error(
-          { err, sourceGroup },
+          { module: 'index', err, sourceGroup },
           'Error reading IPC browse directory',
         );
       }
@@ -950,7 +952,7 @@ function startIpcWatcher(): void {
                   try {
                     await sendTelegramMessage(chatJid, statusMsg);
                   } catch (err) {
-                    logger.debug({ err }, 'Failed to send status message');
+                    logger.debug({ module: 'index', err }, 'Failed to send status message');
                   }
                 }
               }
@@ -976,7 +978,7 @@ function startIpcWatcher(): void {
         }
       } catch (err) {
         logger.debug(
-          { err, sourceGroup },
+          { module: 'index', err, sourceGroup },
           'Error reading IPC status directory',
         );
       }
@@ -986,7 +988,7 @@ function startIpcWatcher(): void {
   };
 
   processIpcFiles();
-  logger.info('IPC watcher started (per-group namespaces)');
+  logger.info({ module: 'index' }, 'IPC watcher started (per-group namespaces)');
 }
 
 async function processTaskIpc(
@@ -1031,7 +1033,7 @@ async function processTaskIpc(
         const targetGroup = data.groupFolder;
         if (!isMain && targetGroup !== sourceGroup) {
           logger.warn(
-            { sourceGroup, targetGroup },
+            { module: 'index', sourceGroup, targetGroup },
             'Unauthorized schedule_task attempt blocked',
           );
           break;
@@ -1044,7 +1046,7 @@ async function processTaskIpc(
 
         if (!targetJid) {
           logger.warn(
-            { targetGroup },
+            { module: 'index', targetGroup },
             'Cannot schedule task: target group not registered',
           );
           break;
@@ -1061,7 +1063,7 @@ async function processTaskIpc(
             nextRun = interval.next().toISOString();
           } catch {
             logger.warn(
-              { scheduleValue: data.schedule_value },
+              { module: 'index', scheduleValue: data.schedule_value },
               'Invalid cron expression',
             );
             break;
@@ -1070,7 +1072,7 @@ async function processTaskIpc(
           const ms = parseInt(data.schedule_value, 10);
           if (isNaN(ms) || ms <= 0) {
             logger.warn(
-              { scheduleValue: data.schedule_value },
+              { module: 'index', scheduleValue: data.schedule_value },
               'Invalid interval',
             );
             break;
@@ -1080,7 +1082,7 @@ async function processTaskIpc(
           const scheduled = new Date(data.schedule_value);
           if (isNaN(scheduled.getTime())) {
             logger.warn(
-              { scheduleValue: data.schedule_value },
+              { module: 'index', scheduleValue: data.schedule_value },
               'Invalid timestamp',
             );
             break;
@@ -1106,7 +1108,7 @@ async function processTaskIpc(
           created_at: new Date().toISOString(),
         });
         logger.info(
-          { taskId, sourceGroup, targetGroup, contextMode },
+          { module: 'index', taskId, sourceGroup, targetGroup, contextMode },
           'Task created via IPC',
         );
       }
@@ -1118,12 +1120,12 @@ async function processTaskIpc(
         if (task && (isMain || task.group_folder === sourceGroup)) {
           updateTask(data.taskId, { status: 'paused' });
           logger.info(
-            { taskId: data.taskId, sourceGroup },
+            { module: 'index', taskId: data.taskId, sourceGroup },
             'Task paused via IPC',
           );
         } else {
           logger.warn(
-            { taskId: data.taskId, sourceGroup },
+            { module: 'index', taskId: data.taskId, sourceGroup },
             'Unauthorized task pause attempt',
           );
         }
@@ -1136,12 +1138,12 @@ async function processTaskIpc(
         if (task && (isMain || task.group_folder === sourceGroup)) {
           updateTask(data.taskId, { status: 'active' });
           logger.info(
-            { taskId: data.taskId, sourceGroup },
+            { module: 'index', taskId: data.taskId, sourceGroup },
             'Task resumed via IPC',
           );
         } else {
           logger.warn(
-            { taskId: data.taskId, sourceGroup },
+            { module: 'index', taskId: data.taskId, sourceGroup },
             'Unauthorized task resume attempt',
           );
         }
@@ -1154,12 +1156,12 @@ async function processTaskIpc(
         if (task && (isMain || task.group_folder === sourceGroup)) {
           deleteTask(data.taskId);
           logger.info(
-            { taskId: data.taskId, sourceGroup },
+            { module: 'index', taskId: data.taskId, sourceGroup },
             'Task cancelled via IPC',
           );
         } else {
           logger.warn(
-            { taskId: data.taskId, sourceGroup },
+            { module: 'index', taskId: data.taskId, sourceGroup },
             'Unauthorized task cancel attempt',
           );
         }
@@ -1170,7 +1172,7 @@ async function processTaskIpc(
       // Only main group can register new groups
       if (!isMain) {
         logger.warn(
-          { sourceGroup },
+          { module: 'index', sourceGroup },
           'Unauthorized register_group attempt blocked',
         );
         break;
@@ -1186,19 +1188,19 @@ async function processTaskIpc(
         });
       } else {
         logger.warn(
-          { data },
+          { module: 'index', data },
           'Invalid register_group request - missing required fields',
         );
       }
       break;
 
     default:
-      logger.warn({ type: data.type }, 'Unknown IPC task type');
+      logger.warn({ module: 'index', type: data.type }, 'Unknown IPC task type');
   }
 }
 
 async function startMessageLoop(): Promise<void> {
-  logger.info(`NanoClaw running (trigger: @${ASSISTANT_NAME})`);
+  logger.info({ module: 'index' }, `NanoClaw running (trigger: @${ASSISTANT_NAME})`);
 
   while (true) {
     try {
@@ -1206,7 +1208,7 @@ async function startMessageLoop(): Promise<void> {
       const { messages } = getNewMessages(jids, lastTimestamp, ASSISTANT_NAME);
 
       if (messages.length > 0)
-        logger.info({ count: messages.length }, 'New messages');
+        logger.info({ module: 'index', count: messages.length }, 'New messages');
       for (const msg of messages) {
         try {
           await processMessage(msg);
@@ -1215,7 +1217,7 @@ async function startMessageLoop(): Promise<void> {
           saveState();
         } catch (err) {
           logger.error(
-            { err, msg: msg.id },
+            { module: 'index', err, msg: msg.id },
             'Error processing message, will retry',
           );
           // Stop processing this batch - failed message will be retried next loop
@@ -1223,7 +1225,7 @@ async function startMessageLoop(): Promise<void> {
         }
       }
     } catch (err) {
-      logger.error({ err }, 'Error in message loop');
+      logger.error({ module: 'index', err }, 'Error in message loop');
     }
     await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
   }
@@ -1232,9 +1234,9 @@ async function startMessageLoop(): Promise<void> {
 function ensureContainerSystemRunning(): void {
   try {
     execSync('docker info', { stdio: 'pipe' });
-    logger.debug('Docker is running');
+    logger.debug({ module: 'index' }, 'Docker is running');
   } catch {
-    logger.error('Docker is not running');
+    logger.error({ module: 'index' }, 'Docker is not running');
     console.error(
       '\n╔════════════════════════════════════════════════════════════════╗',
     );
@@ -1267,6 +1269,7 @@ function ensureDockerImageRequirements(): void {
   if (CUA_SANDBOX_IMAGE_IS_LEGACY) {
     logger.warn(
       {
+        module: 'index',
         configuredImage: 'trycua/cua-sandbox:latest',
         effectiveImage: CUA_SANDBOX_IMAGE,
       },
@@ -1276,10 +1279,10 @@ function ensureDockerImageRequirements(): void {
 
   try {
     execSync(`docker image inspect ${CONTAINER_IMAGE}`, { stdio: 'pipe' });
-    logger.debug({ image: CONTAINER_IMAGE }, 'Agent image is available');
+    logger.debug({ module: 'index', image: CONTAINER_IMAGE }, 'Agent image is available');
   } catch {
     logger.error(
-      { image: CONTAINER_IMAGE },
+      { module: 'index', image: CONTAINER_IMAGE },
       'Agent Docker image is missing. Build it with ./container/build.sh',
     );
     throw new Error(`Missing Docker image: ${CONTAINER_IMAGE}`);
@@ -1288,12 +1291,12 @@ function ensureDockerImageRequirements(): void {
   try {
     execSync(`docker image inspect ${CUA_SANDBOX_IMAGE}`, { stdio: 'pipe' });
     logger.debug(
-      { image: CUA_SANDBOX_IMAGE },
+      { module: 'index', image: CUA_SANDBOX_IMAGE },
       'CUA sandbox image is available',
     );
   } catch {
     logger.info(
-      { image: CUA_SANDBOX_IMAGE, platform: CUA_SANDBOX_PLATFORM },
+      { module: 'index', image: CUA_SANDBOX_IMAGE, platform: CUA_SANDBOX_PLATFORM },
       'CUA sandbox image missing, pulling now',
     );
     try {
@@ -1302,12 +1305,13 @@ function ensureDockerImageRequirements(): void {
         { stdio: 'pipe' },
       );
       logger.info(
-        { image: CUA_SANDBOX_IMAGE, platform: CUA_SANDBOX_PLATFORM },
+        { module: 'index', image: CUA_SANDBOX_IMAGE, platform: CUA_SANDBOX_PLATFORM },
         'CUA sandbox image pulled',
       );
     } catch (pullErr) {
       logger.error(
         {
+          module: 'index',
           image: CUA_SANDBOX_IMAGE,
           platform: CUA_SANDBOX_PLATFORM,
           err: pullErr,
@@ -1321,18 +1325,18 @@ function ensureDockerImageRequirements(): void {
 
 async function main(): Promise<void> {
   if (!TELEGRAM_BOT_TOKEN) {
-    logger.error('TELEGRAM_BOT_TOKEN is required');
+    logger.error({ module: 'index' }, 'TELEGRAM_BOT_TOKEN is required');
     process.exit(1);
   }
   if (!TELEGRAM_OWNER_ID) {
-    logger.error('TELEGRAM_OWNER_ID is required');
+    logger.error({ module: 'index' }, 'TELEGRAM_OWNER_ID is required');
     process.exit(1);
   }
   ensureContainerSystemRunning();
   ensureDockerImageRequirements();
   cleanupOrphanPersistentContainers();
   initDatabase();
-  logger.info('Database initialized');
+  logger.info({ module: 'index' }, 'Database initialized');
   initLogSync();
   pruneOldLogEntries();
   loadState();
@@ -1386,7 +1390,7 @@ async function main(): Promise<void> {
 // Graceful shutdown
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.on(signal, async () => {
-    logger.info({ signal }, 'Shutting down');
+    logger.info({ module: 'index', signal }, 'Shutting down');
     stopTelegram();
     killAllContainers();
     await disconnectBrowser();
@@ -1400,6 +1404,6 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 }
 
 main().catch((err) => {
-  logger.error({ err }, 'Failed to start NanoClaw');
+  logger.error({ module: 'index', err }, 'Failed to start NanoClaw');
   process.exit(1);
 });

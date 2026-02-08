@@ -405,7 +405,7 @@ function startSelfUpdateProcess(chatId: number): void {
           'Self-update script finished successfully. Service restart may briefly interrupt this chat.',
         )
         .catch((err) =>
-          logger.error({ err }, 'Failed to send update success message'),
+          logger.error({ module: 'telegram', err }, 'Failed to send update success message'),
         );
       return;
     }
@@ -420,7 +420,7 @@ function startSelfUpdateProcess(chatId: number): void {
         chatId,
         `Self-update failed (exit code ${code}).\n\nLast log lines:\n${tail}`,
       )
-      .catch((err) => logger.error({ err }, 'Failed to send update failure message'));
+      .catch((err) => logger.error({ module: 'telegram', err }, 'Failed to send update failure message'));
   });
 
   child.unref();
@@ -476,7 +476,7 @@ export async function connectTelegram(
       }
     } catch (err) {
       logger.warn(
-        { err, chatId, languageCode },
+        { module: 'telegram', err, chatId, languageCode },
         'Failed to sync Telegram commands for chat scope',
       );
     }
@@ -499,9 +499,9 @@ export async function connectTelegram(
         await syncChatCommandsIfNeeded(ownerChatId);
       }
     }
-    logger.info('Bot commands registered with Telegram');
+    logger.info({ module: 'telegram' }, 'Bot commands registered with Telegram');
   } catch (err) {
-    logger.error({ err }, 'Failed to register bot commands');
+    logger.error({ module: 'telegram', err }, 'Failed to register bot commands');
   }
 
   // Set the persistent Menu Button (bottom-left "Open" button like BotFather)
@@ -516,9 +516,9 @@ export async function connectTelegram(
           web_app: { url: dashboardUrl + '/app' },
         },
       });
-      logger.info({ url: dashboardUrl }, 'Dashboard menu button set');
+      logger.info({ module: 'telegram', url: dashboardUrl }, 'Dashboard menu button set');
     } catch (err) {
-      logger.warn({ err }, 'Failed to set dashboard menu button');
+      logger.warn({ module: 'telegram', err }, 'Failed to set dashboard menu button');
     }
   }
 
@@ -541,7 +541,7 @@ export async function connectTelegram(
         added_at: new Date().toISOString(),
       };
       onRegisterGroup(chatId, newGroup);
-      logger.info({ chatId, name: senderName }, 'Auto-registered owner chat');
+      logger.info({ module: 'telegram', chatId, name: senderName }, 'Auto-registered owner chat');
       return newGroup;
     }
     return null;
@@ -565,7 +565,7 @@ export async function connectTelegram(
     if (sessionManager) {
       sessionManager.clearSession(chatId);
     }
-    logger.info({ chatId }, 'Session reset via /new command');
+    logger.info({ module: 'telegram', chatId }, 'Session reset via /new command');
     await ctx.reply('New thread started.');
   });
 
@@ -576,7 +576,7 @@ export async function connectTelegram(
     if (sessionManager) {
       sessionManager.clearSession(chatId);
     }
-    logger.info({ chatId, deleted }, 'History cleared via /clear command');
+    logger.info({ module: 'telegram', chatId, deleted }, 'History cleared via /clear command');
     await ctx.reply(
       `Cleared ${deleted} message${deleted === 1 ? '' : 's'} and reset session.`,
     );
@@ -623,7 +623,7 @@ export async function connectTelegram(
     try {
       await ensureSandbox();
     } catch (err) {
-      logger.error({ chatId, err }, 'Failed to start sandbox for /takeover');
+      logger.error({ module: 'telegram', chatId, err }, 'Failed to start sandbox for /takeover');
       await ctx.reply(
         'Failed to start CUA sandbox. Check Docker/sandbox logs.',
       );
@@ -727,7 +727,7 @@ export async function connectTelegram(
       try {
         startSelfUpdateProcess(ctx.chat.id);
       } catch (err) {
-        logger.error({ err }, 'Failed to start self-update process');
+        logger.error({ module: 'telegram', err }, 'Failed to start self-update process');
         await ctx.reply('Failed to start update. Check logs and try again.');
       }
       return;
@@ -780,7 +780,7 @@ export async function connectTelegram(
       ];
       await ctx.reply(lines.join('\n'));
     } catch (err) {
-      logger.error({ err }, 'Failed to check for updates');
+      logger.error({ module: 'telegram', err }, 'Failed to check for updates');
       await ctx.reply(
         'Could not check for updates. Verify git remote access and try again.',
       );
@@ -1046,7 +1046,7 @@ export async function connectTelegram(
     const voice = ctx.message.voice;
     if (voice.file_size && voice.file_size > 20 * 1024 * 1024) {
       logger.warn(
-        { msgId, size: voice.file_size },
+        { module: 'telegram', msgId, size: voice.file_size },
         'Voice message too large, skipping',
       );
       return;
@@ -1076,7 +1076,7 @@ export async function connectTelegram(
         localPath,
       );
     } catch (err) {
-      logger.error({ msgId, err }, 'Error processing voice message');
+      logger.error({ module: 'telegram', msgId, err }, 'Error processing voice message');
     }
   });
 
@@ -1092,7 +1092,7 @@ export async function connectTelegram(
     const audio = ctx.message.audio;
     if (audio.file_size && audio.file_size > 20 * 1024 * 1024) {
       logger.warn(
-        { msgId, size: audio.file_size },
+        { module: 'telegram', msgId, size: audio.file_size },
         'Audio file too large, skipping',
       );
       return;
@@ -1122,7 +1122,7 @@ export async function connectTelegram(
         localPath,
       );
     } catch (err) {
-      logger.error({ msgId, err }, 'Error processing audio message');
+      logger.error({ module: 'telegram', msgId, err }, 'Error processing audio message');
     }
   });
 
@@ -1140,7 +1140,7 @@ export async function connectTelegram(
     const photo = photos[photos.length - 1];
     if (photo.file_size && photo.file_size > 20 * 1024 * 1024) {
       logger.warn(
-        { msgId, size: photo.file_size },
+        { module: 'telegram', msgId, size: photo.file_size },
         'Photo too large, skipping',
       );
       return;
@@ -1169,7 +1169,7 @@ export async function connectTelegram(
         localPath,
       );
     } catch (err) {
-      logger.error({ msgId, err }, 'Error processing photo message');
+      logger.error({ module: 'telegram', msgId, err }, 'Error processing photo message');
     }
   });
 
@@ -1185,7 +1185,7 @@ export async function connectTelegram(
     const doc = ctx.message.document;
     if (doc.file_size && doc.file_size > 20 * 1024 * 1024) {
       logger.warn(
-        { msgId, size: doc.file_size },
+        { module: 'telegram', msgId, size: doc.file_size },
         'Document too large, skipping',
       );
       return;
@@ -1210,24 +1210,24 @@ export async function connectTelegram(
         localPath,
       );
     } catch (err) {
-      logger.error({ msgId, err }, 'Error processing document message');
+      logger.error({ module: 'telegram', msgId, err }, 'Error processing document message');
     }
   });
 
   bot.catch((err) => {
-    logger.error({ err: err.error }, 'Telegram bot error');
+    logger.error({ module: 'telegram', err: err.error }, 'Telegram bot error');
   });
 
   bot.start({
     onStart: async () => {
-      logger.info('Connected to Telegram');
+      logger.info({ module: 'telegram' }, 'Connected to Telegram');
 
       if (TELEGRAM_OWNER_ID) {
         try {
           const ownerChatId = makeTelegramChatId(Number(TELEGRAM_OWNER_ID));
           await sendTelegramMessage(ownerChatId, `Online v${APP_VERSION}`);
         } catch (err) {
-          logger.error({ err }, 'Failed to send startup message to owner');
+          logger.error({ module: 'telegram', err }, 'Failed to send startup message to owner');
         }
       }
     },
@@ -1243,7 +1243,7 @@ export async function sendTelegramMessage(
   text: string,
 ): Promise<void> {
   if (!bot) {
-    logger.error('Telegram bot not initialized');
+    logger.error({ module: 'telegram' }, 'Telegram bot not initialized');
     return;
   }
 
@@ -1278,7 +1278,7 @@ export async function sendTelegramPhoto(
   caption?: string,
 ): Promise<void> {
   if (!bot) {
-    logger.error('Telegram bot not initialized');
+    logger.error({ module: 'telegram' }, 'Telegram bot not initialized');
     return;
   }
 
@@ -1298,7 +1298,7 @@ export async function sendTelegramVoice(
   caption?: string,
 ): Promise<void> {
   if (!bot) {
-    logger.error('Telegram bot not initialized');
+    logger.error({ module: 'telegram' }, 'Telegram bot not initialized');
     return;
   }
 
@@ -1317,7 +1317,7 @@ export async function sendTelegramDocument(
   caption?: string,
 ): Promise<void> {
   if (!bot) {
-    logger.error('Telegram bot not initialized');
+    logger.error({ module: 'telegram' }, 'Telegram bot not initialized');
     return;
   }
 
@@ -1335,7 +1335,7 @@ export async function setTelegramTyping(chatId: string): Promise<void> {
   try {
     await bot.api.sendChatAction(extractTelegramChatId(chatId), 'typing');
   } catch (err) {
-    logger.debug({ chatId, err }, 'Failed to send Telegram typing action');
+    logger.debug({ module: 'telegram', chatId, err }, 'Failed to send Telegram typing action');
   }
 }
 
@@ -1345,6 +1345,6 @@ export async function setTelegramTyping(chatId: string): Promise<void> {
 export function stopTelegram(): void {
   if (bot) {
     bot.stop();
-    logger.info('Telegram bot stopped');
+    logger.info({ module: 'telegram' }, 'Telegram bot stopped');
   }
 }

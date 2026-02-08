@@ -38,7 +38,7 @@ async function runTask(
   fs.mkdirSync(groupDir, { recursive: true });
 
   logger.info(
-    { taskId: task.id, group: task.group_folder },
+    { module: 'scheduler', taskId: task.id, group: task.group_folder },
     'Running scheduled task',
   );
 
@@ -49,7 +49,7 @@ async function runTask(
 
   if (!group) {
     logger.error(
-      { taskId: task.id, groupFolder: task.group_folder },
+      { module: 'scheduler', taskId: task.id, groupFolder: task.group_folder },
       'Group not found for task',
     );
     logTaskRun({
@@ -111,12 +111,12 @@ async function runTask(
     }
 
     logger.info(
-      { taskId: task.id, durationMs: Date.now() - startTime },
+      { module: 'scheduler', taskId: task.id, durationMs: Date.now() - startTime },
       'Task completed',
     );
   } catch (err) {
     error = err instanceof Error ? err.message : String(err);
-    logger.error({ taskId: task.id, error }, 'Task failed');
+    logger.error({ module: 'scheduler', taskId: task.id, error }, 'Task failed');
   }
 
   const durationMs = Date.now() - startTime;
@@ -180,17 +180,17 @@ let schedulerRunning = false;
 
 export function startSchedulerLoop(deps: SchedulerDependencies): void {
   if (schedulerRunning) {
-    logger.debug('Scheduler loop already running, skipping duplicate start');
+    logger.debug({ module: 'scheduler' }, 'Scheduler loop already running, skipping duplicate start');
     return;
   }
   schedulerRunning = true;
-  logger.info('Scheduler loop started');
+  logger.info({ module: 'scheduler' }, 'Scheduler loop started');
 
   const loop = async () => {
     try {
       const dueTasks = getDueTasks();
       if (dueTasks.length > 0) {
-        logger.info({ count: dueTasks.length }, 'Found due tasks');
+        logger.info({ module: 'scheduler', count: dueTasks.length }, 'Found due tasks');
       }
 
       for (const task of dueTasks) {
@@ -203,7 +203,7 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
         await runTask(currentTask, deps);
       }
     } catch (err) {
-      logger.error({ err }, 'Error in scheduler loop');
+      logger.error({ module: 'scheduler', err }, 'Error in scheduler loop');
     }
 
     setTimeout(loop, SCHEDULER_POLL_INTERVAL);
