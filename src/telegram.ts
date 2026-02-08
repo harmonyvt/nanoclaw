@@ -441,7 +441,8 @@ export async function connectTelegram(
   sessionManager?: SessionManager,
   taskActions?: TaskActionHandler,
 ): Promise<void> {
-  bot = new Bot(TELEGRAM_BOT_TOKEN);
+  // Use process.env directly — 1Password may have loaded after config.ts evaluation
+  bot = new Bot(process.env.TELEGRAM_BOT_TOKEN || TELEGRAM_BOT_TOKEN);
   const apiCommands = TELEGRAM_SLASH_COMMANDS.map((c) => ({
     command: c.command,
     description: c.description,

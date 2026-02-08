@@ -20,6 +20,7 @@
     "deploy:linux": "./scripts/deploy-systemd.sh"
   },
   "dependencies": {
+    "@1password/sdk": "^0.1.0",
     "@grammyjs/files": "^1.2.0",
     "cron-parser": "^5.5.0",
     "grammy": "^1.39.3",

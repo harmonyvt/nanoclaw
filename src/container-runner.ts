@@ -168,13 +168,12 @@ function resolveCredentials(): CredentialResult {
   const homeDir = getHomeDir();
   const envFile = path.join(projectRoot, '.env');
 
-  // Collect non-auth API keys from .env (always included regardless of auth source)
+  // Collect non-auth keys to pass into the container.
+  // Firecrawl, Supermemory, and other API keys are proxied via IPC — the host
+  // resolves secrets from 1Password/env and executes API calls on behalf of
+  // the container. Only OpenAI is passed directly (needed for provider adapter).
   const extraVars = [
-    'OPENAI_API_KEY',
-    'FIRECRAWL_API_KEY',
-    'SUPERMEMORY_API_KEY',
-    'SUPERMEMORY_OPENCLAW_API_KEY',
-    'SUPERMEMORY_CC_API_KEY',
+    'OPENAI_API_KEY', // Needed for OpenAI provider adapter
   ];
   const extraLines: string[] = [];
   if (fs.existsSync(envFile)) {

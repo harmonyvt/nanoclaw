@@ -56,7 +56,7 @@ RUN bun run build
 # Create workspace directories (including persistent mode IPC dirs)
 RUN mkdir -p /workspace/group /workspace/global /workspace/extra \
     /workspace/ipc/messages /workspace/ipc/tasks /workspace/ipc/browse \
-    /workspace/ipc/agent-input /workspace/ipc/agent-output
+    /workspace/ipc/api /workspace/ipc/agent-input /workspace/ipc/agent-output
 
 # Create entrypoint script that supports both modes:
 # - If NANOCLAW_PERSISTENT=1: run agent-runner directly (it will enter persistent mode)

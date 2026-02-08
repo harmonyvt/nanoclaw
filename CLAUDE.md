@@ -74,15 +74,30 @@ If SOUL.md doesn't exist for a group, the agent is prompted to ask the user to d
 
 ## Credential Flow
 
-Credentials are resolved with a fallback chain in `container-runner.ts:resolveCredentials()`:
+### Host Process
+
+At startup, the host loads secrets with this priority:
+
+1. **1Password** (if `OP_SERVICE_ACCOUNT_TOKEN` set) -- resolves from NanoClaw vault via `@1password/sdk`
+2. **`.env` file** -- Bun auto-loads at startup
+3. Explicit environment variables take precedence over 1Password (1Password only fills unset vars)
+
+### Container Auth
+
+Container auth credentials are resolved with a fallback chain in `container-runner.ts:resolveCredentials()`:
 
 1. **`.env` file** -- looks for `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`
 2. **macOS Keychain** -- reads `Claude Code-credentials` via `security find-generic-password`
 3. **`~/.claude/.credentials.json`** -- parses `claudeAiOauth.accessToken`
 
-Non-auth API keys (`OPENAI_API_KEY`, `FIRECRAWL_API_KEY`) are always extracted from `.env` regardless of auth source.
+### Container API Keys
 
-Credentials are written to `data/env/env` and mounted read-only at `/workspace/env-dir/env`. The container entrypoint sources this file.
+API keys for container tools (Firecrawl, Supermemory) are resolved at tool invocation time:
+
+1. **1Password** (if `OP_SERVICE_ACCOUNT_TOKEN` is in the container env) -- resolved via `@1password/sdk`
+2. **`process.env`** fallback -- from `data/env/env` (only `OPENAI_API_KEY` is still passed this way)
+
+Auth credentials and `OP_SERVICE_ACCOUNT_TOKEN` are written to `data/env/env` and mounted read-only at `/workspace/env-dir/env`. The container entrypoint sources this file.
 
 ## Container Runtime
 
