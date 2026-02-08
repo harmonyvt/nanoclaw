@@ -6,7 +6,7 @@
  *
  * Persistent containers are tracked per group and automatically cleaned up after idle timeout.
  */
-import { execSync, spawn } from 'child_process';
+import { execFileSync, execSync, spawn } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -148,13 +148,201 @@ function checkTokenExpiry(expiresAt: number | undefined): void {
   if (expiresAt <= nowMs) {
     logger.warn(
       { module: 'container' },
-      'Claude Code OAuth token has expired — Claude Code should auto-refresh it on next use',
+      'Claude Code OAuth token has expired — attempting refresh',
     );
   } else if (expiresAt - nowMs < 10 * 60 * 1000) {
     logger.warn(
       { module: 'container', expiresIn: Math.round((expiresAt - nowMs) / 1000) },
       'Claude Code OAuth token expires within 10 minutes',
     );
+  }
+}
+
+// ─── OAuth Token Refresh ──────────────────────────────────────────────────────
+
+const OAUTH_TOKEN_URL = 'https://platform.claude.com/v1/oauth/token';
+const OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
+const REFRESH_THRESHOLD_MS = 15 * 60 * 1000; // refresh if < 15 min remaining
+const REFRESH_DEBOUNCE_MS = 2 * 60 * 1000; // don't retry within 2 min
+let lastRefreshAttemptMs = 0;
+
+interface OAuthSection {
+  accessToken: string;
+  refreshToken?: string;
+  expiresAt?: number;
+  [key: string]: unknown;
+}
+
+interface CredentialsJson {
+  claudeAiOauth: OAuthSection;
+  [key: string]: unknown;
+}
+
+/**
+ * Read the full claudeAiOauth object (including refreshToken) from
+ * macOS keychain or ~/.claude/.credentials.json.
+ */
+function readFullOAuthCredentials(): {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt?: number;
+  fullJson: CredentialsJson;
+  source: 'keychain' | 'credentials-file';
+} | null {
+  // macOS keychain
+  if (process.platform === 'darwin') {
+    try {
+      const raw = execSync(
+        'security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null',
+        { encoding: 'utf-8', timeout: 5000 },
+      ).trim();
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        const oauth = parsed?.claudeAiOauth;
+        if (oauth?.accessToken && oauth?.refreshToken) {
+          return {
+            accessToken: oauth.accessToken,
+            refreshToken: oauth.refreshToken,
+            expiresAt: oauth.expiresAt,
+            fullJson: parsed,
+            source: 'keychain',
+          };
+        }
+      }
+    } catch {
+      // fall through to credentials file
+    }
+  }
+
+  // ~/.claude/.credentials.json (Linux + macOS fallback)
+  try {
+    const credPath = path.join(getHomeDir(), '.claude', '.credentials.json');
+    if (fs.existsSync(credPath)) {
+      const raw = fs.readFileSync(credPath, 'utf-8');
+      const parsed = JSON.parse(raw);
+      const oauth = parsed?.claudeAiOauth;
+      if (oauth?.accessToken && oauth?.refreshToken) {
+        return {
+          accessToken: oauth.accessToken,
+          refreshToken: oauth.refreshToken,
+          expiresAt: oauth.expiresAt,
+          fullJson: parsed,
+          source: 'credentials-file',
+        };
+      }
+    }
+  } catch {
+    // can't read credentials file
+  }
+
+  return null;
+}
+
+/**
+ * Write updated credentials back to the appropriate store.
+ */
+function writeCredentials(
+  json: CredentialsJson,
+  source: 'keychain' | 'credentials-file',
+): void {
+  const jsonStr = JSON.stringify(json);
+
+  // Always write the credentials file (works on both platforms)
+  try {
+    const credPath = path.join(getHomeDir(), '.claude', '.credentials.json');
+    const credDir = path.dirname(credPath);
+    if (!fs.existsSync(credDir)) {
+      fs.mkdirSync(credDir, { recursive: true });
+    }
+    fs.writeFileSync(credPath, jsonStr, { encoding: 'utf-8', mode: 0o600 });
+  } catch (err) {
+    logger.warn({ error: err }, 'Failed to write credentials file');
+  }
+
+  // On macOS, also update the keychain
+  if (process.platform === 'darwin' && source === 'keychain') {
+    try {
+      const account = os.userInfo().username;
+      // Delete old entry (ignore errors if missing)
+      try {
+        execFileSync(
+          'security',
+          ['delete-generic-password', '-s', 'Claude Code-credentials'],
+          { encoding: 'utf-8', timeout: 5000, stdio: 'pipe' },
+        );
+      } catch {
+        // entry may not exist
+      }
+      // Write new entry — use execFileSync with args array to avoid shell escaping
+      execFileSync(
+        'security',
+        ['add-generic-password', '-s', 'Claude Code-credentials', '-a', account, '-w', jsonStr],
+        { encoding: 'utf-8', timeout: 5000, stdio: 'pipe' },
+      );
+    } catch (err) {
+      logger.warn({ error: err }, 'Failed to update keychain credentials');
+    }
+  }
+}
+
+/**
+ * Refresh the OAuth access token if it's expired or near-expiry.
+ * Uses the stored refresh_token to obtain a new access_token via
+ * Claude Code's OAuth token endpoint. Works on macOS (keychain)
+ * and Linux (~/.claude/.credentials.json).
+ */
+function refreshOAuthToken(): void {
+  // Debounce: don't retry too often
+  const now = Date.now();
+  if (now - lastRefreshAttemptMs < REFRESH_DEBOUNCE_MS) return;
+
+  try {
+    const creds = readFullOAuthCredentials();
+    if (!creds?.refreshToken) return;
+
+    // Check if refresh is needed
+    if (creds.expiresAt && creds.expiresAt - now > REFRESH_THRESHOLD_MS) {
+      return; // token still valid
+    }
+
+    lastRefreshAttemptMs = now;
+    logger.info('Refreshing Claude Code OAuth token...');
+
+    // URL-encode the refresh token for the POST body
+    const encodedToken = encodeURIComponent(creds.refreshToken);
+    const postBody = `grant_type=refresh_token&refresh_token=${encodedToken}&client_id=${OAUTH_CLIENT_ID}`;
+
+    const response = execSync(
+      `curl -s -X POST "${OAUTH_TOKEN_URL}" -H "Content-Type: application/x-www-form-urlencoded" --data-raw '${postBody.replace(/'/g, "'\\''")}'`,
+      { encoding: 'utf-8', timeout: 15000 },
+    );
+
+    const tokenData = JSON.parse(response);
+    if (!tokenData.access_token) {
+      logger.warn(
+        { response: response.slice(0, 200) },
+        'OAuth refresh response missing access_token',
+      );
+      return;
+    }
+
+    // Update the stored credentials
+    const updated: CredentialsJson = { ...creds.fullJson };
+    updated.claudeAiOauth = {
+      ...updated.claudeAiOauth,
+      accessToken: tokenData.access_token,
+      expiresAt: now + (tokenData.expires_in ?? 3600) * 1000,
+      ...(tokenData.refresh_token ? { refreshToken: tokenData.refresh_token } : {}),
+    };
+
+    writeCredentials(updated, creds.source);
+
+    logger.info(
+      { expiresIn: tokenData.expires_in ?? 3600 },
+      'Claude Code OAuth token refreshed successfully',
+    );
+  } catch (err) {
+    logger.warn({ error: err }, 'OAuth token refresh failed');
   }
 }
 
@@ -217,6 +405,9 @@ function resolveCredentials(): CredentialResult {
       return { lines: [...authLines, ...extraLines], source: 'dotenv' };
     }
   }
+
+  // Attempt to refresh OAuth token if expired/near-expiry (before reading)
+  refreshOAuthToken();
 
   // Priority 2: macOS keychain (Claude Code stores OAuth here)
   const keychainCreds = readKeychainCredentials();
