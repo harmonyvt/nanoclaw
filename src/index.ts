@@ -1,6 +1,8 @@
 import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import { loadSecretsIntoEnv, isOnePasswordEnabled } from './onepassword.js';
+import { processApiProxyRequest } from './api-proxy.js';
 
 import {
   ASSISTANT_NAME,
@@ -892,6 +894,71 @@ function startIpcWatcher(): void {
         );
       }
 
+      // Process API proxy requests from this group's IPC directory
+      // Container tools (Firecrawl, Supermemory) write req-*.json here;
+      // the host resolves secrets and executes the actual API calls.
+      const apiDir = path.join(ipcBaseDir, sourceGroup, 'api');
+      try {
+        if (fs.existsSync(apiDir)) {
+          const reqFiles = fs
+            .readdirSync(apiDir)
+            .filter((f) => f.startsWith('req-') && f.endsWith('.json'));
+          for (const file of reqFiles) {
+            const filePath = path.join(apiDir, file);
+            try {
+              const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+              const { id: requestId, action, params } = data;
+
+              const result = await processApiProxyRequest(
+                action,
+                (params || {}) as Record<string, unknown>,
+                sourceGroup,
+              );
+
+              // Write response file (atomic: temp + rename)
+              const resFile = path.join(apiDir, `res-${requestId}.json`);
+              const tmpFile = `${resFile}.tmp`;
+              fs.writeFileSync(tmpFile, JSON.stringify(result));
+              fs.renameSync(tmpFile, resFile);
+
+              // Clean up request file
+              fs.unlinkSync(filePath);
+            } catch (err) {
+              logger.error(
+                { file, sourceGroup, err },
+                'Error processing API proxy request',
+              );
+              // Write error response so agent doesn't hang
+              try {
+                const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+                const resFile = path.join(apiDir, `res-${data.id}.json`);
+                const tmpFile = `${resFile}.tmp`;
+                fs.writeFileSync(
+                  tmpFile,
+                  JSON.stringify({
+                    status: 'error',
+                    error: err instanceof Error ? err.message : String(err),
+                  }),
+                );
+                fs.renameSync(tmpFile, resFile);
+              } catch {
+                // Can't even write error response
+              }
+              try {
+                fs.unlinkSync(filePath);
+              } catch {
+                // Already cleaned up
+              }
+            }
+          }
+        }
+      } catch (err) {
+        logger.error(
+          { err, sourceGroup },
+          'Error reading IPC api directory',
+        );
+      }
+
       // Process status events from this group's IPC directory (transparency/verbose mode)
       const statusDir = path.join(ipcBaseDir, sourceGroup, 'status');
       try {
@@ -1320,11 +1387,30 @@ function ensureDockerImageRequirements(): void {
 }
 
 async function main(): Promise<void> {
-  if (!TELEGRAM_BOT_TOKEN) {
+  // Load 1Password secrets into process.env before any config validation.
+  // This runs after config.ts module evaluation, so we check process.env directly
+  // rather than the already-evaluated config constants.
+  if (isOnePasswordEnabled()) {
+    try {
+      const loaded = await loadSecretsIntoEnv();
+      if (loaded > 0) {
+        logger.info({ count: loaded }, '1Password: secret loading complete');
+      } else {
+        logger.warn('1Password: token set but no secrets were loaded — check vault setup');
+      }
+    } catch (err) {
+      logger.warn({ err }, '1Password: secret loading failed, falling back to .env');
+    }
+  } else {
+    logger.info('1Password: not configured (no OP_SERVICE_ACCOUNT_TOKEN), using .env');
+  }
+
+  // Check process.env directly (1Password may have loaded after config.ts evaluation)
+  if (!process.env.TELEGRAM_BOT_TOKEN) {
     logger.error('TELEGRAM_BOT_TOKEN is required');
     process.exit(1);
   }
-  if (!TELEGRAM_OWNER_ID) {
+  if (!process.env.TELEGRAM_OWNER_ID) {
     logger.error('TELEGRAM_OWNER_ID is required');
     process.exit(1);
   }

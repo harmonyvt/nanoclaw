@@ -168,13 +168,12 @@ function resolveCredentials(): CredentialResult {
   const homeDir = getHomeDir();
   const envFile = path.join(projectRoot, '.env');
 
-  // Collect non-auth API keys from .env (always included regardless of auth source)
+  // Collect non-auth keys to pass into the container.
+  // Firecrawl, Supermemory, and other API keys are proxied via IPC — the host
+  // resolves secrets from 1Password/env and executes API calls on behalf of
+  // the container. Only OpenAI is passed directly (needed for provider adapter).
   const extraVars = [
-    'OPENAI_API_KEY',
-    'FIRECRAWL_API_KEY',
-    'SUPERMEMORY_API_KEY',
-    'SUPERMEMORY_OPENCLAW_API_KEY',
-    'SUPERMEMORY_CC_API_KEY',
+    'OPENAI_API_KEY', // Needed for OpenAI provider adapter
   ];
   const extraLines: string[] = [];
   if (fs.existsSync(envFile)) {
@@ -191,6 +190,16 @@ function resolveCredentials(): CredentialResult {
         const escaped = val.replace(/'/g, "'\\''");
         extraLines.push(`${key}='${escaped}'`);
       }
+    }
+  }
+
+  // Fall back to process.env for extraVars not found in .env
+  // (e.g., loaded from 1Password at startup)
+  for (const varName of extraVars) {
+    const alreadyResolved = extraLines.some((l) => l.startsWith(`${varName}=`));
+    if (!alreadyResolved && process.env[varName]) {
+      const escaped = process.env[varName]!.replace(/'/g, "'\\''");
+      extraLines.push(`${varName}='${escaped}'`);
     }
   }
 

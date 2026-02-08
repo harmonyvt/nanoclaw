@@ -7,7 +7,6 @@ import { z } from 'zod';
 import fs from 'fs';
 import path from 'path';
 import { CronExpressionParser } from 'cron-parser';
-import Supermemory from 'supermemory';
 import type { NanoTool, IpcMcpContext, ToolResult } from './types.js';
 
 // ─── IPC Constants ──────────────────────────────────────────────────────────
@@ -16,27 +15,7 @@ export const IPC_DIR = '/workspace/ipc';
 export const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
 export const TASKS_DIR = path.join(IPC_DIR, 'tasks');
 export const BROWSE_DIR = path.join(IPC_DIR, 'browse');
-export const SUPERMEMORY_KEY_ENV_VARS = [
-  'SUPERMEMORY_API_KEY',
-  'SUPERMEMORY_OPENCLAW_API_KEY',
-  'SUPERMEMORY_CC_API_KEY',
-] as const;
-
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
-export function resolveSupermemoryApiKey(): {
-  key: string;
-  envVar: (typeof SUPERMEMORY_KEY_ENV_VARS)[number];
-} | null {
-  for (const envVar of SUPERMEMORY_KEY_ENV_VARS) {
-    const raw = process.env[envVar];
-    if (typeof raw !== 'string') continue;
-    const key = raw.trim();
-    if (!key) continue;
-    return { key, envVar };
-  }
-  return null;
-}
+export const API_DIR = path.join(IPC_DIR, 'api');
 
 export function writeIpcFile(dir: string, data: object): string {
   fs.mkdirSync(dir, { recursive: true });
@@ -99,6 +78,48 @@ export async function writeBrowseRequest(
   return {
     status: 'error',
     error: `Browse request timed out after ${timeoutMs / 1000}s`,
+  };
+}
+
+/**
+ * Send a request to the host-side API proxy via IPC and wait for a response.
+ * The host resolves secrets (1Password / env) and executes the actual API call.
+ * Same req/res file pattern as writeBrowseRequest but uses API_DIR.
+ */
+export async function writeApiRequest(
+  action: string,
+  params: Record<string, unknown>,
+  timeoutMs = 60000,
+): Promise<{ status: string; result?: unknown; error?: string }> {
+  fs.mkdirSync(API_DIR, { recursive: true });
+
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const reqFile = path.join(API_DIR, `req-${id}.json`);
+  const resFile = path.join(API_DIR, `res-${id}.json`);
+
+  // Atomic write request
+  const tempReq = `${reqFile}.tmp`;
+  fs.writeFileSync(tempReq, JSON.stringify({ id, action, params }));
+  fs.renameSync(tempReq, reqFile);
+
+  // Poll for response
+  const pollInterval = 500;
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, pollInterval));
+    if (fs.existsSync(resFile)) {
+      const data = JSON.parse(fs.readFileSync(resFile, 'utf-8'));
+      try { fs.unlinkSync(reqFile); } catch {}
+      try { fs.unlinkSync(resFile); } catch {}
+      return data;
+    }
+  }
+
+  try { fs.unlinkSync(reqFile); } catch {}
+  return {
+    status: 'error',
+    error: `API proxy request timed out after ${timeoutMs / 1000}s`,
   };
 }
 
@@ -487,7 +508,7 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
     },
   },
 
-  // ── Firecrawl (direct API, no IPC) ──────────────────────────────────────
+  // ── Firecrawl (IPC proxy to host) ───────────────────────────────────────
 
   {
     name: 'firecrawl_scrape',
@@ -501,69 +522,14 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
         .describe('Output formats (default: ["markdown"])'),
     }),
     handler: async (args): Promise<ToolResult> => {
-      const apiKey = process.env.FIRECRAWL_API_KEY;
-      if (!apiKey) {
-        return {
-          content:
-            'FIRECRAWL_API_KEY is not set. Ask the admin to configure the Firecrawl API key.',
-          isError: true,
-        };
+      const res = await writeApiRequest('firecrawl_scrape', {
+        url: args.url as string,
+        formats: (args.formats as string[] | undefined) ?? ['markdown'],
+      });
+      if (res.status === 'error') {
+        return { content: res.error || 'Firecrawl scrape failed', isError: true };
       }
-
-      try {
-        const res = await fetch('https://api.firecrawl.dev/v1/scrape', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            url: args.url as string,
-            formats: (args.formats as string[] | undefined) ?? ['markdown'],
-          }),
-        });
-
-        if (res.status === 429) {
-          return {
-            content:
-              'Firecrawl rate limit exceeded. Please wait a moment and try again.',
-            isError: true,
-          };
-        }
-
-        if (!res.ok) {
-          const body = await res.text();
-          return {
-            content: `Firecrawl scrape failed (HTTP ${res.status}): ${body.slice(0, 500)}`,
-            isError: true,
-          };
-        }
-
-        const json = (await res.json()) as {
-          success: boolean;
-          data?: { markdown?: string };
-        };
-        if (!json.success || !json.data?.markdown) {
-          return {
-            content: `Firecrawl scrape returned no markdown content. Response: ${JSON.stringify(json).slice(0, 500)}`,
-            isError: true,
-          };
-        }
-
-        const MAX_SIZE = 50 * 1024; // 50KB
-        let markdown = json.data.markdown;
-        if (markdown.length > MAX_SIZE) {
-          markdown =
-            markdown.slice(0, MAX_SIZE) + '\n\n[Content truncated at 50KB]';
-        }
-
-        return { content: markdown };
-      } catch (err) {
-        return {
-          content: `Firecrawl scrape error: ${err instanceof Error ? err.message : String(err)}`,
-          isError: true,
-        };
-      }
+      return { content: (res.result as string) || 'No content returned' };
     },
   },
 
@@ -583,145 +549,15 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
         .describe('Max link depth to follow (default: 2)'),
     }),
     handler: async (args): Promise<ToolResult> => {
-      const apiKey = process.env.FIRECRAWL_API_KEY;
-      if (!apiKey) {
-        return {
-          content:
-            'FIRECRAWL_API_KEY is not set. Ask the admin to configure the Firecrawl API key.',
-          isError: true,
-        };
+      const res = await writeApiRequest('firecrawl_crawl', {
+        url: args.url as string,
+        limit: (args.limit as number | undefined) ?? 10,
+        maxDepth: (args.maxDepth as number | undefined) ?? 2,
+      }, 180000); // 3 min timeout for crawls
+      if (res.status === 'error') {
+        return { content: res.error || 'Firecrawl crawl failed', isError: true };
       }
-
-      try {
-        // Start the crawl job
-        const startRes = await fetch('https://api.firecrawl.dev/v1/crawl', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            url: args.url as string,
-            limit: (args.limit as number | undefined) ?? 10,
-            maxDepth: (args.maxDepth as number | undefined) ?? 2,
-          }),
-        });
-
-        if (startRes.status === 429) {
-          return {
-            content:
-              'Firecrawl rate limit exceeded. Please wait a moment and try again.',
-            isError: true,
-          };
-        }
-
-        if (!startRes.ok) {
-          const body = await startRes.text();
-          return {
-            content: `Firecrawl crawl failed to start (HTTP ${startRes.status}): ${body.slice(0, 500)}`,
-            isError: true,
-          };
-        }
-
-        const startJson = (await startRes.json()) as {
-          success: boolean;
-          id?: string;
-        };
-        if (!startJson.success || !startJson.id) {
-          return {
-            content: `Firecrawl crawl failed to start. Response: ${JSON.stringify(startJson).slice(0, 500)}`,
-            isError: true,
-          };
-        }
-
-        const jobId = startJson.id;
-        const POLL_INTERVAL = 5000;
-        const TIMEOUT = 120_000;
-        const startTime = Date.now();
-
-        // Poll for completion
-        while (Date.now() - startTime < TIMEOUT) {
-          await new Promise((resolve) =>
-            setTimeout(resolve, POLL_INTERVAL),
-          );
-
-          const pollRes = await fetch(
-            `https://api.firecrawl.dev/v1/crawl/${jobId}`,
-            {
-              headers: { Authorization: `Bearer ${apiKey}` },
-            },
-          );
-
-          if (pollRes.status === 429) {
-            // Wait longer on rate limit during polling
-            await new Promise((resolve) =>
-              setTimeout(resolve, POLL_INTERVAL),
-            );
-            continue;
-          }
-
-          if (!pollRes.ok) {
-            const body = await pollRes.text();
-            return {
-              content: `Firecrawl crawl poll failed (HTTP ${pollRes.status}): ${body.slice(0, 500)}`,
-              isError: true,
-            };
-          }
-
-          const pollJson = (await pollRes.json()) as {
-            status: string;
-            data?: Array<{
-              metadata?: { sourceURL?: string };
-              markdown?: string;
-            }>;
-          };
-
-          if (pollJson.status === 'completed') {
-            const results = (pollJson.data ?? []).map((page) => ({
-              url: page.metadata?.sourceURL ?? 'unknown',
-              markdown: page.markdown ?? '',
-            }));
-
-            const MAX_SIZE = 100 * 1024; // 100KB
-            let output = JSON.stringify(results, null, 2);
-            if (output.length > MAX_SIZE) {
-              // Truncate by removing pages from the end until under limit
-              while (output.length > MAX_SIZE && results.length > 1) {
-                results.pop();
-                output = JSON.stringify(results, null, 2);
-              }
-              if (output.length > MAX_SIZE) {
-                output =
-                  output.slice(0, MAX_SIZE) +
-                  '\n\n[Content truncated at 100KB]';
-              }
-            }
-
-            return {
-              content: `Crawled ${pollJson.data?.length ?? 0} pages:\n\n${output}`,
-            };
-          }
-
-          if (pollJson.status === 'failed') {
-            return {
-              content: 'Firecrawl crawl job failed.',
-              isError: true,
-            };
-          }
-
-          // Status is 'scraping' or similar -- keep polling
-        }
-
-        return {
-          content: `Firecrawl crawl timed out after ${TIMEOUT / 1000}s. Job ID: ${jobId}`,
-          isError: true,
-        };
-      } catch (err) {
-        return {
-          content: `Firecrawl crawl error: ${err instanceof Error ? err.message : String(err)}`,
-          isError: true,
-        };
-      }
+      return { content: (res.result as string) || 'No content returned' };
     },
   },
 
@@ -733,65 +569,17 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
       url: z.string().describe('The URL to map'),
     }),
     handler: async (args): Promise<ToolResult> => {
-      const apiKey = process.env.FIRECRAWL_API_KEY;
-      if (!apiKey) {
-        return {
-          content:
-            'FIRECRAWL_API_KEY is not set. Ask the admin to configure the Firecrawl API key.',
-          isError: true,
-        };
+      const res = await writeApiRequest('firecrawl_map', {
+        url: args.url as string,
+      });
+      if (res.status === 'error') {
+        return { content: res.error || 'Firecrawl map failed', isError: true };
       }
-
-      try {
-        const res = await fetch('https://api.firecrawl.dev/v1/map', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ url: args.url as string }),
-        });
-
-        if (res.status === 429) {
-          return {
-            content:
-              'Firecrawl rate limit exceeded. Please wait a moment and try again.',
-            isError: true,
-          };
-        }
-
-        if (!res.ok) {
-          const body = await res.text();
-          return {
-            content: `Firecrawl map failed (HTTP ${res.status}): ${body.slice(0, 500)}`,
-            isError: true,
-          };
-        }
-
-        const json = (await res.json()) as {
-          success: boolean;
-          links?: string[];
-        };
-        if (!json.success || !json.links) {
-          return {
-            content: `Firecrawl map returned no links. Response: ${JSON.stringify(json).slice(0, 500)}`,
-            isError: true,
-          };
-        }
-
-        return {
-          content: `Found ${json.links.length} URLs:\n\n${json.links.join('\n')}`,
-        };
-      } catch (err) {
-        return {
-          content: `Firecrawl map error: ${err instanceof Error ? err.message : String(err)}`,
-          isError: true,
-        };
-      }
+      return { content: (res.result as string) || 'No URLs found' };
     },
   },
 
-  // ── Supermemory (direct API via SDK) ────────────────────────────────────
+  // ── Supermemory (IPC proxy to host) ────────────────────────────────────
 
   {
     name: 'memory_save',
@@ -811,33 +599,15 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
         ),
     }),
     handler: async (args, ctx): Promise<ToolResult> => {
-      const resolvedSmKey = resolveSupermemoryApiKey();
-      if (!resolvedSmKey) {
-        return {
-          content:
-            'No Supermemory API key found. Set SUPERMEMORY_API_KEY (or SUPERMEMORY_OPENCLAW_API_KEY / SUPERMEMORY_CC_API_KEY).',
-          isError: true,
-        };
+      const res = await writeApiRequest('memory_save', {
+        content: args.content as string,
+        metadata: (args.metadata as Record<string, string> | undefined) || {},
+        groupFolder: ctx.groupFolder,
+      });
+      if (res.status === 'error') {
+        return { content: res.error || 'Memory save failed', isError: true };
       }
-
-      try {
-        const sm = new Supermemory({ apiKey: resolvedSmKey.key });
-        await sm.add({
-          content: args.content as string,
-          containerTags: [`nanoclaw_${ctx.groupFolder}`],
-          metadata: {
-            type: 'explicit_save',
-            ...(args.metadata as Record<string, string> | undefined),
-          },
-        });
-
-        return { content: 'Memory saved successfully.' };
-      } catch (err) {
-        return {
-          content: `Supermemory save error: ${err instanceof Error ? err.message : String(err)}`,
-          isError: true,
-        };
-      }
+      return { content: 'Memory saved successfully.' };
     },
   },
 
@@ -857,57 +627,15 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
         .describe('Maximum number of results to return (default: 10)'),
     }),
     handler: async (args, ctx): Promise<ToolResult> => {
-      const resolvedSmKey = resolveSupermemoryApiKey();
-      if (!resolvedSmKey) {
-        return {
-          content:
-            'No Supermemory API key found. Set SUPERMEMORY_API_KEY (or SUPERMEMORY_OPENCLAW_API_KEY / SUPERMEMORY_CC_API_KEY).',
-          isError: true,
-        };
+      const res = await writeApiRequest('memory_search', {
+        query: args.query as string,
+        limit: (args.limit as number | undefined) ?? 10,
+        groupFolder: ctx.groupFolder,
+      });
+      if (res.status === 'error') {
+        return { content: res.error || 'Memory search failed', isError: true };
       }
-
-      try {
-        const sm = new Supermemory({ apiKey: resolvedSmKey.key });
-        const response = await sm.search.memories({
-          q: args.query as string,
-          containerTag: `nanoclaw_${ctx.groupFolder}`,
-          searchMode: 'hybrid',
-          limit: (args.limit as number | undefined) ?? 10,
-        });
-
-        const results = (response.results || [])
-          .map(
-            (r: {
-              memory?: string;
-              chunk?: string;
-              similarity?: number;
-            }) => ({
-              text: r.memory || r.chunk || '',
-              similarity: r.similarity ?? 0,
-            }),
-          )
-          .filter((r: { text: string }) => r.text.trim());
-
-        if (results.length === 0) {
-          return { content: 'No matching memories found.' };
-        }
-
-        const formatted = results
-          .map(
-            (r: { text: string; similarity: number }, i: number) =>
-              `${i + 1}. [relevance: ${r.similarity.toFixed(2)}] ${r.text}`,
-          )
-          .join('\n\n');
-
-        return {
-          content: `Found ${results.length} memories:\n\n${formatted}`,
-        };
-      } catch (err) {
-        return {
-          content: `Supermemory search error: ${err instanceof Error ? err.message : String(err)}`,
-          isError: true,
-        };
-      }
+      return { content: (res.result as string) || 'No matching memories found.' };
     },
   },
 
