@@ -166,6 +166,18 @@ const REFRESH_THRESHOLD_MS = 15 * 60 * 1000; // refresh if < 15 min remaining
 const REFRESH_DEBOUNCE_MS = 2 * 60 * 1000; // don't retry within 2 min
 let lastRefreshAttemptMs = 0;
 
+interface OAuthSection {
+  accessToken: string;
+  refreshToken?: string;
+  expiresAt?: number;
+  [key: string]: unknown;
+}
+
+interface CredentialsJson {
+  claudeAiOauth: OAuthSection;
+  [key: string]: unknown;
+}
+
 /**
  * Read the full claudeAiOauth object (including refreshToken) from
  * macOS keychain or ~/.claude/.credentials.json.
@@ -174,7 +186,7 @@ function readFullOAuthCredentials(): {
   accessToken: string;
   refreshToken: string;
   expiresAt?: number;
-  fullJson: Record<string, unknown>;
+  fullJson: CredentialsJson;
   source: 'keychain' | 'credentials-file';
 } | null {
   // macOS keychain
@@ -230,7 +242,7 @@ function readFullOAuthCredentials(): {
  * Write updated credentials back to the appropriate store.
  */
 function writeCredentials(
-  json: Record<string, unknown>,
+  json: CredentialsJson,
   source: 'keychain' | 'credentials-file',
 ): void {
   const jsonStr = JSON.stringify(json);
@@ -315,14 +327,13 @@ function refreshOAuthToken(): void {
     }
 
     // Update the stored credentials
-    const updated = { ...creds.fullJson };
-    const oauthSection = (updated.claudeAiOauth as Record<string, unknown>) ?? {};
-    oauthSection.accessToken = tokenData.access_token;
-    oauthSection.expiresAt = now + (tokenData.expires_in ?? 3600) * 1000;
-    if (tokenData.refresh_token) {
-      oauthSection.refreshToken = tokenData.refresh_token;
-    }
-    updated.claudeAiOauth = oauthSection;
+    const updated: CredentialsJson = { ...creds.fullJson };
+    updated.claudeAiOauth = {
+      ...updated.claudeAiOauth,
+      accessToken: tokenData.access_token,
+      expiresAt: now + (tokenData.expires_in ?? 3600) * 1000,
+      ...(tokenData.refresh_token ? { refreshToken: tokenData.refresh_token } : {}),
+    };
 
     writeCredentials(updated, creds.source);
 
