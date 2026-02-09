@@ -1281,7 +1281,7 @@ function startIpcWatcher(): void {
                     }
                     // Try to split at a newline within the chunk
                     let splitAt = remaining.lastIndexOf('\n', MAX_CHUNK);
-                    if (splitAt <= 0) splitAt = MAX_CHUNK;
+                    if (splitAt === -1) splitAt = MAX_CHUNK;
                     chunks.push(remaining.slice(0, splitAt));
                     remaining = remaining.slice(splitAt).replace(/^\n/, '');
                   }
