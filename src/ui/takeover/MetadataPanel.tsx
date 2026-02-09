@@ -17,7 +17,7 @@ type StatusColor = 'muted' | 'ok' | 'error';
 
 function buildNoVncUrl(liveViewUrl: string, vncPassword: string): string | null {
   try {
-    const url = new URL('/vnc_lite.html', liveViewUrl);
+    const url = new URL('/vnc.html', liveViewUrl);
     url.searchParams.set('autoconnect', 'true');
     url.searchParams.set('resize', 'scale');
     url.searchParams.set('scale', 'true');
