@@ -45,6 +45,7 @@ import {
   ensureDefaultThread,
   updateThreadSession,
   getThreadByName,
+  getChatsWithThreads,
 } from './db.js';
 import {
   runCuaCommand,
@@ -1336,6 +1337,7 @@ function handleRequest(req: Request, server: import('bun').Server<NoVncWsData>):
   if (pathname === '/api/tasks/runs') return handleTaskRunLogsList(url);
 
   // Threads
+  if (pathname === '/api/threads/chats' && req.method === 'GET') return jsonResponse(getChatsWithThreads());
   if (pathname === '/api/threads' && req.method === 'GET') return handleThreadsList(url);
   if (pathname === '/api/threads/messages' && req.method === 'GET') return handleThreadMessages(url);
   if (pathname === '/api/threads' && req.method === 'POST') return handleThreadCreate(req);

@@ -822,3 +822,13 @@ export function ensureDefaultThread(chatJid: string): Thread {
   setActiveThread(chatJid, thread.id);
   return thread;
 }
+
+/**
+ * Get all distinct chat_jids that have at least one thread.
+ */
+export function getChatsWithThreads(): string[] {
+  const rows = db
+    .prepare('SELECT DISTINCT chat_jid FROM threads ORDER BY chat_jid')
+    .all() as { chat_jid: string }[];
+  return rows.map(r => r.chat_jid);
+}

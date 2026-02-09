@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'preact/hooks';
+import { useState, useCallback, useMemo } from 'preact/hooks';
 import { useAuth } from '../shared/auth.js';
 import { Header } from './Header.js';
 import { TabBar } from './TabBar.js';
@@ -10,9 +10,19 @@ import { TakeoverPane } from './panes/TakeoverPane.js';
 import { TrajectoryPane } from './panes/TrajectoryPane.js';
 import { ThreadsPane } from './panes/ThreadsPane.js';
 
+function getUrlParams(): { tab?: string; chatJid?: string; threadId?: string } {
+  const params = new URLSearchParams(window.location.search);
+  return {
+    tab: params.get('tab') || undefined,
+    chatJid: params.get('chat_jid') || undefined,
+    threadId: params.get('thread_id') || undefined,
+  };
+}
+
 export function DashboardApp() {
   const { authenticated, loading } = useAuth();
-  const [activeTab, setActiveTab] = useState('logs');
+  const urlParams = useMemo(getUrlParams, []);
+  const [activeTab, setActiveTab] = useState(urlParams.tab || 'logs');
   const [connected, setConnected] = useState(false);
   const [reconnectFn, setReconnectFn] = useState<(() => void) | null>(null);
 
@@ -65,7 +75,9 @@ export function DashboardApp() {
       {activeTab === 'files' && <FilesPane />}
       {activeTab === 'takeover' && <TakeoverPane />}
       {activeTab === 'trajectory' && <TrajectoryPane />}
-      {activeTab === 'threads' && <ThreadsPane />}
+      {activeTab === 'threads' && (
+        <ThreadsPane initialChatJid={urlParams.chatJid} initialThreadId={urlParams.threadId} />
+      )}
     </>
   );
 }

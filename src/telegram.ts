@@ -780,6 +780,17 @@ export async function connectTelegram(
       kb.row();
     }
     kb.text('+ New Thread', 'th:new:_');
+    kb.row();
+
+    // Add WebApp button for viewing conversation history
+    const dashboardUrl = getDashboardUrl();
+    if (dashboardUrl) {
+      const threadParam = active ? `&thread_id=${encodeURIComponent(active.id)}` : '';
+      kb.webApp(
+        'View Conversations',
+        `${dashboardUrl}/app?tab=threads&chat_jid=${encodeURIComponent(chatId)}${threadParam}`,
+      );
+    }
 
     await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb });
   });
@@ -1251,31 +1262,46 @@ export async function connectTelegram(
       const thAction = thParts[1];
       const thId = thParts.slice(2).join(':');
 
+      // Helper: build threads list text + inline keyboard
+      function buildThreadsView(chatJid: string, prefix?: string): { text: string; kb: InlineKeyboard } {
+        const threads = threadManager!.getThreadsForChat(chatJid);
+        const active = threadManager!.getActiveThread(chatJid);
+        let text = prefix ? `${prefix}\n\n` : '';
+        text += `<b>Threads</b> (${threads.length})\n\n`;
+        for (const t of threads) {
+          const isAct = active && t.id === active.id;
+          text += `${isAct ? '> ' : '  '}<b>${escapeHtml(t.name)}</b>${isAct ? ' [active]' : ''}\n`;
+          text += `    updated ${formatRelativeTime(t.updated_at)}\n`;
+        }
+        const kb = new InlineKeyboard();
+        for (const t of threads) {
+          const isAct = active && t.id === active.id;
+          if (!isAct) {
+            kb.text(`Switch to ${t.name}`, `th:switch:${t.id}`);
+          } else {
+            kb.text(`${t.name} (active)`, `th:noop:${t.id}`);
+          }
+          kb.text('Rename', `th:rename:${t.id}`);
+          kb.row();
+        }
+        if (threads.length > 0) kb.text('+ New Thread', 'th:new:_');
+        kb.row();
+        const dashUrl = getDashboardUrl();
+        if (dashUrl) {
+          const threadParam = active ? `&thread_id=${encodeURIComponent(active.id)}` : '';
+          kb.webApp(
+            'View Conversations',
+            `${dashUrl}/app?tab=threads&chat_jid=${encodeURIComponent(chatJid)}${threadParam}`,
+          );
+        }
+        return { text, kb };
+      }
+
       if (thAction === 'switch') {
         const thread = threadManager.switchThread(chatId, thId);
         if (thread) {
           await ctx.answerCallbackQuery({ text: `Switched to "${thread.name}"` });
-          // Refresh the threads list
-          const threads = threadManager.getThreadsForChat(chatId);
-          const active = threadManager.getActiveThread(chatId);
-          let text = `<b>Threads</b> (${threads.length})\n\n`;
-          for (const t of threads) {
-            const isActive = active && t.id === active.id;
-            text += `${isActive ? '> ' : '  '}<b>${escapeHtml(t.name)}</b>${isActive ? ' [active]' : ''}\n`;
-            text += `    updated ${formatRelativeTime(t.updated_at)}\n`;
-          }
-          const kb = new InlineKeyboard();
-          for (const t of threads) {
-            const isActive = active && t.id === active.id;
-            if (!isActive) {
-              kb.text(`Switch to ${t.name}`, `th:switch:${t.id}`);
-            } else {
-              kb.text(`${t.name} (active)`, `th:noop:${t.id}`);
-            }
-            kb.text('Rename', `th:rename:${t.id}`);
-            kb.row();
-          }
-          kb.text('+ New Thread', 'th:new:_');
+          const { text, kb } = buildThreadsView(chatId);
           await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
         } else {
           await ctx.answerCallbackQuery({ text: 'Thread not found' });
@@ -1288,33 +1314,12 @@ export async function connectTelegram(
         const thread = threadManager.createThread(chatId, name);
         threadManager.switchThread(chatId, thread.id);
         await ctx.answerCallbackQuery({ text: `Created "${name}"` });
-        // Refresh threads list
-        const threads = threadManager.getThreadsForChat(chatId);
-        const active = threadManager.getActiveThread(chatId);
-        let text = `<b>Threads</b> (${threads.length})\n\n`;
-        for (const t of threads) {
-          const isActive = active && t.id === active.id;
-          text += `${isActive ? '> ' : '  '}<b>${escapeHtml(t.name)}</b>${isActive ? ' [active]' : ''}\n`;
-          text += `    updated ${formatRelativeTime(t.updated_at)}\n`;
-        }
-        const kb = new InlineKeyboard();
-        for (const t of threads) {
-          const isActive = active && t.id === active.id;
-          if (!isActive) {
-            kb.text(`Switch to ${t.name}`, `th:switch:${t.id}`);
-          } else {
-            kb.text(`${t.name} (active)`, `th:noop:${t.id}`);
-          }
-          kb.text('Rename', `th:rename:${t.id}`);
-          kb.row();
-        }
-        kb.text('+ New Thread', 'th:new:_');
+        const { text, kb } = buildThreadsView(chatId);
         await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
         return;
       }
 
       if (thAction === 'rename') {
-        // Show rename instructions
         const thread = threadManager.getThreadsForChat(chatId).find(t => t.id === thId);
         const name = thread?.name || 'Unknown';
         await ctx.answerCallbackQuery({ text: `Use: /thread rename <new name>` });
@@ -1351,56 +1356,14 @@ export async function connectTelegram(
       if (thAction === 'confirm_del') {
         threadManager.deleteThread(chatId, thId);
         await ctx.answerCallbackQuery({ text: 'Thread deleted' });
-        // Show updated list
-        const threads = threadManager.getThreadsForChat(chatId);
-        const active = threadManager.getActiveThread(chatId);
-        let text = threads.length > 0
-          ? `Thread deleted.\n\n<b>Threads</b> (${threads.length})\n\n`
-          : 'Thread deleted. No threads remaining.';
-        for (const t of threads) {
-          const isActive = active && t.id === active.id;
-          text += `${isActive ? '> ' : '  '}<b>${escapeHtml(t.name)}</b>${isActive ? ' [active]' : ''}\n`;
-          text += `    updated ${formatRelativeTime(t.updated_at)}\n`;
-        }
-        const kb = new InlineKeyboard();
-        for (const t of threads) {
-          const isActive = active && t.id === active.id;
-          if (!isActive) {
-            kb.text(`Switch to ${t.name}`, `th:switch:${t.id}`);
-          } else {
-            kb.text(`${t.name} (active)`, `th:noop:${t.id}`);
-          }
-          kb.text('Rename', `th:rename:${t.id}`);
-          kb.row();
-        }
-        if (threads.length > 0) kb.text('+ New Thread', 'th:new:_');
+        const { text, kb } = buildThreadsView(chatId, 'Thread deleted.');
         await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
         return;
       }
 
       if (thAction === 'cancel_del') {
         await ctx.answerCallbackQuery({ text: 'Canceled' });
-        // Show threads list again
-        const threads = threadManager.getThreadsForChat(chatId);
-        const active = threadManager.getActiveThread(chatId);
-        let text = `<b>Threads</b> (${threads.length})\n\n`;
-        for (const t of threads) {
-          const isActive = active && t.id === active.id;
-          text += `${isActive ? '> ' : '  '}<b>${escapeHtml(t.name)}</b>${isActive ? ' [active]' : ''}\n`;
-          text += `    updated ${formatRelativeTime(t.updated_at)}\n`;
-        }
-        const kb = new InlineKeyboard();
-        for (const t of threads) {
-          const isActive = active && t.id === active.id;
-          if (!isActive) {
-            kb.text(`Switch to ${t.name}`, `th:switch:${t.id}`);
-          } else {
-            kb.text(`${t.name} (active)`, `th:noop:${t.id}`);
-          }
-          kb.text('Rename', `th:rename:${t.id}`);
-          kb.row();
-        }
-        kb.text('+ New Thread', 'th:new:_');
+        const { text, kb } = buildThreadsView(chatId);
         await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
         return;
       }
