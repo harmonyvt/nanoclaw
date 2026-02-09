@@ -37,8 +37,19 @@ export function FollowApp() {
   // SSE for activity events
   const onSSEMessage = useCallback((event: string, data: unknown) => {
     if (event === 'activity') {
+      const evt = data as CuaActivityEvent;
       setActivities((prev) => {
-        const next = [...prev, data as CuaActivityEvent];
+        // When an end event arrives, replace the matching start event in-place
+        if (evt.phase === 'end') {
+          for (let i = prev.length - 1; i >= 0; i--) {
+            if (prev[i].phase === 'start' && prev[i].action === evt.action && prev[i].groupFolder === evt.groupFolder) {
+              const next = [...prev];
+              next[i] = evt;
+              return next;
+            }
+          }
+        }
+        const next = [...prev, evt];
         // Cap at 500 events to avoid memory issues
         return next.length > 500 ? next.slice(-500) : next;
       });
