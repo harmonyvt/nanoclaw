@@ -282,9 +282,11 @@ async function processMessage(msg: NewMessage): Promise<void> {
       );
 
       // Build prompt with skill instructions injected
+      const escapeXml = (s: string) =>
+        s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
       let skillXml = `<skill name="${skillName}"`;
-      if (skillParams) skillXml += ` parameters="${skillParams.replace(/"/g, '&quot;')}"`;
-      if (skill.parameters) skillXml += ` accepts="${skill.parameters.replace(/"/g, '&quot;')}"`;
+      if (skillParams) skillXml += ` parameters="${escapeXml(skillParams)}"`;
+      if (skill.parameters) skillXml += ` accepts="${escapeXml(skill.parameters)}"`;
       skillXml += `>\n${skill.instructions}\n</skill>`;
 
       // Get messages for context (same as normal flow)
