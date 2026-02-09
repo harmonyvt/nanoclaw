@@ -4,8 +4,10 @@ import {
   CUA_API_KEY,
   CUA_SANDBOX_COMMAND_PORT,
   CUA_SANDBOX_CONTAINER_NAME,
+  CUA_SANDBOX_HOME_VOLUME,
   CUA_SANDBOX_IMAGE,
   CUA_SANDBOX_NOVNC_PORT,
+  CUA_SANDBOX_PERSIST,
   CUA_SANDBOX_PLATFORM,
   CUA_SANDBOX_SCREEN_DEPTH,
   CUA_SANDBOX_SCREEN_HEIGHT,
@@ -55,31 +57,110 @@ function removeContainerIfPresent(name: string): void {
   }
 }
 
-function startCuaSandbox(): void {
-  logger.info('Starting CUA desktop sandbox container');
+function containerExists(name: string): boolean {
+  try {
+    execSync(`docker inspect ${name}`, { stdio: 'pipe' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function getContainerImageId(name: string): string | null {
+  try {
+    return execSync(`docker inspect --format '{{.Image}}' ${name}`, {
+      stdio: 'pipe',
+    })
+      .toString()
+      .trim();
+  } catch {
+    return null;
+  }
+}
+
+function getCurrentImageId(imageName: string): string | null {
+  try {
+    return execSync(`docker inspect --format '{{.Id}}' ${imageName}`, {
+      stdio: 'pipe',
+    })
+      .toString()
+      .trim();
+  } catch {
+    return null;
+  }
+}
+
+function isContainerImageStale(
+  containerName: string,
+  imageName: string,
+): boolean {
+  const containerImageId = getContainerImageId(containerName);
+  const currentImageId = getCurrentImageId(imageName);
+  if (!containerImageId || !currentImageId) return true;
+  return containerImageId !== currentImageId;
+}
+
+function startCuaSandbox(forceRecreate = false): void {
+  const name = CUA_SANDBOX_CONTAINER_NAME;
+
+  // When persistence is enabled, try to restart a stopped container
+  if (CUA_SANDBOX_PERSIST && !forceRecreate && containerExists(name)) {
+    if (isContainerImageStale(name, CUA_SANDBOX_IMAGE)) {
+      logger.info(
+        'CUA sandbox image is stale (image updated), recreating container',
+      );
+      removeContainerIfPresent(name);
+      // Fall through to docker run
+    } else if (!isContainerRunning(name)) {
+      logger.info('Restarting existing CUA desktop sandbox (state preserved)');
+      try {
+        execSync(`docker start ${name}`, { stdio: 'pipe' });
+        logger.info('CUA desktop sandbox restarted');
+        return;
+      } catch (err) {
+        logger.warn({ err }, 'Failed to restart CUA sandbox, will recreate');
+        removeContainerIfPresent(name);
+        // Fall through to docker run
+      }
+    } else {
+      logger.debug('CUA desktop sandbox is already running');
+      return;
+    }
+  } else {
+    removeContainerIfPresent(name);
+  }
+
+  logger.info('Creating new CUA desktop sandbox container');
   const resolution = `${CUA_SANDBOX_SCREEN_WIDTH}x${CUA_SANDBOX_SCREEN_HEIGHT}`;
-  const envArgs = [
-    // Preferred vars for trycua/cua-xfce.
+  const args = [
+    'docker run -d',
+    `--name ${name}`,
+    `--platform ${CUA_SANDBOX_PLATFORM}`,
+    `--shm-size ${CUA_SANDBOX_SHM_SIZE}`,
+    `-p ${CUA_SANDBOX_COMMAND_PORT}:8000`,
+    `-p ${CUA_SANDBOX_VNC_PORT}:5901`,
+    `-p ${CUA_SANDBOX_NOVNC_PORT}:6901`,
     `-e VNC_RESOLUTION=${resolution}`,
     `-e VNC_COL_DEPTH=${CUA_SANDBOX_SCREEN_DEPTH}`,
-    // Backward-compatible vars for older CUA images.
     `-e SCREEN_WIDTH=${CUA_SANDBOX_SCREEN_WIDTH}`,
     `-e SCREEN_HEIGHT=${CUA_SANDBOX_SCREEN_HEIGHT}`,
     `-e SCREEN_DEPTH=${CUA_SANDBOX_SCREEN_DEPTH}`,
   ];
   if (CUA_API_KEY) {
-    envArgs.push(`-e CUA_API_KEY=${CUA_API_KEY}`);
+    args.push(`-e CUA_API_KEY=${CUA_API_KEY}`);
+  }
+  if (CUA_SANDBOX_PERSIST) {
+    args.push(`-v ${CUA_SANDBOX_HOME_VOLUME}:/home/cua`);
   }
 
   // Generate a random VNC password for this sandbox instance
   currentVncPassword = generateVncPassword();
-  envArgs.push(`-e VNC_PW=${currentVncPassword}`);
+  args.push(`-e VNC_PW=${currentVncPassword}`);
+
+  args.push(CUA_SANDBOX_IMAGE);
 
   try {
-    execSync(
-      `docker run -d --name ${CUA_SANDBOX_CONTAINER_NAME} --platform ${CUA_SANDBOX_PLATFORM} --shm-size ${CUA_SANDBOX_SHM_SIZE} -p ${CUA_SANDBOX_COMMAND_PORT}:8000 -p ${CUA_SANDBOX_VNC_PORT}:5901 -p ${CUA_SANDBOX_NOVNC_PORT}:6901 ${envArgs.join(' ')} ${CUA_SANDBOX_IMAGE}`,
-      { stdio: 'pipe' },
-    );
+    execSync(args.join(' '), { stdio: 'pipe' });
     logger.info('CUA desktop sandbox started');
   } catch (err) {
     logger.error({ err }, 'Failed to start CUA desktop sandbox');
@@ -95,7 +176,9 @@ function stopCuaSandbox(): void {
   } catch {
     // Container may not be running
   }
-  removeContainerIfPresent(CUA_SANDBOX_CONTAINER_NAME);
+  if (!CUA_SANDBOX_PERSIST) {
+    removeContainerIfPresent(CUA_SANDBOX_CONTAINER_NAME);
+  }
 }
 
 export function isSandboxRunning(): boolean {
@@ -127,7 +210,6 @@ function waitForCuaReady(): void {
 
 export async function ensureSandbox(): Promise<SandboxConnection> {
   if (!isSandboxRunning()) {
-    removeContainerIfPresent(CUA_SANDBOX_CONTAINER_NAME);
     startCuaSandbox();
     waitForCuaReady();
   }
@@ -191,6 +273,37 @@ export function cleanupSandbox(): void {
   }
   if (isSandboxRunning()) {
     stopCuaSandbox();
+  }
+}
+
+/** Force-recreate the sandbox container. Named volume is preserved. */
+export function resetSandbox(): void {
+  logger.info('Force-resetting CUA desktop sandbox (will recreate)');
+  try {
+    execSync(`docker stop ${CUA_SANDBOX_CONTAINER_NAME}`, { stdio: 'pipe' });
+  } catch {
+    // Container may not be running
+  }
+  removeContainerIfPresent(CUA_SANDBOX_CONTAINER_NAME);
+}
+
+/** Full reset: remove container AND wipe the home volume data. */
+export function resetSandboxFull(): void {
+  logger.info('Full CUA sandbox reset (container + volume data)');
+  resetSandbox();
+  if (CUA_SANDBOX_PERSIST) {
+    try {
+      execSync(`docker volume rm ${CUA_SANDBOX_HOME_VOLUME}`, {
+        stdio: 'pipe',
+        timeout: 5000,
+      });
+      logger.info(
+        { volume: CUA_SANDBOX_HOME_VOLUME },
+        'Removed CUA home volume',
+      );
+    } catch {
+      // Volume may not exist or container still releasing it
+    }
   }
 }
 
