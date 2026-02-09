@@ -61,7 +61,7 @@ const MAX_DOWNLOAD_SIZE = 100 * 1024 * 1024; // 100MB
 const MAX_PREVIEW_TEXT = 10 * 1024; // 10KB
 const MAX_PREVIEW_IMAGE = 2 * 1024 * 1024; // 2MB
 const PROTECTED_FILES = ['CLAUDE.md', 'SOUL.md'];
-const CUA_SAFE_ROOTS = ['/home/', '/tmp/', '/root/', '/var/', '/opt/'];
+const CUA_SAFE_ROOTS = ['/home', '/tmp', '/root', '/var', '/opt'];
 
 
 function jsonResponse(data: unknown, status = 200): Response {
@@ -321,7 +321,7 @@ function validateAgentPath(group: string, relativePath: string): string | null {
 
 function validateCuaPath(p: string): boolean {
   if (!p || p.includes('..') || p.includes('\0')) return false;
-  return CUA_SAFE_ROOTS.some(root => p.startsWith(root)) || p === '/' || p === '~' || p.startsWith('~/');
+  return CUA_SAFE_ROOTS.some(root => p === root || p.startsWith(root + '/')) || p === '/' || p === '~' || p.startsWith('~/');
 }
 
 const MIME_TYPES: Record<string, string> = {
