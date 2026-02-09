@@ -46,6 +46,9 @@ import {
   sendTelegramDocument,
   sendTelegramMessage,
   sendTelegramPhoto,
+  editTelegramPhoto,
+  sendTelegramMessageWithId,
+  editTelegramMessageText,
   sendTelegramStatusMessage,
   editTelegramStatusMessage,
   deleteTelegramMessage,
@@ -125,12 +128,25 @@ const cuaUsageByGroup: Map<string, CuaUsageStats> = new Map();
 interface ActiveStatusMessage {
   chatJid: string;
   messageId: number;
+  extraMessageIds: number[];
   currentText: string;
   lastEditTime: number;
 }
 
 /** Active italic status messages keyed by group folder */
 const activeStatusMessages = new Map<string, ActiveStatusMessage>();
+
+// ─── CUA Log Message Tracking ────────────────────────────────────────────────
+
+interface ActiveCuaLogMessage {
+  chatJid: string;
+  textMessageId: number | null;
+  screenshotMessageId: number | null;
+  lastText: string;
+}
+
+/** Active CUA log messages keyed by group folder (edit-in-place) */
+const activeCuaLogMessages = new Map<string, ActiveCuaLogMessage>();
 
 /** Minimum interval between Telegram message edits (ms) */
 const STATUS_EDIT_INTERVAL_MS = 2500;
@@ -407,12 +423,13 @@ async function processMessage(msg: NewMessage): Promise<void> {
 
   // Send italic thinking status message if enabled for this chat
   if (isThinkingEnabled(msg.chat_jid)) {
-    const statusMsgId = await sendTelegramStatusMessage(msg.chat_jid, 'thinking...');
+    const statusMsgId = await sendTelegramStatusMessage(msg.chat_jid, 'thinking');
     if (statusMsgId) {
       activeStatusMessages.set(group.folder, {
         chatJid: msg.chat_jid,
         messageId: statusMsgId,
-        currentText: 'thinking...',
+        extraMessageIds: [],
+        currentText: 'thinking',
         lastEditTime: Date.now(),
       });
     }
@@ -422,11 +439,22 @@ async function processMessage(msg: NewMessage): Promise<void> {
 
   await setTyping(msg.chat_jid, false);
 
-  // Clean up the thinking status message
+  // Clean up the thinking status message(s)
   const statusEntry = activeStatusMessages.get(group.folder);
   if (statusEntry) {
     activeStatusMessages.delete(group.folder);
     await deleteTelegramMessage(statusEntry.chatJid, statusEntry.messageId);
+    for (const extraId of statusEntry.extraMessageIds) {
+      await deleteTelegramMessage(statusEntry.chatJid, extraId);
+    }
+  }
+
+  // Clean up CUA log messages
+  const cuaEntry = activeCuaLogMessages.get(group.folder);
+  if (cuaEntry) {
+    activeCuaLogMessages.delete(group.folder);
+    if (cuaEntry.textMessageId) await deleteTelegramMessage(cuaEntry.chatJid, cuaEntry.textMessageId);
+    if (cuaEntry.screenshotMessageId) await deleteTelegramMessage(cuaEntry.chatJid, cuaEntry.screenshotMessageId);
   }
 
   if (response) {
@@ -678,6 +706,66 @@ function updateCuaUsage(
   }
   cuaUsageByGroup.set(groupFolder, current);
   return current;
+}
+
+/**
+ * Update or create the in-place CUA log message for a group.
+ * Edits existing message if present, otherwise sends a new one.
+ */
+async function updateCuaLogMessage(
+  groupFolder: string,
+  chatJid: string,
+  text: string,
+): Promise<void> {
+  let entry = activeCuaLogMessages.get(groupFolder);
+  if (!entry) {
+    entry = { chatJid, textMessageId: null, screenshotMessageId: null, lastText: '' };
+    activeCuaLogMessages.set(groupFolder, entry);
+  }
+
+  if (text === entry.lastText) return;
+
+  if (entry.textMessageId) {
+    const edited = await editTelegramMessageText(chatJid, entry.textMessageId, text);
+    if (edited) {
+      entry.lastText = text;
+      return;
+    }
+    // Edit failed (message deleted?), fall through to send new
+  }
+
+  const msgId = await sendTelegramMessageWithId(chatJid, text);
+  if (msgId) {
+    entry.textMessageId = msgId;
+    entry.lastText = text;
+  }
+}
+
+/**
+ * Update or create the in-place CUA screenshot for a group.
+ * Edits existing photo if present, otherwise sends a new one.
+ */
+async function updateCuaScreenshot(
+  groupFolder: string,
+  chatJid: string,
+  hostPath: string,
+): Promise<void> {
+  let entry = activeCuaLogMessages.get(groupFolder);
+  if (!entry) {
+    entry = { chatJid, textMessageId: null, screenshotMessageId: null, lastText: '' };
+    activeCuaLogMessages.set(groupFolder, entry);
+  }
+
+  if (entry.screenshotMessageId) {
+    const edited = await editTelegramPhoto(chatJid, entry.screenshotMessageId, hostPath, 'Screenshot');
+    if (edited) return;
+    // Edit failed, fall through to send new
+  }
+
+  const msgId = await sendTelegramPhoto(chatJid, hostPath, 'Screenshot');
+  if (msgId) {
+    entry.screenshotMessageId = msgId;
+  }
 }
 
 function startIpcWatcher(): void {
@@ -996,9 +1084,9 @@ function startIpcWatcher(): void {
                   params: browseParams,
                 });
 
-                // Send Telegram start message only if no follow session
+                // Update CUA log message in-place (skip during follow mode)
                 if (chatJid && startNote && !hasActiveFollowSession(sourceGroup)) {
-                  await sendMessage(chatJid, `CUA: ${startNote}`);
+                  await updateCuaLogMessage(sourceGroup, chatJid, `CUA: ${startNote}`);
                 }
               }
 
@@ -1039,11 +1127,10 @@ function startIpcWatcher(): void {
                     result.status === 'ok'
                       ? 'ok'
                       : `error: ${truncateForTelegram(String(result.error || 'unknown'), 140)}`;
-                  const summaryText = `Usage ${usage.total} actions (${usage.ok} ok, ${usage.failed} failed)`;
-                  const recentText = usage.recent.join(' -> ');
-                  await sendMessage(
+                  await updateCuaLogMessage(
+                    sourceGroup,
                     chatJid,
-                    `CUA ${action}: ${statusText} (${browseDurationMs}ms)\n${summaryText}\nRecent: ${recentText}`,
+                    `CUA ${action}: ${statusText} (${browseDurationMs}ms) | ${usage.ok}/${usage.total} actions`,
                   );
                 }
               }
@@ -1057,7 +1144,7 @@ function startIpcWatcher(): void {
               // Clean up request file
               fs.unlinkSync(filePath);
 
-              // Send screenshots as Telegram photos (suppressed during follow mode)
+              // Update screenshot photo in-place (suppressed during follow mode)
               if (
                 action === 'screenshot' &&
                 result.status === 'ok' &&
@@ -1073,11 +1160,11 @@ function startIpcWatcher(): void {
                     path.basename(containerPath),
                   );
                   try {
-                    await sendTelegramPhoto(chatJid, hostPath, 'Screenshot');
+                    await updateCuaScreenshot(sourceGroup, chatJid, hostPath);
                   } catch (photoErr) {
                     logger.warn(
                       { module: 'index', photoErr, hostPath },
-                      'Failed to send screenshot as Telegram photo',
+                      'Failed to send/edit screenshot as Telegram photo',
                     );
                   }
                 }
@@ -1164,26 +1251,61 @@ function startIpcWatcher(): void {
 
               let newText: string | undefined;
               if (lastThinking) {
-                const content = String(lastThinking.content).slice(0, 150);
-                newText = content;
+                newText = String(lastThinking.content);
               } else if (lastToolStart) {
                 const toolName = String(lastToolStart.tool_name || '').replace(/^mcp__nanoclaw__/, '');
                 if (!HIDDEN_TOOLS.has(toolName)) {
-                  newText = humanizeToolName(String(lastToolStart.tool_name)) + '...';
+                  newText = humanizeToolName(String(lastToolStart.tool_name));
                 }
               }
 
               if (newText && newText !== statusEntry.currentText) {
                 const now = Date.now();
                 if (now - statusEntry.lastEditTime >= STATUS_EDIT_INTERVAL_MS) {
+                  // Telegram allows ~4096 chars per message; account for <i></i> tags
+                  const MAX_CHUNK = 4000;
+
+                  // Delete any previous overflow messages before sending new ones
+                  for (const extraId of statusEntry.extraMessageIds) {
+                    await deleteTelegramMessage(statusEntry.chatJid, extraId);
+                  }
+                  statusEntry.extraMessageIds = [];
+
+                  // Split into chunks at line boundaries when possible
+                  const chunks: string[] = [];
+                  let remaining = newText;
+                  while (remaining.length > 0) {
+                    if (remaining.length <= MAX_CHUNK) {
+                      chunks.push(remaining);
+                      break;
+                    }
+                    // Try to split at a newline within the chunk
+                    let splitAt = remaining.lastIndexOf('\n', MAX_CHUNK);
+                    if (splitAt <= 0) splitAt = MAX_CHUNK;
+                    chunks.push(remaining.slice(0, splitAt));
+                    remaining = remaining.slice(splitAt).replace(/^\n/, '');
+                  }
+
+                  // Edit the primary message with the first chunk
                   const edited = await editTelegramStatusMessage(
                     statusEntry.chatJid,
                     statusEntry.messageId,
-                    newText,
+                    chunks[0],
                   );
                   if (edited) {
                     statusEntry.currentText = newText;
                     statusEntry.lastEditTime = now;
+
+                    // Send overflow chunks as additional messages
+                    for (let i = 1; i < chunks.length; i++) {
+                      const extraId = await sendTelegramStatusMessage(
+                        statusEntry.chatJid,
+                        chunks[i],
+                      );
+                      if (extraId) {
+                        statusEntry.extraMessageIds.push(extraId);
+                      }
+                    }
                   }
                 }
               }

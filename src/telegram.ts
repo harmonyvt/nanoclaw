@@ -1730,22 +1730,84 @@ export async function deleteTelegramMessage(
 }
 
 /**
+ * Send a plain text message and return its message_id for later editing.
+ */
+export async function sendTelegramMessageWithId(
+  chatId: string,
+  text: string,
+): Promise<number | null> {
+  if (!bot) return null;
+  const numericId = extractTelegramChatId(chatId);
+  try {
+    const msg = await bot.api.sendMessage(numericId, text);
+    return msg.message_id;
+  } catch (err) {
+    logger.debug({ module: 'telegram', chatId, err }, 'Failed to send message with ID');
+    return null;
+  }
+}
+
+/**
+ * Edit an existing plain text message in-place.
+ */
+export async function editTelegramMessageText(
+  chatId: string,
+  messageId: number,
+  text: string,
+): Promise<boolean> {
+  if (!bot) return false;
+  const numericId = extractTelegramChatId(chatId);
+  try {
+    await bot.api.editMessageText(numericId, messageId, text);
+    return true;
+  } catch (err) {
+    logger.debug({ module: 'telegram', chatId, messageId, err }, 'Failed to edit message text');
+    return false;
+  }
+}
+
+/**
  * Send a photo to a Telegram chat from a local file path.
  */
 export async function sendTelegramPhoto(
   chatId: string,
   filePath: string,
   caption?: string,
-): Promise<void> {
+): Promise<number | null> {
   if (!bot) {
     logger.error({ module: 'telegram' }, 'Telegram bot not initialized');
-    return;
+    return null;
   }
 
   const numericId = extractTelegramChatId(chatId);
-  await bot.api.sendPhoto(numericId, new InputFile(filePath), {
+  const msg = await bot.api.sendPhoto(numericId, new InputFile(filePath), {
     caption,
   });
+  return msg.message_id;
+}
+
+/**
+ * Edit an existing photo message in-place with a new image.
+ */
+export async function editTelegramPhoto(
+  chatId: string,
+  messageId: number,
+  filePath: string,
+  caption?: string,
+): Promise<boolean> {
+  if (!bot) return false;
+  const numericId = extractTelegramChatId(chatId);
+  try {
+    await bot.api.editMessageMedia(numericId, messageId, {
+      type: 'photo',
+      media: new InputFile(filePath),
+      caption,
+    });
+    return true;
+  } catch (err) {
+    logger.debug({ module: 'telegram', chatId, messageId, err }, 'Failed to edit photo message');
+    return false;
+  }
 }
 
 /**
