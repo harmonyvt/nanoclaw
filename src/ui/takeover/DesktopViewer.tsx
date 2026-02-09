@@ -4,11 +4,13 @@ interface Props {
 }
 
 function buildDirectNoVncUrl(
-  liveViewUrl: string,
+  _liveViewUrl: string,
   vncPassword: string,
 ): string | null {
   try {
-    const noVncUrl = new URL('/vnc.html', liveViewUrl);
+    // Route through the takeover server's /novnc/ proxy so the URL works over
+    // Tailscale HTTPS on the same origin (port 6901 isn't Tailscale-served).
+    const noVncUrl = new URL('/novnc/vnc.html', window.location.origin);
     noVncUrl.searchParams.set('autoconnect', 'true');
     noVncUrl.searchParams.set('resize', 'scale');
     noVncUrl.searchParams.set('scale', 'true');
