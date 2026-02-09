@@ -1074,7 +1074,7 @@ function startIpcWatcher(): void {
               } else {
                 const startNote = describeCuaActionStart(action, browseParams);
 
-                // Emit activity event for follow page
+                // Emit activity event for trajectory
                 emitCuaActivity({
                   groupFolder: sourceGroup,
                   action,
@@ -1102,7 +1102,7 @@ function startIpcWatcher(): void {
               const browseDurationMs = Date.now() - browseStartMs;
               const usage = updateCuaUsage(sourceGroup, action, result.status);
 
-              // Emit activity end event for follow page
+              // Emit activity end event for trajectory
               if (action !== 'wait_for_user') {
                 emitCuaActivity({
                   groupFolder: sourceGroup,
