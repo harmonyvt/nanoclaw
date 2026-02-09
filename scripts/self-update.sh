@@ -50,6 +50,9 @@ on_error() {
 
 trap 'on_error "$LINENO"' ERR
 
+SELF_SCRIPT="${BASH_SOURCE[0]}"
+REEXECED="${_SELF_UPDATE_REEXECED:-0}"
+
 log_step "triggered for ${REMOTE}/${BRANCH}"
 
 if command -v bun >/dev/null 2>&1; then
@@ -66,27 +69,45 @@ if [[ ! -d .git ]]; then
   fail "not a git repository: $ROOT_DIR"
 fi
 
-DIRTY="$(git diff --stat)"
-if [[ -n "$DIRTY" ]]; then
-  log_step "found local uncommitted changes; resetting to HEAD before update"
-  echo "$DIRTY"
+# If we were re-execed after a git pull, skip straight to install/build/restart
+if [[ "$REEXECED" != "1" ]]; then
+  DIRTY="$(git diff --stat)"
+  if [[ -n "$DIRTY" ]]; then
+    log_step "found local uncommitted changes; resetting to HEAD before update"
+    echo "$DIRTY"
+  fi
+  git reset --hard HEAD
+
+  log_step "fetching ${REMOTE}/${BRANCH}"
+  git fetch --quiet "$REMOTE" "$BRANCH"
+
+  REMOTE_REF="${REMOTE}/${BRANCH}"
+  BEHIND="$(git rev-list --count "HEAD..${REMOTE_REF}")"
+  if [[ "$BEHIND" == "0" ]]; then
+    log_step "already up to date on ${REMOTE_REF}"
+    exit 0
+  fi
+
+  OLD_HEAD="$(git rev-parse HEAD)"
+
+  # Snapshot the updater script hash before pulling
+  OLD_SCRIPT_HASH="$(shasum -a 256 "$SELF_SCRIPT" | cut -d' ' -f1)"
+
+  log_step "updating to ${REMOTE_REF} (${BEHIND} commit(s) behind)"
+  git reset --hard "${REMOTE_REF}"
+
+  # Re-exec if the updater itself changed
+  NEW_SCRIPT_HASH="$(shasum -a 256 "$SELF_SCRIPT" | cut -d' ' -f1)"
+  if [[ "$OLD_SCRIPT_HASH" != "$NEW_SCRIPT_HASH" ]]; then
+    log_step "updater script changed; re-executing fresh version"
+    export _SELF_UPDATE_REEXECED=1
+    export _SELF_UPDATE_OLD_HEAD="$OLD_HEAD"
+    exec bash "$SELF_SCRIPT"
+  fi
+else
+  # Recover OLD_HEAD passed from the previous exec
+  OLD_HEAD="${_SELF_UPDATE_OLD_HEAD:-$(git rev-parse HEAD)}"
 fi
-git reset --hard HEAD
-
-log_step "fetching ${REMOTE}/${BRANCH}"
-git fetch --quiet "$REMOTE" "$BRANCH"
-
-REMOTE_REF="${REMOTE}/${BRANCH}"
-BEHIND="$(git rev-list --count "HEAD..${REMOTE_REF}")"
-if [[ "$BEHIND" == "0" ]]; then
-  log_step "already up to date on ${REMOTE_REF}"
-  exit 0
-fi
-
-OLD_HEAD="$(git rev-parse HEAD)"
-
-log_step "updating to ${REMOTE_REF} (${BEHIND} commit(s) behind)"
-git reset --hard "${REMOTE_REF}"
 
 log_step "installing dependencies"
 if ! "$BUN_PATH" install --frozen-lockfile; then
