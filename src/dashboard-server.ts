@@ -9,7 +9,7 @@ import {
   DASHBOARD_URL,
   GROUPS_DIR,
 } from './config.js';
-import { getSandboxHostIp, isSandboxRunning, ensureSandbox } from './sandbox-manager.js';
+import { getSandboxHostIp, isSandboxRunning, ensureSandbox, getSandboxUrl, resetIdleTimer } from './sandbox-manager.js';
 import { getTailscaleHttpsUrl } from './tailscale-serve.js';
 import { logger } from './logger.js';
 import {
@@ -33,7 +33,15 @@ import {
   getTaskRunLogs,
   getAllTaskRunLogs,
 } from './db.js';
-import { runCuaCommand, shellSingleQuote } from './browse-host.js';
+import {
+  runCuaCommand,
+  shellSingleQuote,
+  getAllWaitingRequests,
+  getWaitForUserRequestByToken,
+  resolveWaitForUserByToken,
+} from './browse-host.js';
+import { serveStaticAsset } from './ui-assets.js';
+import { proxyNoVncHttp, createNoVncWebSocketHandler, makeNoVncWsData, type NoVncWsData } from './novnc-proxy.js';
 
 let dashboardServer: ReturnType<typeof Bun.serve> | null = null;
 let sessionCleanupInterval: ReturnType<typeof setInterval> | null = null;
@@ -60,15 +68,6 @@ function htmlResponse(html: string, status = 200): Response {
     status,
     headers: { 'content-type': 'text/html; charset=utf-8' },
   });
-}
-
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
 }
 
 function authenticateRequest(
@@ -973,6 +972,78 @@ async function handleFileTransfer(req: Request): Promise<Response> {
   }
 }
 
+// ── Takeover API handlers ────────────────────────────────────────────────
+
+function handleTakeoverList(): Response {
+  const requests = getAllWaitingRequests().map((r) => ({
+    requestId: r.requestId,
+    groupFolder: r.groupFolder,
+    token: r.token,
+    createdAt: r.createdAt,
+    message: r.message,
+    vncPassword: r.vncPassword,
+    liveViewUrl: getSandboxUrl(),
+  }));
+  return jsonResponse(requests);
+}
+
+function extractTakeoverToken(pathname: string): string | null {
+  const prefix = '/api/cua/takeover/';
+  if (!pathname.startsWith(prefix)) return null;
+  const remainder = pathname.slice(prefix.length);
+  if (!remainder || remainder.includes('/')) return null;
+  try {
+    return decodeURIComponent(remainder);
+  } catch {
+    return null;
+  }
+}
+
+function extractContinueToken(pathname: string): string | null {
+  const suffix = '/continue';
+  const prefix = '/api/cua/takeover/';
+  if (!pathname.startsWith(prefix) || !pathname.endsWith(suffix)) return null;
+  const tokenPath = pathname.slice(prefix.length, -suffix.length);
+  if (!tokenPath || tokenPath.includes('/')) return null;
+  try {
+    return decodeURIComponent(tokenPath);
+  } catch {
+    return null;
+  }
+}
+
+function handleTakeoverStatus(token: string): Response {
+  const pending = getWaitForUserRequestByToken(token);
+  if (!pending) {
+    return jsonResponse({
+      status: 'not_found',
+      liveViewUrl: getSandboxUrl(),
+      vncPassword: null,
+    }, 404);
+  }
+  resetIdleTimer();
+  return jsonResponse({
+    status: 'pending',
+    requestId: pending.requestId,
+    groupFolder: pending.groupFolder,
+    message: pending.message,
+    createdAt: pending.createdAt,
+    liveViewUrl: getSandboxUrl(),
+    vncPassword: pending.vncPassword,
+  });
+}
+
+function handleTakeoverContinue(token: string): Response {
+  const resolved = resolveWaitForUserByToken(token);
+  if (!resolved) {
+    return jsonResponse(
+      { status: 'error', error: 'takeover session not found or already completed' },
+      404,
+    );
+  }
+  return jsonResponse({ status: 'ok', result: 'control returned to agent' });
+}
+
 // ── Dashboard HTML ──────────────────────────────────────────────────────
 
 function renderDashboardPage(): string {
@@ -983,1569 +1054,41 @@ function renderDashboardPage(): string {
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
   <title>NanoClaw Dashboard</title>
   <script src="https://telegram.org/js/telegram-web-app.js"><\/script>
-  <style>
-    :root {
-      --bg: #0b1219;
-      --panel: #16212c;
-      --panel-2: #1d2b39;
-      --text: #edf3f9;
-      --muted: #9bb2c7;
-      --accent: #38bdf8;
-      --accent-2: #f59e0b;
-      --ok: #22c55e;
-      --danger: #ef4444;
-      --radius: 12px;
-      --level-trace: #94a3b8;
-      --level-debug: #38bdf8;
-      --level-info: #22c55e;
-      --level-warn: #f59e0b;
-      --level-error: #ef4444;
-      --level-fatal: #dc2626;
-    }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: "Space Grotesk", -apple-system, "Segoe UI", sans-serif;
-      background: var(--bg);
-      color: var(--text);
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-      -webkit-tap-highlight-color: transparent;
-    }
-    .mono { font-family: "IBM Plex Mono", "Menlo", "Consolas", monospace; }
-
-    /* Header */
-    .header {
-      position: sticky; top: 0; z-index: 100;
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 10px 16px;
-      background: rgba(11,18,25,0.92);
-      backdrop-filter: blur(12px);
-      border-bottom: 1px solid rgba(255,255,255,0.08);
-      min-height: 48px;
-    }
-    .header-left { display: flex; align-items: center; gap: 10px; }
-    .header h1 { font-size: 16px; font-weight: 600; letter-spacing: 0.02em; }
-    .header-right { display: flex; align-items: center; gap: 8px; }
-    .status-dot {
-      width: 8px; height: 8px; border-radius: 50%;
-      background: var(--muted);
-      transition: background 300ms;
-    }
-    .status-dot.live { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
-    .status-dot.error { background: var(--danger); }
-    .status-label { font-size: 12px; color: var(--muted); }
-
-    /* Tabs */
-    .tabs {
-      position: sticky; top: 48px; z-index: 99;
-      display: flex;
-      background: var(--panel);
-      border-bottom: 1px solid rgba(255,255,255,0.08);
-    }
-    .tab {
-      flex: 1;
-      padding: 12px 8px;
-      text-align: center;
-      font-size: 13px; font-weight: 500;
-      color: var(--muted);
-      cursor: pointer;
-      border-bottom: 2px solid transparent;
-      transition: color 200ms, border-color 200ms;
-      min-height: 44px;
-      display: flex; align-items: center; justify-content: center;
-      user-select: none;
-    }
-    .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
-
-    /* Filter bar */
-    .filters {
-      display: flex; flex-wrap: wrap; gap: 8px;
-      padding: 10px 12px;
-      background: var(--panel);
-      border-bottom: 1px solid rgba(255,255,255,0.06);
-    }
-    .filter-group { display: flex; align-items: center; gap: 4px; }
-    .filter-group label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
-    select, input[type="text"], input[type="datetime-local"] {
-      background: var(--panel-2);
-      border: 1px solid rgba(255,255,255,0.1);
-      border-radius: 8px;
-      color: var(--text);
-      padding: 6px 10px;
-      font-size: 13px;
-      min-height: 36px;
-      outline: none;
-    }
-    select:focus, input:focus { border-color: var(--accent); }
-    input[type="text"] { flex: 1; min-width: 120px; }
-    .filter-expand {
-      font-size: 12px; color: var(--accent); cursor: pointer;
-      padding: 6px 8px; border: none; background: none;
-      min-height: 36px;
-    }
-    .filters-advanced { display: none; width: 100%; }
-    .filters-advanced.show { display: flex; flex-wrap: wrap; gap: 8px; }
-
-    /* Tab panes */
-    .pane { display: none; flex: 1; flex-direction: column; min-height: 0; }
-    .pane.active { display: flex; }
-
-    /* Log entries */
-    .log-container {
-      flex: 1; overflow-y: auto; overflow-x: hidden;
-      padding: 4px 0;
-      scroll-behavior: smooth;
-    }
-    .log-entry {
-      display: flex; align-items: flex-start; gap: 6px;
-      padding: 6px 12px;
-      font-size: 12px;
-      line-height: 1.5;
-      border-bottom: 1px solid rgba(255,255,255,0.03);
-      cursor: pointer;
-      user-select: none;
-      -webkit-user-select: none;
-      -webkit-tap-highlight-color: rgba(34,211,238,0.15);
-    }
-    .log-entry:hover { background: rgba(255,255,255,0.03); }
-    .log-entry:active { background: rgba(255,255,255,0.06); }
-    .log-entry.expanded { background: rgba(255,255,255,0.04); }
-    .log-expand-indicator {
-      flex-shrink: 0; color: var(--muted); font-size: 10px;
-      transition: transform 0.15s ease; width: 12px; text-align: center;
-      line-height: 1.5;
-    }
-    .log-entry.expanded .log-expand-indicator {
-      transform: rotate(90deg); color: var(--accent);
-    }
-    .log-time { color: var(--muted); white-space: nowrap; flex-shrink: 0; }
-    .log-level {
-      display: inline-block; min-width: 44px;
-      padding: 1px 6px; border-radius: 4px;
-      text-align: center; font-size: 10px; font-weight: 600;
-      text-transform: uppercase; flex-shrink: 0;
-    }
-    .log-level-10 { color: var(--level-trace); border: 1px solid var(--level-trace); }
-    .log-level-20 { color: var(--level-debug); border: 1px solid var(--level-debug); }
-    .log-level-30 { color: var(--level-info); border: 1px solid var(--level-info); }
-    .log-level-40 { color: var(--level-warn); border: 1px solid var(--level-warn); background: rgba(245,158,11,0.1); }
-    .log-level-50 { color: var(--level-error); border: 1px solid var(--level-error); background: rgba(239,68,68,0.1); }
-    .log-level-60 { color: var(--level-fatal); border: 1px solid var(--level-fatal); background: rgba(220,38,38,0.15); }
-    .log-module { color: var(--accent); font-size: 11px; flex-shrink: 0; }
-    .log-group { color: var(--accent-2); font-size: 11px; flex-shrink: 0; }
-    .log-msg { word-break: break-word; flex: 1; min-width: 0; }
-    .log-msg.mono { font-size: 12px; }
-    .log-detail {
-      padding: 0 12px 0 32px;
-      background: rgba(255,255,255,0.02);
-      border-bottom: 1px solid rgba(255,255,255,0.06);
-      font-size: 11px;
-      line-height: 1.6;
-      max-height: 0;
-      overflow: hidden;
-      transition: max-height 0.2s ease, padding 0.2s ease;
-    }
-    .log-detail.show {
-      max-height: 500px;
-      padding: 8px 12px 8px 32px;
-      overflow-y: auto;
-    }
-    .log-detail-row { display: flex; gap: 8px; padding: 1px 0; }
-    .log-detail-key { color: var(--accent); font-weight: 500; min-width: 80px; flex-shrink: 0; }
-    .log-detail-val { color: var(--text); word-break: break-all; }
-    .log-detail-val.muted { color: var(--muted); }
-    .log-detail-raw {
-      margin-top: 6px; padding: 6px 8px;
-      background: var(--bg); border-radius: 6px;
-      font-family: "IBM Plex Mono", monospace; font-size: 11px;
-      white-space: pre-wrap; word-break: break-all;
-      color: var(--muted); max-height: 200px; overflow-y: auto;
-      border: 1px solid rgba(255,255,255,0.06);
-    }
-    .log-detail-toggle {
-      font-size: 11px; color: var(--accent); cursor: pointer;
-      background: none; border: none; padding: 2px 0; margin-top: 4px;
-    }
-
-    /* Scroll to bottom button */
-    .scroll-btn {
-      position: fixed; bottom: 20px; right: 20px;
-      width: 44px; height: 44px;
-      border-radius: 50%; border: none;
-      background: var(--accent); color: #041017;
-      font-size: 20px; cursor: pointer;
-      box-shadow: 0 4px 16px rgba(56,189,248,0.3);
-      display: none; z-index: 50;
-      align-items: center; justify-content: center;
-    }
-    .scroll-btn.show { display: flex; }
-
-    /* Container / Task cards */
-    .card-list { flex: 1; overflow-y: auto; padding: 8px 12px; }
-    .card {
-      background: var(--panel);
-      border: 1px solid rgba(255,255,255,0.08);
-      border-radius: var(--radius);
-      padding: 12px;
-      margin-bottom: 8px;
-    }
-    .card-header { display: flex; justify-content: space-between; align-items: center; }
-    .card-title { font-size: 14px; font-weight: 600; }
-    .card-meta { font-size: 12px; color: var(--muted); margin-top: 4px; }
-    .badge {
-      display: inline-block; padding: 2px 8px; border-radius: 6px;
-      font-size: 11px; font-weight: 600;
-    }
-    .badge-ok { color: var(--ok); border: 1px solid var(--ok); }
-    .badge-error { color: var(--danger); border: 1px solid var(--danger); }
-    .badge-active { color: var(--accent); border: 1px solid var(--accent); }
-    .badge-paused { color: var(--accent-2); border: 1px solid var(--accent-2); }
-    .card { cursor: pointer; transition: background 150ms; }
-    .card:hover { background: var(--panel-2); }
-    .card:active { background: rgba(255,255,255,0.08); }
-    .run-list { margin-top: 8px; }
-    .run-item {
-      display: flex; align-items: center; gap: 8px;
-      padding: 4px 0;
-      font-size: 12px; color: var(--muted);
-      border-top: 1px solid rgba(255,255,255,0.04);
-    }
-    .run-item:first-child { border-top: none; }
-    .container-log-modal {
-      position: fixed; inset: 0; z-index: 200;
-      background: rgba(0,0,0,0.92);
-      display: flex; flex-direction: column;
-    }
-    .container-log-header {
-      display: flex; justify-content: space-between; align-items: center;
-      padding: 10px 16px; background: var(--panel);
-      border-bottom: 1px solid rgba(255,255,255,0.08);
-      gap: 8px;
-    }
-    .container-log-header .cl-title { font-size: 14px; font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .container-log-header .cl-close {
-      padding: 6px 12px; border-radius: 8px; border: none;
-      background: var(--panel-2); color: var(--muted);
-      font-size: 12px; cursor: pointer;
-    }
-    .container-log-content {
-      flex: 1; overflow: auto; padding: 12px 16px;
-      font-family: "IBM Plex Mono", monospace; font-size: 12px;
-      line-height: 1.6; white-space: pre-wrap; word-break: break-word;
-      color: var(--text); background: var(--bg);
-    }
-    .container-log-meta {
-      display: flex; flex-wrap: wrap; gap: 12px;
-      padding: 8px 16px;
-      background: var(--panel);
-      border-bottom: 1px solid rgba(255,255,255,0.06);
-      font-size: 12px; color: var(--muted);
-    }
-    .cl-meta-item { display: flex; gap: 4px; }
-    .cl-meta-label { color: var(--accent); font-weight: 500; }
-
-    /* Empty state */
-    .empty {
-      display: flex; align-items: center; justify-content: center;
-      flex: 1; color: var(--muted); font-size: 14px;
-      padding: 40px 20px; text-align: center;
-    }
-
-    /* Auth screen */
-    .auth-screen {
-      display: flex; align-items: center; justify-content: center;
-      flex: 1; padding: 40px 20px; text-align: center;
-    }
-    .auth-screen h2 { font-size: 20px; margin-bottom: 12px; }
-    .auth-screen p { color: var(--muted); line-height: 1.6; max-width: 360px; }
-
-    /* Loading */
-    .loading { text-align: center; padding: 20px; color: var(--muted); font-size: 13px; }
-
-    /* ── Files Tab ─────────────────────────────────────────── */
-    .files-header {
-      display: flex; justify-content: space-between; align-items: center;
-      padding: 8px 12px;
-      background: var(--panel);
-      border-bottom: 1px solid rgba(255,255,255,0.06);
-      gap: 8px;
-    }
-    .source-toggle { display: flex; gap: 4px; flex-shrink: 0; }
-    .source-btn {
-      padding: 6px 14px; border-radius: 8px;
-      border: 1px solid rgba(255,255,255,0.1);
-      background: var(--panel-2); color: var(--muted);
-      font-size: 12px; font-weight: 500; cursor: pointer;
-      transition: all 200ms; white-space: nowrap;
-    }
-    .source-btn.active {
-      color: var(--accent); border-color: var(--accent);
-      background: rgba(56,189,248,0.1);
-    }
-    .source-btn .sdot {
-      display: inline-block; width: 6px; height: 6px;
-      border-radius: 50%; margin-left: 4px; vertical-align: middle;
-    }
-    .sdot.on { background: var(--ok); }
-    .sdot.off { background: var(--danger); }
-    .files-actions { display: flex; gap: 4px; }
-    .files-action-btn {
-      padding: 6px 12px; border-radius: 8px; border: none;
-      background: var(--panel-2); color: var(--accent);
-      font-size: 12px; font-weight: 500; cursor: pointer;
-      transition: background 200ms;
-    }
-    .files-action-btn:hover { background: rgba(56,189,248,0.15); }
-    .files-group-bar {
-      display: flex; align-items: center; gap: 8px;
-      padding: 6px 12px;
-      background: var(--panel);
-      border-bottom: 1px solid rgba(255,255,255,0.04);
-      font-size: 12px;
-    }
-    .files-group-bar label { color: var(--muted); font-size: 11px; text-transform: uppercase; }
-    .files-group-bar select { font-size: 12px; padding: 4px 8px; min-height: 28px; }
-    .files-search-bar {
-      display: flex; align-items: center; gap: 6px;
-      padding: 6px 12px;
-      background: var(--panel);
-      border-bottom: 1px solid rgba(255,255,255,0.04);
-    }
-    .files-search-bar input {
-      flex: 1; background: var(--panel-2);
-      border: 1px solid rgba(255,255,255,0.1);
-      border-radius: 8px; color: var(--text);
-      padding: 6px 10px; font-size: 12px; min-height: 32px; outline: none;
-    }
-    .files-search-bar input:focus { border-color: var(--accent); }
-    .breadcrumb {
-      display: flex; align-items: center; gap: 2px;
-      padding: 6px 12px; font-size: 12px; color: var(--muted);
-      overflow-x: auto; white-space: nowrap;
-      background: var(--bg);
-      border-bottom: 1px solid rgba(255,255,255,0.04);
-      -webkit-overflow-scrolling: touch;
-    }
-    .bc-seg { cursor: pointer; color: var(--accent); padding: 2px 4px; border-radius: 4px; }
-    .bc-seg:hover { background: rgba(56,189,248,0.1); }
-    .bc-sep { color: var(--muted); margin: 0 1px; font-size: 10px; }
-    .bc-current { color: var(--text); font-weight: 500; }
-    .file-list { flex: 1; overflow-y: auto; padding: 0; }
-    .file-item {
-      display: flex; align-items: center; gap: 10px;
-      padding: 10px 12px;
-      border-bottom: 1px solid rgba(255,255,255,0.04);
-      cursor: pointer; transition: background 150ms;
-    }
-    .file-item:hover { background: rgba(255,255,255,0.04); }
-    .file-item:active { background: rgba(255,255,255,0.07); }
-    .file-icon { font-size: 22px; width: 30px; text-align: center; flex-shrink: 0; line-height: 1; }
-    .file-info { flex: 1; min-width: 0; }
-    .file-name {
-      font-size: 13px; font-weight: 500;
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    }
-    .file-name .protected-badge {
-      display: inline-block; font-size: 10px; margin-left: 4px;
-      color: var(--accent-2); vertical-align: middle;
-    }
-    .file-meta { font-size: 11px; color: var(--muted); margin-top: 2px; }
-    .file-actions { display: flex; gap: 2px; flex-shrink: 0; }
-    .fa-btn {
-      width: 32px; height: 32px; border-radius: 8px; border: none;
-      background: transparent; color: var(--muted); font-size: 15px;
-      cursor: pointer; display: flex; align-items: center; justify-content: center;
-      transition: all 150ms;
-    }
-    .fa-btn:hover { color: var(--text); background: rgba(255,255,255,0.08); }
-    .fa-btn.danger:hover { color: var(--danger); background: rgba(239,68,68,0.1); }
-    .transfer-bar {
-      display: flex; align-items: center; gap: 8px;
-      padding: 10px 12px;
-      background: rgba(56,189,248,0.08);
-      border-top: 1px solid rgba(56,189,248,0.3);
-      font-size: 12px;
-    }
-    .transfer-bar .t-info { flex: 1; color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .transfer-bar .t-btn {
-      padding: 6px 14px; border-radius: 8px; border: none;
-      font-size: 12px; font-weight: 600; cursor: pointer;
-    }
-    .t-btn-go { background: var(--accent); color: #041017; }
-    .t-btn-cancel { background: var(--panel-2); color: var(--muted); }
-    .file-preview-modal {
-      position: fixed; inset: 0; z-index: 200;
-      background: rgba(0,0,0,0.9);
-      display: flex; flex-direction: column;
-    }
-    .preview-header {
-      display: flex; justify-content: space-between; align-items: center;
-      padding: 10px 16px; background: var(--panel);
-      border-bottom: 1px solid rgba(255,255,255,0.08);
-    }
-    .preview-header .pv-name { font-size: 14px; font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .preview-header .pv-actions { display: flex; gap: 6px; }
-    .pv-btn {
-      padding: 6px 12px; border-radius: 8px; border: none;
-      font-size: 12px; cursor: pointer;
-    }
-    .pv-btn-dl { background: var(--accent); color: #041017; font-weight: 600; }
-    .pv-btn-close { background: var(--panel-2); color: var(--muted); }
-    .preview-content {
-      flex: 1; overflow: auto; padding: 16px;
-      display: flex; align-items: flex-start; justify-content: center;
-    }
-    .preview-content img { max-width: 100%; height: auto; border-radius: 8px; }
-    .preview-content pre {
-      font-family: "IBM Plex Mono", monospace; font-size: 12px;
-      white-space: pre-wrap; word-break: break-word;
-      color: var(--text); line-height: 1.6; width: 100%;
-      background: var(--panel); padding: 12px; border-radius: 8px;
-    }
-    .preview-content .pv-info {
-      text-align: center; color: var(--muted); padding: 40px 20px;
-    }
-    .cua-offline {
-      display: flex; flex-direction: column; align-items: center; justify-content: center;
-      flex: 1; gap: 16px; padding: 40px 20px; text-align: center;
-    }
-    .cua-offline p { color: var(--muted); font-size: 14px; }
-    .cua-start-btn {
-      padding: 10px 24px; border-radius: 10px; border: none;
-      background: var(--accent); color: #041017;
-      font-size: 14px; font-weight: 600; cursor: pointer;
-    }
-    .toast {
-      position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
-      background: var(--panel); color: var(--text);
-      border: 1px solid rgba(255,255,255,0.12); border-radius: 10px;
-      padding: 10px 20px; font-size: 13px; z-index: 300;
-      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
-      animation: toastIn 200ms ease-out;
-    }
-    @keyframes toastIn { from { opacity: 0; transform: translateX(-50%) translateY(10px); } }
-    .ctx-menu {
-      position: fixed; z-index: 250;
-      background: var(--panel); border: 1px solid rgba(255,255,255,0.12);
-      border-radius: var(--radius); min-width: 180px;
-      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
-      overflow: hidden;
-    }
-    .ctx-item {
-      padding: 11px 14px; font-size: 13px; cursor: pointer;
-      display: flex; align-items: center; gap: 10px;
-      transition: background 100ms;
-    }
-    .ctx-item:hover { background: rgba(255,255,255,0.06); }
-    .ctx-item.danger { color: var(--danger); }
-    .ctx-sep { height: 1px; background: rgba(255,255,255,0.06); margin: 2px 0; }
-  </style>
+  <link rel="stylesheet" href="/assets/dashboard.css">
 </head>
 <body>
-
-<div class="header">
-  <div class="header-left">
-    <h1>NanoClaw</h1>
-  </div>
-  <div class="header-right">
-    <div class="status-dot" id="statusDot"></div>
-    <span class="status-label" id="statusLabel">Connecting...</span>
-    <span id="reconnectBtn" style="display:none;color:var(--accent);cursor:pointer;font-size:11px;margin-left:6px;text-decoration:underline">Retry</span>
-  </div>
-</div>
-
-<div class="tabs" id="tabsBar">
-  <div class="tab active" data-tab="logs">Logs</div>
-  <div class="tab" data-tab="containers">Containers</div>
-  <div class="tab" data-tab="tasks">Tasks</div>
-  <div class="tab" data-tab="files">Files</div>
-</div>
-
-<!-- Filters (Logs tab) -->
-<div class="filters" id="logFilters">
-  <div class="filter-group">
-    <label>Level</label>
-    <select id="filterLevel">
-      <option value="">All</option>
-      <option value="10">Trace</option>
-      <option value="20">Debug</option>
-      <option value="30">Info</option>
-      <option value="40">Warn</option>
-      <option value="50">Error</option>
-      <option value="60">Fatal</option>
-    </select>
-  </div>
-  <div class="filter-group" style="flex:1">
-    <input type="text" id="filterSearch" placeholder="Search logs...">
-  </div>
-  <button class="filter-expand" id="filterToggle">More</button>
-  <div class="filters-advanced" id="filterAdvanced">
-    <div class="filter-group">
-      <label>Group</label>
-      <select id="filterGroup"><option value="">All</option></select>
-    </div>
-  </div>
-</div>
-
-<!-- Logs pane -->
-<div class="pane active" id="pane-logs">
-  <div class="log-container" id="logContainer"></div>
-</div>
-
-<!-- Containers pane -->
-<div class="pane" id="pane-containers">
-  <div class="card-list" id="containerList">
-    <div class="loading">Loading container runs...</div>
-  </div>
-</div>
-
-<!-- Tasks pane -->
-<div class="pane" id="pane-tasks">
-  <div class="card-list" id="taskList">
-    <div class="loading">Loading tasks...</div>
-  </div>
-</div>
-
-<!-- Files pane -->
-<div class="pane" id="pane-files">
-  <div class="files-header">
-    <div class="source-toggle">
-      <button class="source-btn active" data-source="agent" id="srcAgent">Agent</button>
-      <button class="source-btn" data-source="cua" id="srcCua">CUA <span class="sdot off" id="cuaDot"></span></button>
-    </div>
-    <div class="files-actions">
-      <button class="files-action-btn" id="filesSearchToggle" title="Search">Search</button>
-      <button class="files-action-btn" id="filesUploadBtn" title="Upload">Upload</button>
-      <button class="files-action-btn" id="filesMkdirBtn" title="New folder">+ Folder</button>
-    </div>
-  </div>
-  <div class="files-group-bar" id="filesGroupBar">
-    <label>Group</label>
-    <select id="filesGroup"></select>
-  </div>
-  <div class="files-search-bar" id="filesSearchBar" style="display:none">
-    <input type="text" id="filesSearchInput" placeholder="Search files by name...">
-  </div>
-  <div class="breadcrumb" id="filesBreadcrumb"></div>
-  <div class="file-list" id="fileList">
-    <div class="empty">Select a source to browse files</div>
-  </div>
-  <div class="transfer-bar" id="transferBar" style="display:none">
-    <span class="t-info" id="transferInfo"></span>
-    <button class="t-btn t-btn-go" id="transferGo">Transfer Here</button>
-    <button class="t-btn t-btn-cancel" id="transferCancel">Cancel</button>
-  </div>
-</div>
-
-<!-- Hidden file input for uploads -->
-<input type="file" id="fileInput" style="display:none" multiple>
-
-<!-- Scroll to bottom -->
-<button class="scroll-btn" id="scrollBtn">&#8595;</button>
-
-<!-- Auth screen (hidden when authenticated) -->
-<div class="auth-screen" id="authScreen" style="display:none">
-  <div>
-    <h2>NanoClaw Dashboard</h2>
-    <p>Open this dashboard from Telegram using the <strong>/dashboard</strong> command for authenticated access.</p>
-    <p style="margin-top:16px;font-size:12px;color:var(--muted)">Direct browser access is available when authentication is disabled.</p>
-  </div>
-</div>
-
-<script>
-(function() {
-  var LEVEL_NAMES = { 10: 'TRACE', 20: 'DEBUG', 30: 'INFO', 40: 'WARN', 50: 'ERROR', 60: 'FATAL' };
-  var MAX_LOG_ENTRIES = 2000;
-
-  var authToken = null;
-  var lastLogId = 0;
-  var autoScroll = true;
-  var currentTab = 'logs';
-  var eventSource = null;
-  var sseRetryDelay = 1000;
-  var SSE_MAX_RETRY = 30000;
-  var searchTimeout = null;
-  var isSearchMode = false;
-
-  var $ = function(id) { return document.getElementById(id); };
-  var statusDot = $('statusDot');
-  var statusLabel = $('statusLabel');
-  var logContainer = $('logContainer');
-  var scrollBtn = $('scrollBtn');
-  var logFilters = $('logFilters');
-  var authScreen = $('authScreen');
-  var tabsBar = $('tabsBar');
-
-  function authHeaders() {
-    return authToken && authToken !== 'dev' ? { 'Authorization': 'Bearer ' + authToken } : {};
-  }
-
-  // ── Telegram WebApp Auth ─────────────────────────────────────
-  async function authenticate() {
-    var tg = window.Telegram && window.Telegram.WebApp;
-    if (tg && tg.initData) {
-      tg.ready();
-      tg.expand();
-      try { tg.setHeaderColor('#0b1219'); } catch(e) {}
-      try { tg.setBackgroundColor('#0b1219'); } catch(e) {}
-
-      try {
-        var res = await fetch('/api/auth?initData=' + encodeURIComponent(tg.initData));
-        if (res.ok) {
-          var data = await res.json();
-          authToken = data.token;
-          return true;
-        }
-      } catch(e) {}
-      return false;
-    }
-
-    try {
-      var res2 = await fetch('/healthz');
-      if (res2.ok) {
-        var data2 = await res2.json();
-        if (data2.authRequired === false) {
-          authToken = 'dev';
-          return true;
-        }
-      }
-    } catch(e) {}
-    return false;
-  }
-
-  // ── SSE Connection ───────────────────────────────────────────
-  function connectSSE() {
-    if (eventSource) { eventSource.close(); eventSource = null; }
-    if (!authToken) return;
-
-    var url = '/api/logs/stream?token=' + encodeURIComponent(authToken) + '&afterId=' + lastLogId;
-    eventSource = new EventSource(url);
-
-    eventSource.addEventListener('log', function(e) {
-      try {
-        var log = JSON.parse(e.data);
-        if (log.id > lastLogId) lastLogId = log.id;
-        if (!isSearchMode) appendLogEntry(log);
-      } catch(err) {}
-    });
-
-    eventSource.onopen = function() {
-      statusDot.className = 'status-dot live';
-      statusLabel.textContent = 'Live';
-      sseRetryDelay = 1000;
-      var rb = $('reconnectBtn');
-      if (rb) rb.style.display = 'none';
-    };
-
-    eventSource.onerror = function() {
-      statusDot.className = 'status-dot error';
-      statusLabel.textContent = 'Reconnecting...';
-      var rb = $('reconnectBtn');
-      if (rb) rb.style.display = 'inline';
-      eventSource.close();
-      eventSource = null;
-      setTimeout(connectSSE, sseRetryDelay);
-      sseRetryDelay = Math.min(sseRetryDelay * 2 + Math.random() * 1000, SSE_MAX_RETRY);
-    };
-  }
-
-  var reconnectBtn = $('reconnectBtn');
-  if (reconnectBtn) {
-    reconnectBtn.addEventListener('click', function() {
-      sseRetryDelay = 1000;
-      connectSSE();
-    });
-  }
-
-  // ── Log Rendering ────────────────────────────────────────────
-  function formatTime(ts) {
-    var d = new Date(ts);
-    return d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
-  }
-
-  function appendLogEntry(log) {
-    var wrapper = document.createElement('div');
-    wrapper.className = 'log-wrapper';
-
-    var el = document.createElement('div');
-    el.className = 'log-entry';
-    var level = log.level || 30;
-    var levelName = LEVEL_NAMES[level] || 'LOG';
-    var timeStr = formatTime(log.time);
-    var module = log.module || '';
-    var group = log.group_folder || '';
-    var msg = log.msg || '';
-    el.innerHTML =
-      '<span class="log-expand-indicator">\u25B6</span>' +
-      '<span class="log-time mono">' + timeStr + '</span>' +
-      '<span class="log-level log-level-' + level + '">' + levelName + '</span>' +
-      (module ? '<span class="log-module mono">' + escapeH(module) + '</span>' : '') +
-      (group ? '<span class="log-group mono">' + escapeH(group) + '</span>' : '') +
-      '<span class="log-msg mono">' + escapeH(msg) + '</span>';
-
-    var detail = document.createElement('div');
-    detail.className = 'log-detail';
-    detail.dataset.loaded = 'false';
-    detail.dataset.logId = log.id || '';
-
-    el.addEventListener('click', function() {
-      var isOpen = detail.classList.contains('show');
-      if (isOpen) {
-        detail.classList.remove('show');
-        el.classList.remove('expanded');
-        return;
-      }
-      el.classList.add('expanded');
-      detail.classList.add('show');
-
-      if (detail.dataset.loaded === 'true') return;
-      detail.dataset.loaded = 'true';
-
-      // If we already have extra data from SSE, render it inline
-      if (log.extra && Object.keys(log.extra).length > 0) {
-        renderLogDetail(detail, log, log.extra);
-      } else if (log.id) {
-        // Fetch full detail from API
-        detail.innerHTML = '<span style="color:var(--muted)">Loading...</span>';
-        fetch('/api/logs/' + log.id, { headers: authHeaders() })
-          .then(function(r) { return r.json(); })
-          .then(function(data) {
-            if (data.error) { detail.innerHTML = '<span style="color:var(--danger)">' + escapeH(data.error) + '</span>'; return; }
-            renderLogDetail(detail, data, data.extra || {});
-          })
-          .catch(function() { detail.innerHTML = '<span style="color:var(--danger)">Failed to load</span>'; });
-      } else {
-        detail.innerHTML = '<span style="color:var(--muted)">No additional detail available</span>';
-      }
-    });
-
-    wrapper.appendChild(el);
-    wrapper.appendChild(detail);
-    logContainer.appendChild(wrapper);
-    while (logContainer.children.length > MAX_LOG_ENTRIES) {
-      logContainer.removeChild(logContainer.firstChild);
-    }
-    if (autoScroll) { logContainer.scrollTop = logContainer.scrollHeight; }
-  }
-
-  function renderLogDetail(container, log, extra) {
-    var html = '';
-    // Full timestamp
-    var fullTime = new Date(log.time).toLocaleString('en-US', { hour12: false, year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 });
-    html += '<div class="log-detail-row"><span class="log-detail-key">Time</span><span class="log-detail-val">' + escapeH(fullTime) + '</span></div>';
-
-    if (log.group_folder) {
-      html += '<div class="log-detail-row"><span class="log-detail-key">Group</span><span class="log-detail-val">' + escapeH(log.group_folder) + '</span></div>';
-    }
-    if (log.module) {
-      html += '<div class="log-detail-row"><span class="log-detail-key">Module</span><span class="log-detail-val">' + escapeH(log.module) + '</span></div>';
-    }
-
-    // Extra context fields
-    var extraKeys = Object.keys(extra);
-    if (extraKeys.length > 0) {
-      extraKeys.forEach(function(key) {
-        var val = extra[key];
-        var display;
-        if (val === null || val === undefined) {
-          display = '<span class="log-detail-val muted">null</span>';
-        } else if (typeof val === 'object') {
-          display = '<span class="log-detail-val mono">' + escapeH(JSON.stringify(val, null, 2)) + '</span>';
-        } else {
-          display = '<span class="log-detail-val">' + escapeH(String(val)) + '</span>';
-        }
-        html += '<div class="log-detail-row"><span class="log-detail-key">' + escapeH(key) + '</span>' + display + '</div>';
-      });
-    }
-
-    // Raw JSON toggle
-    if (log.raw) {
-      html += '<button class="log-detail-toggle" onclick="var r=this.nextElementSibling;r.style.display=r.style.display===\\'none\\'?\\'block\\':\\'none\\';this.textContent=r.style.display===\\'none\\'?\\'Show raw JSON\\':\\'Hide raw JSON\\'">Show raw JSON</button>';
-      var prettyRaw = log.raw;
-      try { prettyRaw = JSON.stringify(JSON.parse(log.raw), null, 2); } catch(e) {}
-      html += '<div class="log-detail-raw" style="display:none">' + escapeH(prettyRaw) + '</div>';
-    } else if (extraKeys.length === 0) {
-      html += '<div style="color:var(--muted);font-style:italic">No additional context</div>';
-    }
-
-    container.innerHTML = html;
-  }
-
-  function escapeH(s) {
-    var d = document.createElement('div');
-    d.textContent = s;
-    return d.innerHTML;
-  }
-
-  // ── Auto-scroll detection ────────────────────────────────────
-  logContainer.addEventListener('scroll', function() {
-    var atBottom = logContainer.scrollHeight - logContainer.scrollTop - logContainer.clientHeight < 60;
-    autoScroll = atBottom;
-    scrollBtn.className = atBottom ? 'scroll-btn' : 'scroll-btn show';
-  });
-
-  scrollBtn.addEventListener('click', function() {
-    autoScroll = true;
-    logContainer.scrollTop = logContainer.scrollHeight;
-    scrollBtn.className = 'scroll-btn';
-  });
-
-  // ── Tabs ─────────────────────────────────────────────────────
-  tabsBar.addEventListener('click', function(e) {
-    var tab = e.target.closest('.tab');
-    if (!tab) return;
-    var name = tab.dataset.tab;
-    if (name === currentTab) return;
-
-    document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
-    document.querySelectorAll('.pane').forEach(function(p) { p.classList.remove('active'); });
-    tab.classList.add('active');
-    $('pane-' + name).classList.add('active');
-    logFilters.style.display = name === 'logs' ? '' : 'none';
-    currentTab = name;
-
-    if (name === 'containers') loadContainers();
-    if (name === 'tasks') loadTasks();
-    if (name === 'files') initFiles();
-  });
-
-  // ── Filters ──────────────────────────────────────────────────
-  $('filterToggle').addEventListener('click', function() {
-    $('filterAdvanced').classList.toggle('show');
-    this.textContent = $('filterAdvanced').classList.contains('show') ? 'Less' : 'More';
-  });
-
-  function getFilterParams() {
-    var params = new URLSearchParams();
-    var level = $('filterLevel').value;
-    var search = $('filterSearch').value;
-    var group = $('filterGroup').value;
-    if (level) params.set('level', level);
-    if (search) params.set('search', search);
-    if (group) params.set('group', group);
-    params.set('limit', '200');
-    return params;
-  }
-
-  function applyFilters() {
-    var level = $('filterLevel').value;
-    var search = $('filterSearch').value;
-    var group = $('filterGroup').value;
-
-    if (!level && !search && !group) { isSearchMode = false; return; }
-    isSearchMode = true;
-    logContainer.innerHTML = '<div class="loading">Searching...</div>';
-
-    fetch('/api/logs?' + getFilterParams().toString(), { headers: authHeaders() })
-      .then(function(r) { return r.json(); })
-      .then(function(logs) {
-        logContainer.innerHTML = '';
-        if (logs.length === 0) { logContainer.innerHTML = '<div class="empty">No matching logs found</div>'; return; }
-        logs.reverse().forEach(function(log) { appendLogEntry(log); });
-      })
-      .catch(function() { logContainer.innerHTML = '<div class="empty">Search failed</div>'; });
-  }
-
-  $('filterLevel').addEventListener('change', applyFilters);
-  $('filterGroup').addEventListener('change', applyFilters);
-  $('filterSearch').addEventListener('input', function() {
-    clearTimeout(searchTimeout);
-    searchTimeout = setTimeout(applyFilters, 300);
-  });
-
-  // ── Containers Tab ───────────────────────────────────────────
-  function loadContainers() {
-    var list = $('containerList');
-    list.innerHTML = '<div class="loading">Loading...</div>';
-    fetch('/api/containers?limit=50', { headers: authHeaders() })
-      .then(function(r) { return r.json(); })
-      .then(function(containers) {
-        list.innerHTML = '';
-        if (containers.length === 0) { list.innerHTML = '<div class="empty">No container runs found</div>'; return; }
-        containers.forEach(function(c) {
-          var statusClass = c.status === 'error' || (c.exit_code && c.exit_code !== 0) ? 'badge-error' : 'badge-ok';
-          var statusText = c.status || (c.exit_code === 0 ? 'ok' : c.exit_code !== null ? 'exit ' + c.exit_code : 'unknown');
-          var dur = c.duration_ms ? (c.duration_ms / 1000).toFixed(1) + 's' : '\\u2014';
-          var time = c.timestamp ? timeAgo(c.timestamp) : '\\u2014';
-          var size = c.file_size ? formatBytes(c.file_size) : '';
-          var exitInfo = c.exit_code !== null && c.exit_code !== undefined ? 'Exit: ' + c.exit_code + ' \\u00B7 ' : '';
-          var card = document.createElement('div');
-          card.className = 'card';
-          card.innerHTML =
-            '<div class="card-header"><span class="card-title">' + escapeH(c.group_folder) + '</span><span class="badge ' + statusClass + '">' + escapeH(statusText) + '</span></div>' +
-            '<div class="card-meta">' + (c.mode ? escapeH(c.mode) + ' \\u00B7 ' : '') + exitInfo + 'Duration: ' + dur + ' \\u00B7 ' + time + (size ? ' \\u00B7 ' + size : '') + '</div>';
-          card.addEventListener('click', function() {
-            openContainerLog(c);
-          });
-          list.appendChild(card);
-        });
-      })
-      .catch(function() { list.innerHTML = '<div class="empty">Failed to load containers</div>'; });
-  }
-
-  function openContainerLog(c) {
-    var existing = document.querySelector('.container-log-modal');
-    if (existing) existing.remove();
-
-    var modal = document.createElement('div');
-    modal.className = 'container-log-modal';
-
-    var statusClass = c.status === 'error' || (c.exit_code && c.exit_code !== 0) ? 'badge-error' : 'badge-ok';
-    var statusText = c.status || (c.exit_code === 0 ? 'ok' : 'unknown');
-    var dur = c.duration_ms ? (c.duration_ms / 1000).toFixed(1) + 's' : '\\u2014';
-    var time = c.timestamp ? new Date(c.timestamp).toLocaleString('en-US', { hour12: false }) : '\\u2014';
-
-    var metaHtml = '';
-    metaHtml += '<span class="cl-meta-item"><span class="cl-meta-label">Status:</span> <span class="badge ' + statusClass + '">' + escapeH(statusText) + '</span></span>';
-    if (c.exit_code !== null && c.exit_code !== undefined) metaHtml += '<span class="cl-meta-item"><span class="cl-meta-label">Exit:</span> ' + c.exit_code + '</span>';
-    if (c.mode) metaHtml += '<span class="cl-meta-item"><span class="cl-meta-label">Mode:</span> ' + escapeH(c.mode) + '</span>';
-    metaHtml += '<span class="cl-meta-item"><span class="cl-meta-label">Duration:</span> ' + dur + '</span>';
-    metaHtml += '<span class="cl-meta-item"><span class="cl-meta-label">Time:</span> ' + time + '</span>';
-    if (c.file_size) metaHtml += '<span class="cl-meta-item"><span class="cl-meta-label">Size:</span> ' + formatBytes(c.file_size) + '</span>';
-
-    modal.innerHTML =
-      '<div class="container-log-header">' +
-        '<span class="cl-title">' + escapeH(c.group_folder) + ' / ' + escapeH(c.filename) + '</span>' +
-        '<button class="cl-close" id="clClose">Close</button>' +
-      '</div>' +
-      '<div class="container-log-meta">' + metaHtml + '</div>' +
-      '<div class="container-log-content" id="clContent"><span style="color:var(--muted)">Loading log...</span></div>';
-
-    document.body.appendChild(modal);
-
-    $('clClose').addEventListener('click', function() { modal.remove(); });
-    modal.addEventListener('click', function(e) { if (e.target === modal) modal.remove(); });
-
-    // Fetch the actual log file content
-    var logUrl = '/api/containers/' + encodeURIComponent(c.group_folder) + '/' + encodeURIComponent(c.filename);
-    if (authToken && authToken !== 'dev') logUrl += '?token=' + encodeURIComponent(authToken);
-    fetch(logUrl, { headers: authHeaders() })
-      .then(function(r) {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.text();
-      })
-      .then(function(text) {
-        $('clContent').textContent = text || '(empty log)';
-      })
-      .catch(function(err) {
-        $('clContent').innerHTML = '<span style="color:var(--danger)">Failed to load log: ' + escapeH(err.message) + '</span>';
-      });
-  }
-
-  // ── Tasks Tab ────────────────────────────────────────────────
-  function loadTasks() {
-    var list = $('taskList');
-    list.innerHTML = '<div class="loading">Loading...</div>';
-    fetch('/api/tasks', { headers: authHeaders() })
-      .then(function(r) { return r.json(); })
-      .then(function(tasks) {
-        list.innerHTML = '';
-        if (tasks.length === 0) { list.innerHTML = '<div class="empty">No scheduled tasks</div>'; return; }
-        tasks.forEach(function(t) {
-          var statusClass = t.status === 'active' ? 'badge-active' : t.status === 'paused' ? 'badge-paused' : 'badge-ok';
-          var nextRun = t.next_run ? timeAgo(t.next_run) : '\\u2014';
-          var runsHtml = '';
-          if (t.recent_runs && t.recent_runs.length > 0) {
-            runsHtml = '<div class="run-list">';
-            t.recent_runs.forEach(function(r) {
-              var rStatus = r.status === 'error' ? 'badge-error' : 'badge-ok';
-              var dur = (r.duration_ms / 1000).toFixed(1) + 's';
-              var time = timeAgo(r.run_at);
-              runsHtml += '<div class="run-item"><span class="badge ' + rStatus + '">' + escapeH(r.status) + '</span><span>' + dur + '</span><span>' + time + '</span>' + (r.error ? '<span style="color:var(--danger);font-size:11px">' + escapeH(r.error.slice(0,60)) + '</span>' : '') + '</div>';
-            });
-            runsHtml += '</div>';
-          }
-          var card = document.createElement('div');
-          card.className = 'card';
-          card.innerHTML =
-            '<div class="card-header"><span class="card-title">' + escapeH(truncate(t.prompt, 60)) + '</span><span class="badge ' + statusClass + '">' + escapeH(t.status) + '</span></div>' +
-            '<div class="card-meta">' + escapeH(t.schedule_type) + ': ' + escapeH(t.schedule_value) + ' \\u00B7 Group: ' + escapeH(t.group_folder) + ' \\u00B7 Next: ' + nextRun + '</div>' +
-            runsHtml;
-          list.appendChild(card);
-        });
-      })
-      .catch(function() { list.innerHTML = '<div class="empty">Failed to load tasks</div>'; });
-  }
-
-  // ── Files Tab ────────────────────────────────────────────────
-  var filesSource = 'agent';
-  var filesGroup = 'main';
-  var filesPath = '.';
-  var cuaPath = '/root';
-  var cuaRunning = false;
-  var filesClipboard = null; // { source, path, name }
-  var filesInited = false;
-  var filesSearchVisible = false;
-  var filesSearchTimer = null;
-
-  var FILE_ICONS = {
-    directory: '\\uD83D\\uDCC1', image: '\\uD83D\\uDDBC', video: '\\uD83C\\uDFA5',
-    audio: '\\uD83C\\uDFB5', pdf: '\\uD83D\\uDCC4', archive: '\\uD83D\\uDCE6',
-    code: '\\uD83D\\uDCBB', text: '\\uD83D\\uDCC3', markdown: '\\uD83D\\uDCDD',
-    default: '\\uD83D\\uDCC4'
-  };
-
-  function getFileIcon(name, type) {
-    if (type === 'directory') return FILE_ICONS.directory;
-    var ext = (name.split('.').pop() || '').toLowerCase();
-    if (['png','jpg','jpeg','gif','webp','svg','bmp'].indexOf(ext) >= 0) return FILE_ICONS.image;
-    if (['mp4','mov','avi','webm','mkv'].indexOf(ext) >= 0) return FILE_ICONS.video;
-    if (['mp3','ogg','wav','flac','m4a'].indexOf(ext) >= 0) return FILE_ICONS.audio;
-    if (ext === 'pdf') return FILE_ICONS.pdf;
-    if (['zip','tar','gz','7z','rar','bz2','tgz'].indexOf(ext) >= 0) return FILE_ICONS.archive;
-    if (['ts','js','py','rs','go','java','c','cpp','h','sh','rb','swift','jsx','tsx'].indexOf(ext) >= 0) return FILE_ICONS.code;
-    if (['md','markdown'].indexOf(ext) >= 0) return FILE_ICONS.markdown;
-    if (['txt','log','csv','json','yaml','yml','xml','html','css','ini','conf','toml','env'].indexOf(ext) >= 0) return FILE_ICONS.text;
-    return FILE_ICONS.default;
-  }
-
-  function showToast(msg) {
-    var existing = document.querySelector('.toast');
-    if (existing) existing.remove();
-    var t = document.createElement('div');
-    t.className = 'toast';
-    t.textContent = msg;
-    document.body.appendChild(t);
-    setTimeout(function() { t.remove(); }, 2500);
-  }
-
-  function initFiles() {
-    if (!filesInited) {
-      filesInited = true;
-      loadFileGroups();
-      checkCuaStatus();
-    }
-    loadFiles();
-  }
-
-  function loadFileGroups() {
-    fetch('/api/files/groups', { headers: authHeaders() })
-      .then(function(r) { return r.json(); })
-      .then(function(groups) {
-        var sel = $('filesGroup');
-        sel.innerHTML = '';
-        groups.forEach(function(g) {
-          var opt = document.createElement('option');
-          opt.value = g.name;
-          opt.textContent = g.name;
-          if (g.name === filesGroup) opt.selected = true;
-          sel.appendChild(opt);
-        });
-      })
-      .catch(function() {});
-  }
-
-  function checkCuaStatus() {
-    fetch('/api/files/cua/status', { headers: authHeaders() })
-      .then(function(r) { return r.json(); })
-      .then(function(d) {
-        cuaRunning = d.running;
-        $('cuaDot').className = 'sdot ' + (cuaRunning ? 'on' : 'off');
-      })
-      .catch(function() {});
-  }
-
-  function loadFiles() {
-    if (filesSource === 'agent') {
-      loadAgentFiles();
-    } else {
-      if (!cuaRunning) {
-        renderCuaOffline();
-      } else {
-        loadCuaFiles();
-      }
-    }
-    renderBreadcrumb();
-    $('filesGroupBar').style.display = filesSource === 'agent' ? '' : 'none';
-  }
-
-  function loadAgentFiles() {
-    var list = $('fileList');
-    list.innerHTML = '<div class="loading">Loading...</div>';
-    var url = '/api/files/agent/list?group=' + encodeURIComponent(filesGroup) + '&path=' + encodeURIComponent(filesPath);
-    fetch(url, { headers: authHeaders() })
-      .then(function(r) { return r.json(); })
-      .then(function(files) { renderFileList(files, 'agent'); })
-      .catch(function() { list.innerHTML = '<div class="empty">Failed to load files</div>'; });
-  }
-
-  function loadCuaFiles() {
-    var list = $('fileList');
-    list.innerHTML = '<div class="loading">Loading...</div>';
-    var url = '/api/files/cua/list?path=' + encodeURIComponent(cuaPath);
-    fetch(url, { headers: authHeaders() })
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        if (data.error) { list.innerHTML = '<div class="empty">' + escapeH(data.error) + '</div>'; return; }
-        renderFileList(data, 'cua');
-      })
-      .catch(function() { list.innerHTML = '<div class="empty">Failed to load CUA files</div>'; });
-  }
-
-  function renderCuaOffline() {
-    var list = $('fileList');
-    list.innerHTML = '<div class="cua-offline"><p>CUA Sandbox is not running</p><button class="cua-start-btn" id="cuaStartBtn">Start Sandbox</button></div>';
-    $('cuaStartBtn').addEventListener('click', function() {
-      this.textContent = 'Starting...';
-      this.disabled = true;
-      fetch('/api/files/cua/start', { method: 'POST', headers: authHeaders() })
-        .then(function(r) { return r.json(); })
-        .then(function(d) {
-          if (d.ok) { cuaRunning = true; $('cuaDot').className = 'sdot on'; loadCuaFiles(); showToast('Sandbox started'); }
-          else { showToast('Failed: ' + (d.error || 'unknown')); }
-        })
-        .catch(function() { showToast('Failed to start sandbox'); })
-        .finally(function() { var btn = $('cuaStartBtn'); if(btn) { btn.textContent = 'Start Sandbox'; btn.disabled = false; } });
-    });
-  }
-
-  var PROTECTED = ['CLAUDE.md', 'SOUL.md'];
-
-  function renderFileList(files, source) {
-    var list = $('fileList');
-    list.innerHTML = '';
-    if (!files || files.length === 0) {
-      list.innerHTML = '<div class="empty">Empty directory</div>';
-      return;
-    }
-    files.forEach(function(f) {
-      var item = document.createElement('div');
-      item.className = 'file-item';
-      var icon = getFileIcon(f.name, f.type);
-      var isProtected = PROTECTED.indexOf(f.name) >= 0;
-      var size = f.type === 'file' ? formatBytes(f.size) : '';
-      var mod = f.modified ? timeAgo(f.modified) : '';
-      var meta = [size, mod].filter(Boolean).join(' \\u00B7 ');
-
-      var actionsHtml = '<div class="file-actions">';
-      if (f.type === 'file') {
-        actionsHtml += '<button class="fa-btn" data-action="download" title="Download">\\u2B07</button>';
-        actionsHtml += '<button class="fa-btn" data-action="transfer" title="Transfer">\\u21C4</button>';
-      }
-      if (!isProtected) {
-        actionsHtml += '<button class="fa-btn danger" data-action="delete" title="Delete">\\u2715</button>';
-      }
-      actionsHtml += '</div>';
-
-      item.innerHTML =
-        '<span class="file-icon">' + icon + '</span>' +
-        '<div class="file-info"><div class="file-name">' + escapeH(f.name) + (isProtected ? '<span class="protected-badge">\\uD83D\\uDD12</span>' : '') + '</div>' +
-        '<div class="file-meta">' + meta + (f.permissions ? ' \\u00B7 ' + f.permissions : '') + '</div></div>' +
-        actionsHtml;
-
-      item.dataset.name = f.name;
-      item.dataset.type = f.type;
-      item.dataset.path = f.path;
-      item.dataset.source = source;
-
-      // Click directory to navigate
-      item.addEventListener('click', function(e) {
-        if (e.target.closest('.fa-btn')) return;
-        if (f.type === 'directory') {
-          if (source === 'agent') { filesPath = f.path; }
-          else { cuaPath = f.path; }
-          loadFiles();
-        } else {
-          openPreview(f, source);
-        }
-      });
-
-      // Action buttons
-      item.querySelectorAll('.fa-btn').forEach(function(btn) {
-        btn.addEventListener('click', function(e) {
-          e.stopPropagation();
-          var action = btn.dataset.action;
-          if (action === 'download') downloadFile(f, source);
-          else if (action === 'transfer') startTransfer(f, source);
-          else if (action === 'delete') deleteFile(f, source);
-        });
-      });
-
-      list.appendChild(item);
-    });
-  }
-
-  function renderBreadcrumb() {
-    var bc = $('filesBreadcrumb');
-    bc.innerHTML = '';
-    if (filesSource === 'agent') {
-      var parts = filesPath === '.' ? [] : filesPath.split('/').filter(Boolean);
-      var rootSeg = document.createElement('span');
-      rootSeg.className = 'bc-seg';
-      rootSeg.textContent = filesGroup;
-      rootSeg.addEventListener('click', function() { filesPath = '.'; loadFiles(); });
-      bc.appendChild(rootSeg);
-      var accumulated = '';
-      parts.forEach(function(p, i) {
-        var sep = document.createElement('span');
-        sep.className = 'bc-sep';
-        sep.textContent = '/';
-        bc.appendChild(sep);
-        accumulated += (accumulated ? '/' : '') + p;
-        var seg = document.createElement('span');
-        if (i === parts.length - 1) {
-          seg.className = 'bc-current';
-          seg.textContent = p;
-        } else {
-          seg.className = 'bc-seg';
-          seg.textContent = p;
-          var target = accumulated;
-          seg.addEventListener('click', function() { filesPath = target; loadFiles(); });
-        }
-        bc.appendChild(seg);
-      });
-    } else {
-      var cParts = cuaPath.split('/').filter(Boolean);
-      var cRoot = document.createElement('span');
-      cRoot.className = 'bc-seg';
-      cRoot.textContent = '/';
-      cRoot.addEventListener('click', function() { cuaPath = '/'; loadFiles(); });
-      bc.appendChild(cRoot);
-      var cAcc = '';
-      cParts.forEach(function(p, i) {
-        var sep = document.createElement('span');
-        sep.className = 'bc-sep';
-        sep.textContent = '/';
-        bc.appendChild(sep);
-        cAcc += '/' + p;
-        var seg = document.createElement('span');
-        if (i === cParts.length - 1) {
-          seg.className = 'bc-current';
-          seg.textContent = p;
-        } else {
-          seg.className = 'bc-seg';
-          seg.textContent = p;
-          var target = cAcc;
-          seg.addEventListener('click', function() { cuaPath = target; loadFiles(); });
-        }
-        bc.appendChild(seg);
-      });
-    }
-  }
-
-  function downloadFile(f, source) {
-    var url;
-    if (source === 'agent') {
-      url = '/api/files/agent/download?group=' + encodeURIComponent(filesGroup) + '&path=' + encodeURIComponent(f.path);
-    } else {
-      url = '/api/files/cua/download?path=' + encodeURIComponent(f.path);
-    }
-    // Use token in URL for direct download
-    if (authToken && authToken !== 'dev') url += '&token=' + encodeURIComponent(authToken);
-    var a = document.createElement('a');
-    a.href = url;
-    a.download = f.name;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-  }
-
-  function startTransfer(f, source) {
-    filesClipboard = { source: source, path: f.path, name: f.name, group: filesGroup };
-    var targetLabel = source === 'agent' ? 'CUA' : 'Agent';
-    $('transferInfo').textContent = f.name + ' \\u2192 ' + targetLabel;
-    $('transferBar').style.display = '';
-    showToast('Switch to ' + targetLabel + ' and navigate to destination');
-  }
-
-  $('transferGo').addEventListener('click', function() {
-    if (!filesClipboard) return;
-    var clip = filesClipboard;
-    var direction, destPath;
-    if (clip.source === 'agent' && filesSource === 'cua') {
-      direction = 'agent-to-cua';
-      destPath = cuaPath;
-    } else if (clip.source === 'cua' && filesSource === 'agent') {
-      direction = 'cua-to-agent';
-      destPath = filesPath === '.' ? 'media' : filesPath;
-    } else {
-      showToast('Switch to the other source first');
-      return;
-    }
-    $('transferGo').textContent = 'Transferring...';
-    $('transferGo').disabled = true;
-
-    fetch('/api/files/transfer', {
-      method: 'POST',
-      headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
-      body: JSON.stringify({ direction: direction, sourcePath: clip.path, destPath: destPath, group: clip.source === 'agent' ? clip.group : filesGroup })
-    })
-      .then(function(r) { return r.json(); })
-      .then(function(d) {
-        if (d.ok) { showToast('Transferred ' + d.name + ' (' + formatBytes(d.size) + ')'); loadFiles(); }
-        else { showToast('Error: ' + (d.error || 'unknown')); }
-      })
-      .catch(function() { showToast('Transfer failed'); })
-      .finally(function() {
-        filesClipboard = null;
-        $('transferBar').style.display = 'none';
-        $('transferGo').textContent = 'Transfer Here';
-        $('transferGo').disabled = false;
-      });
-  });
-
-  $('transferCancel').addEventListener('click', function() {
-    filesClipboard = null;
-    $('transferBar').style.display = 'none';
-  });
-
-  function deleteFile(f, source) {
-    if (!confirm('Delete ' + f.name + '?')) return;
-    var url, opts;
-    if (source === 'agent') {
-      url = '/api/files/agent/delete';
-      opts = { method: 'DELETE', headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()), body: JSON.stringify({ group: filesGroup, path: f.path }) };
-    } else {
-      url = '/api/files/cua/delete';
-      opts = { method: 'DELETE', headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()), body: JSON.stringify({ path: f.path }) };
-    }
-    fetch(url, opts)
-      .then(function(r) { return r.json(); })
-      .then(function(d) {
-        if (d.ok) { showToast('Deleted ' + f.name); loadFiles(); }
-        else { showToast('Error: ' + (d.error || 'unknown')); }
-      })
-      .catch(function() { showToast('Delete failed'); });
-  }
-
-  function openPreview(f, source) {
-    if (source === 'agent') {
-      var url = '/api/files/agent/info?group=' + encodeURIComponent(filesGroup) + '&path=' + encodeURIComponent(f.path);
-      fetch(url, { headers: authHeaders() })
-        .then(function(r) { return r.json(); })
-        .then(function(info) { showPreviewModal(info, f, source); })
-        .catch(function() { showToast('Failed to load preview'); });
-    } else {
-      // For CUA files, show basic info
-      showPreviewModal({ name: f.name, size: f.size, modified: f.modified, isPreviewable: false, mimeType: '' }, f, source);
-    }
-  }
-
-  function showPreviewModal(info, f, source) {
-    var existing = document.querySelector('.file-preview-modal');
-    if (existing) existing.remove();
-
-    var modal = document.createElement('div');
-    modal.className = 'file-preview-modal';
-
-    var contentHtml = '';
-    if (info.isPreviewable && info.preview) {
-      if (typeof info.preview === 'string' && info.preview.startsWith('data:image')) {
-        contentHtml = '<img src="' + info.preview + '" alt="' + escapeH(info.name) + '">';
-      } else {
-        contentHtml = '<pre>' + escapeH(info.preview) + '</pre>';
-      }
-    } else {
-      contentHtml = '<div class="pv-info"><p style="font-size:40px;margin-bottom:12px">' + getFileIcon(f.name, 'file') + '</p>' +
-        '<p><strong>' + escapeH(info.name) + '</strong></p>' +
-        '<p style="margin-top:8px">' + formatBytes(info.size || 0) + (info.modified ? ' \\u00B7 ' + timeAgo(info.modified) : '') + '</p>' +
-        (info.mimeType ? '<p style="margin-top:4px;font-size:12px">' + escapeH(info.mimeType) + '</p>' : '') +
-        '</div>';
-    }
-
-    modal.innerHTML =
-      '<div class="preview-header">' +
-        '<span class="pv-name">' + escapeH(info.name) + '</span>' +
-        '<div class="pv-actions">' +
-          '<button class="pv-btn pv-btn-dl" id="pvDownload">Download</button>' +
-          '<button class="pv-btn pv-btn-close" id="pvClose">Close</button>' +
-        '</div>' +
-      '</div>' +
-      '<div class="preview-content">' + contentHtml + '</div>';
-
-    document.body.appendChild(modal);
-
-    $('pvClose').addEventListener('click', function() { modal.remove(); });
-    $('pvDownload').addEventListener('click', function() { downloadFile(f, source); });
-    modal.addEventListener('click', function(e) { if (e.target === modal) modal.remove(); });
-  }
-
-  // Source toggle
-  $('srcAgent').addEventListener('click', function() {
-    if (filesSource === 'agent') return;
-    filesSource = 'agent';
-    $('srcAgent').classList.add('active');
-    $('srcCua').classList.remove('active');
-    loadFiles();
-  });
-  $('srcCua').addEventListener('click', function() {
-    if (filesSource === 'cua') return;
-    filesSource = 'cua';
-    checkCuaStatus();
-    $('srcCua').classList.add('active');
-    $('srcAgent').classList.remove('active');
-    loadFiles();
-  });
-
-  // Group selector
-  $('filesGroup').addEventListener('change', function() {
-    filesGroup = this.value;
-    filesPath = '.';
-    loadFiles();
-  });
-
-  // Upload
-  $('filesUploadBtn').addEventListener('click', function() { $('fileInput').click(); });
-  $('fileInput').addEventListener('change', function() {
-    var files = this.files;
-    if (!files || files.length === 0) return;
-    var formData = new FormData();
-    if (filesSource === 'agent') {
-      formData.append('group', filesGroup);
-      formData.append('path', filesPath);
-    } else {
-      formData.append('path', cuaPath);
-    }
-    // Upload first file (multi-file: loop)
-    for (var i = 0; i < files.length; i++) {
-      var fd = new FormData();
-      if (filesSource === 'agent') { fd.append('group', filesGroup); fd.append('path', filesPath); }
-      else { fd.append('path', cuaPath); }
-      fd.append('file', files[i]);
-      var url = filesSource === 'agent' ? '/api/files/agent/upload' : '/api/files/cua/upload';
-      fetch(url, { method: 'POST', headers: authHeaders(), body: fd })
-        .then(function(r) { return r.json(); })
-        .then(function(d) {
-          if (d.ok) showToast('Uploaded ' + d.name);
-          else showToast('Error: ' + (d.error || 'unknown'));
-          loadFiles();
-        })
-        .catch(function() { showToast('Upload failed'); });
-    }
-    this.value = '';
-  });
-
-  // Mkdir
-  $('filesMkdirBtn').addEventListener('click', function() {
-    var name = prompt('New folder name:');
-    if (!name || !name.trim()) return;
-    name = name.trim();
-    if (filesSource === 'agent') {
-      var newPath = (filesPath === '.' ? '' : filesPath + '/') + name;
-      fetch('/api/files/agent/mkdir', {
-        method: 'POST',
-        headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
-        body: JSON.stringify({ group: filesGroup, path: newPath })
-      })
-        .then(function(r) { return r.json(); })
-        .then(function(d) { if (d.ok) { showToast('Created ' + name); loadFiles(); } else showToast(d.error || 'failed'); })
-        .catch(function() { showToast('Failed'); });
-    } else {
-      var cNewPath = (cuaPath.endsWith('/') ? cuaPath : cuaPath + '/') + name;
-      fetch('/api/files/cua/mkdir', {
-        method: 'POST',
-        headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
-        body: JSON.stringify({ path: cNewPath })
-      })
-        .then(function(r) { return r.json(); })
-        .then(function(d) { if (d.ok) { showToast('Created ' + name); loadFiles(); } else showToast(d.error || 'failed'); })
-        .catch(function() { showToast('Failed'); });
-    }
-  });
-
-  // Search toggle
-  $('filesSearchToggle').addEventListener('click', function() {
-    filesSearchVisible = !filesSearchVisible;
-    $('filesSearchBar').style.display = filesSearchVisible ? '' : 'none';
-    if (filesSearchVisible) $('filesSearchInput').focus();
-    else { $('filesSearchInput').value = ''; loadFiles(); }
-  });
-
-  $('filesSearchInput').addEventListener('input', function() {
-    clearTimeout(filesSearchTimer);
-    var q = this.value.trim();
-    if (!q) { loadFiles(); return; }
-    filesSearchTimer = setTimeout(function() {
-      var list = $('fileList');
-      list.innerHTML = '<div class="loading">Searching...</div>';
-      var url;
-      if (filesSource === 'agent') {
-        url = '/api/files/agent/search?group=' + encodeURIComponent(filesGroup) + '&q=' + encodeURIComponent(q);
-      } else {
-        url = '/api/files/cua/search?path=' + encodeURIComponent(cuaPath) + '&q=' + encodeURIComponent(q);
-      }
-      fetch(url, { headers: authHeaders() })
-        .then(function(r) { return r.json(); })
-        .then(function(results) {
-          if (results.error) { list.innerHTML = '<div class="empty">' + escapeH(results.error) + '</div>'; return; }
-          renderFileList(results, filesSource);
-        })
-        .catch(function() { list.innerHTML = '<div class="empty">Search failed</div>'; });
-    }, 300);
-  });
-
-  // ── Helpers ──────────────────────────────────────────────────
-  function timeAgo(iso) {
-    var ms = Date.now() - new Date(iso).getTime();
-    if (ms < 0) return 'in ' + formatDuration(-ms);
-    return formatDuration(ms) + ' ago';
-  }
-
-  function formatDuration(ms) {
-    if (ms < 60000) return Math.round(ms / 1000) + 's';
-    if (ms < 3600000) return Math.round(ms / 60000) + 'm';
-    if (ms < 86400000) return Math.round(ms / 3600000) + 'h';
-    return Math.round(ms / 86400000) + 'd';
-  }
-
-  function formatBytes(b) {
-    if (b < 1024) return b + 'B';
-    if (b < 1048576) return (b / 1024).toFixed(1) + 'KB';
-    return (b / 1048576).toFixed(1) + 'MB';
-  }
-
-  function truncate(s, n) {
-    return s.length > n ? s.slice(0, n) + '...' : s;
-  }
-
-  // ── Populate group filter ────────────────────────────────────
-  function loadGroups() {
-    fetch('/api/containers?limit=100', { headers: authHeaders() })
-      .then(function(r) { return r.json(); })
-      .then(function(containers) {
-        var groups = new Set();
-        containers.forEach(function(c) { if (c.group_folder) groups.add(c.group_folder); });
-        var sel = $('filterGroup');
-        groups.forEach(function(g) {
-          var opt = document.createElement('option');
-          opt.value = g;
-          opt.textContent = g;
-          sel.appendChild(opt);
-        });
-      })
-      .catch(function() {});
-  }
-
-  // ── Init ─────────────────────────────────────────────────────
-  async function init() {
-    var ok = await authenticate();
-    if (!ok) {
-      document.querySelectorAll('.header,.tabs,.filters,.pane,.scroll-btn').forEach(function(el) { el.style.display = 'none'; });
-      authScreen.style.display = '';
-      return;
-    }
-
-    connectSSE();
-    loadGroups();
-  }
-
-  init();
-})();
-<\/script>
+  <div id="app"></div>
+  <script type="module" src="/assets/dashboard.js"><\/script>
 </body>
 </html>`;
 }
 
 // ── Request router ──────────────────────────────────────────────────────
 
-function handleRequest(req: Request): Response | Promise<Response> {
+function handleRequest(req: Request, server: import('bun').Server<NoVncWsData>): Response | Promise<Response> | undefined {
   const url = new URL(req.url);
   const { pathname } = url;
+
+  // Static assets (no auth needed)
+  if (pathname.startsWith('/assets/')) {
+    const asset = serveStaticAsset(pathname);
+    if (asset) return asset;
+  }
 
   // Health check (no auth)
   if (pathname === '/healthz') {
     return jsonResponse({ ok: true, service: 'dashboard', authRequired: true });
+  }
+
+  // noVNC WebSocket proxy (no auth — within authenticated iframe)
+  if (pathname === '/novnc/websockify' || pathname === '/websockify') {
+    const upgraded = server.upgrade(req, { data: makeNoVncWsData() });
+    return upgraded ? undefined : new Response('WebSocket upgrade failed', { status: 500 });
+  }
+
+  // noVNC HTTP proxy (no auth — within authenticated iframe)
+  if (req.method === 'GET' && pathname.startsWith('/novnc/')) {
+    return proxyNoVncHttp(pathname);
   }
 
   // HTML page (no auth — JS handles it)
@@ -2609,6 +1152,19 @@ function handleRequest(req: Request): Response | Promise<Response> {
     if (pathname === '/api/files/cua/delete') return handleCuaFileDelete(req);
   }
 
+  // Takeover API
+  if (pathname === '/api/cua/takeover/list') return handleTakeoverList();
+
+  if (req.method === 'POST') {
+    const continueToken = extractContinueToken(pathname);
+    if (continueToken) return handleTakeoverContinue(continueToken);
+  }
+
+  if (req.method === 'GET') {
+    const takeoverToken = extractTakeoverToken(pathname);
+    if (takeoverToken) return handleTakeoverStatus(takeoverToken);
+  }
+
   return new Response('Not Found', { status: 404 });
 }
 
@@ -2650,6 +1206,7 @@ export function startDashboardServer(): void {
     port: DASHBOARD_PORT,
     ...tlsOptions,
     fetch: handleRequest,
+    websocket: createNoVncWebSocketHandler(),
   });
 
   sessionCleanupInterval = setInterval(cleanExpiredSessions, 60 * 60 * 1000);
