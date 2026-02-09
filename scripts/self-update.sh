@@ -52,8 +52,13 @@ trap 'on_error "$LINENO"' ERR
 
 SELF_SCRIPT="${BASH_SOURCE[0]}"
 REEXECED="${_SELF_UPDATE_REEXECED:-0}"
+REBUILD_ONLY="${SELF_UPDATE_REBUILD_ONLY:-0}"
 
-log_step "triggered for ${REMOTE}/${BRANCH}"
+if [[ "$REBUILD_ONLY" == "1" ]]; then
+  log_step "rebuild-only mode (no git pull)"
+else
+  log_step "triggered for ${REMOTE}/${BRANCH}"
+fi
 
 if command -v bun >/dev/null 2>&1; then
   BUN_PATH="$(command -v bun)"
@@ -69,44 +74,47 @@ if [[ ! -d .git ]]; then
   fail "not a git repository: $ROOT_DIR"
 fi
 
-# If we were re-execed after a git pull, skip straight to install/build/restart
-if [[ "$REEXECED" != "1" ]]; then
-  DIRTY="$(git diff --stat)"
-  if [[ -n "$DIRTY" ]]; then
-    log_step "found local uncommitted changes; resetting to HEAD before update"
-    echo "$DIRTY"
+# In rebuild-only mode, skip all git operations
+if [[ "$REBUILD_ONLY" != "1" ]]; then
+  # If we were re-execed after a git pull, skip straight to install/build/restart
+  if [[ "$REEXECED" != "1" ]]; then
+    DIRTY="$(git diff --stat)"
+    if [[ -n "$DIRTY" ]]; then
+      log_step "found local uncommitted changes; resetting to HEAD before update"
+      echo "$DIRTY"
+    fi
+    git reset --hard HEAD
+
+    log_step "fetching ${REMOTE}/${BRANCH}"
+    git fetch --quiet "$REMOTE" "$BRANCH"
+
+    REMOTE_REF="${REMOTE}/${BRANCH}"
+    BEHIND="$(git rev-list --count "HEAD..${REMOTE_REF}")"
+    if [[ "$BEHIND" == "0" ]]; then
+      log_step "already up to date on ${REMOTE_REF}"
+      exit 0
+    fi
+
+    OLD_HEAD="$(git rev-parse HEAD)"
+
+    # Snapshot the updater script hash before pulling
+    OLD_SCRIPT_HASH="$(shasum -a 256 "$SELF_SCRIPT" | cut -d' ' -f1)"
+
+    log_step "updating to ${REMOTE_REF} (${BEHIND} commit(s) behind)"
+    git reset --hard "${REMOTE_REF}"
+
+    # Re-exec if the updater itself changed
+    NEW_SCRIPT_HASH="$(shasum -a 256 "$SELF_SCRIPT" | cut -d' ' -f1)"
+    if [[ "$OLD_SCRIPT_HASH" != "$NEW_SCRIPT_HASH" ]]; then
+      log_step "updater script changed; re-executing fresh version"
+      export _SELF_UPDATE_REEXECED=1
+      export _SELF_UPDATE_OLD_HEAD="$OLD_HEAD"
+      exec bash "$SELF_SCRIPT"
+    fi
+  else
+    # Recover OLD_HEAD passed from the previous exec
+    OLD_HEAD="${_SELF_UPDATE_OLD_HEAD:-$(git rev-parse HEAD)}"
   fi
-  git reset --hard HEAD
-
-  log_step "fetching ${REMOTE}/${BRANCH}"
-  git fetch --quiet "$REMOTE" "$BRANCH"
-
-  REMOTE_REF="${REMOTE}/${BRANCH}"
-  BEHIND="$(git rev-list --count "HEAD..${REMOTE_REF}")"
-  if [[ "$BEHIND" == "0" ]]; then
-    log_step "already up to date on ${REMOTE_REF}"
-    exit 0
-  fi
-
-  OLD_HEAD="$(git rev-parse HEAD)"
-
-  # Snapshot the updater script hash before pulling
-  OLD_SCRIPT_HASH="$(shasum -a 256 "$SELF_SCRIPT" | cut -d' ' -f1)"
-
-  log_step "updating to ${REMOTE_REF} (${BEHIND} commit(s) behind)"
-  git reset --hard "${REMOTE_REF}"
-
-  # Re-exec if the updater itself changed
-  NEW_SCRIPT_HASH="$(shasum -a 256 "$SELF_SCRIPT" | cut -d' ' -f1)"
-  if [[ "$OLD_SCRIPT_HASH" != "$NEW_SCRIPT_HASH" ]]; then
-    log_step "updater script changed; re-executing fresh version"
-    export _SELF_UPDATE_REEXECED=1
-    export _SELF_UPDATE_OLD_HEAD="$OLD_HEAD"
-    exec bash "$SELF_SCRIPT"
-  fi
-else
-  # Recover OLD_HEAD passed from the previous exec
-  OLD_HEAD="${_SELF_UPDATE_OLD_HEAD:-$(git rev-parse HEAD)}"
 fi
 
 log_step "installing dependencies"
@@ -118,14 +126,19 @@ fi
 log_step "building"
 "$BUN_PATH" run build
 
-# Rebuild the agent container if any container files changed
-CONTAINER_CHANGED="$(git diff --name-only "${OLD_HEAD}..HEAD" -- container/)"
+# Rebuild the agent container if needed
+if [[ "$REBUILD_ONLY" == "1" ]]; then
+  # In rebuild-only mode, always rebuild the container
+  CONTAINER_CHANGED="rebuild-only"
+else
+  CONTAINER_CHANGED="$(git diff --name-only "${OLD_HEAD}..HEAD" -- container/)"
+fi
 if [[ -n "$CONTAINER_CHANGED" ]]; then
   if command -v docker >/dev/null 2>&1; then
-    log_step "container files changed; rebuilding agent image"
+    log_step "rebuilding agent image"
     bash "${ROOT_DIR}/container/build.sh"
   else
-    log_step "container files changed but docker not found; skipping image rebuild"
+    log_step "docker not found; skipping image rebuild"
   fi
 else
   log_step "no container changes; skipping image rebuild"

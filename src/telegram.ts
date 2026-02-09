@@ -245,6 +245,7 @@ type SlashCommandSpec = {
     | 'clear'
     | 'status'
     | 'update'
+    | 'rebuild'
     | 'takeover'
     | 'dashboard'
     | 'follow'
@@ -285,6 +286,11 @@ const TELEGRAM_SLASH_COMMANDS: SlashCommandSpec[] = [
     command: 'update',
     description: 'Check and apply service update',
     help: 'Check for updates and request confirmation',
+  },
+  {
+    command: 'rebuild',
+    description: 'Rebuild and restart without pulling',
+    help: 'Re-install deps, rebuild, rebuild container, restart service',
   },
   {
     command: 'takeover',
@@ -442,15 +448,17 @@ async function verifySelfUpdate(): Promise<void> {
   }
 }
 
-function startSelfUpdateProcess(chatId: number): void {
+function startSelfUpdateProcess(chatId: number, opts?: { rebuildOnly?: boolean }): void {
   if (!fs.existsSync(SELF_UPDATE_SCRIPT)) {
     throw new Error(`Self-update script is missing: ${SELF_UPDATE_SCRIPT}`);
   }
 
+  const label = opts?.rebuildOnly ? 'rebuild' : 'update';
+
   fs.mkdirSync(path.dirname(SELF_UPDATE_LOG), { recursive: true });
   fs.appendFileSync(
     SELF_UPDATE_LOG,
-    `[${new Date().toISOString()}] Triggered update from Telegram\n`,
+    `[${new Date().toISOString()}] Triggered ${label} from Telegram\n`,
   );
 
   const outputFd = fs.openSync(SELF_UPDATE_LOG, 'a');
@@ -464,6 +472,7 @@ function startSelfUpdateProcess(chatId: number): void {
       SELF_UPDATE_CHAT_ID: String(chatId),
       SELF_UPDATE_BRANCH,
       SELF_UPDATE_REMOTE,
+      ...(opts?.rebuildOnly ? { SELF_UPDATE_REBUILD_ONLY: '1' } : {}),
     },
   });
 
@@ -917,6 +926,23 @@ export async function connectTelegram(
     }
   });
 
+  bot.command('rebuild', async (ctx) => {
+    if (!shouldAccept(ctx)) return;
+
+    if (!SELF_UPDATE_ENABLED) {
+      await ctx.reply('Self-update is disabled (SELF_UPDATE_ENABLED=false).');
+      return;
+    }
+
+    const kb = new InlineKeyboard()
+      .text('Confirm Rebuild', 'rebuild:confirm')
+      .text('Cancel', 'rebuild:cancel');
+    await ctx.reply(
+      'This will re-install dependencies, rebuild, rebuild the agent container, and restart the service.\nNo git pull — uses the code already on disk.',
+      { reply_markup: kb },
+    );
+  });
+
   // --- Task commands ---
 
   bot.command('tasks', async (ctx) => {
@@ -1012,6 +1038,26 @@ export async function connectTelegram(
       } catch (err) {
         logger.error({ module: 'telegram', err }, 'Failed to start self-update process');
         await ctx.reply('Failed to start update. Check logs and try again.');
+      }
+      return;
+    }
+
+    // --- Rebuild inline button callbacks ---
+    if (data === 'rebuild:confirm' || data === 'rebuild:cancel') {
+      await ctx.editMessageReplyMarkup({ reply_markup: undefined });
+      if (data === 'rebuild:cancel') {
+        await ctx.answerCallbackQuery({ text: 'Rebuild canceled.' });
+        return;
+      }
+      await ctx.answerCallbackQuery({ text: 'Starting rebuild...' });
+      await ctx.reply(
+        `Rebuilding now (install, build, container, restart). Progress updates will appear here.\nDetailed logs: ${SELF_UPDATE_LOG}`,
+      );
+      try {
+        startSelfUpdateProcess(ctx.chat.id, { rebuildOnly: true });
+      } catch (err) {
+        logger.error({ module: 'telegram', err }, 'Failed to start rebuild process');
+        await ctx.reply('Failed to start rebuild. Check logs and try again.');
       }
       return;
     }
