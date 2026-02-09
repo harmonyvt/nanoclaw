@@ -79,7 +79,6 @@ export function FollowPane() {
       <ActivityPanel
         activities={activities}
         connected={connected}
-        groupFolder="main"
       />
     </div>
   );

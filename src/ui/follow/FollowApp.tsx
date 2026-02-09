@@ -81,7 +81,6 @@ export function FollowApp() {
       <ActivityPanel
         activities={activities}
         connected={connected}
-        groupFolder={vncInfo?.liveViewUrl ? 'main' : 'main'}
       />
     </div>
   );
