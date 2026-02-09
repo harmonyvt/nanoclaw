@@ -38,6 +38,8 @@ function actionIcon(action: string): string {
     case 'wait_for_user': return 'user';
     case 'extract_file': return 'download';
     case 'upload_file': return 'upload';
+    case 'perform': return 'play';
+    case 'evaluate': return 'terminal';
     default: return 'terminal';
   }
 }
@@ -72,6 +74,12 @@ function ActionIcon({ type }: { type: string }) {
       return (
         <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <line x1="19" y1="12" x2="5" y2="12" /><polyline points="12 19 5 12 12 5" />
+        </svg>
+      );
+    case 'play':
+      return (
+        <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="5 3 19 12 5 21 5 3" />
         </svg>
       );
     default:

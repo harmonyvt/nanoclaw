@@ -467,6 +467,37 @@ function describeCuaActionStart(
       return 'Capturing page snapshot';
     case 'close':
       return 'Closing browser tab';
+    case 'click_xy': {
+      const x = params.x;
+      const y = params.y;
+      return x != null && y != null ? `Clicking at (${x}, ${y})` : 'Clicking at coordinates';
+    }
+    case 'type_at_xy': {
+      const x = params.x;
+      const y = params.y;
+      const len = String(params.text || '').length;
+      return x != null && y != null
+        ? `Typing at (${x}, ${y}) (${len} chars)`
+        : `Typing at coordinates (${len} chars)`;
+    }
+    case 'perform': {
+      const steps = Array.isArray(params.steps) ? params.steps : [];
+      return steps.length > 0
+        ? `Performing ${steps.length} action${steps.length === 1 ? '' : 's'}`
+        : 'Performing actions';
+    }
+    case 'extract_file': {
+      const name = String(params.path || params.filename || 'file');
+      return `Extracting ${name}`;
+    }
+    case 'upload_file': {
+      const name = String(params.path || params.filename || 'file');
+      return `Uploading ${name}`;
+    }
+    case 'evaluate':
+      return 'Evaluating script';
+    case 'wait_for_user':
+      return 'Waiting for user';
     default:
       return null;
   }
