@@ -48,6 +48,8 @@ export function FollowApp() {
               return next;
             }
           }
+          // No matching start event found, skip orphaned end event
+          return prev;
         }
         const next = [...prev, evt];
         // Cap at 500 events to avoid memory issues
