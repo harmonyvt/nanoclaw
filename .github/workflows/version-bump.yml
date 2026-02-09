@@ -7,23 +7,29 @@ on:
 jobs:
   bump:
     runs-on: ubuntu-latest
-    # Skip if the push is the version bump commit itself
+    # Skip version bump commits. GITHUB_TOKEN also prevents recursive triggers.
     if: "!startsWith(github.event.head_commit.message, 'chore: bump version')"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Bump version
+        env:
+          COMMITS_JSON: ${{ toJSON(github.event.commits.*.message) }}
         run: |
           CURRENT=$(node -p "require('./package.json').version")
           IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
-          MSG="${{ github.event.head_commit.message }}"
-          if echo "$MSG" | grep -qi '\[major\]'; then
+
+          # Check all commit messages in the push for [major]/[minor] keywords
+          if echo "$COMMITS_JSON" | grep -qi '\[major\]'; then
             NEW="$((MAJOR + 1)).0.0"
-          elif echo "$MSG" | grep -qi '\[minor\]'; then
+          elif echo "$COMMITS_JSON" | grep -qi '\[minor\]'; then
             NEW="${MAJOR}.$((MINOR + 1)).0"
           else
             NEW="${MAJOR}.${MINOR}.$((PATCH + 1))"
           fi
+
           node -e "
             const fs = require('fs');
             const pkg = JSON.parse(fs.readFileSync('package.json', 'utf-8'));
@@ -37,5 +43,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add package.json
-          git commit -m "chore: bump version to ${VERSION}"
-          git push
+          git diff-index --quiet HEAD || git commit -m "chore: bump version to ${VERSION}"
+          git push || echo "Push failed (likely concurrent merge); version bump skipped"
