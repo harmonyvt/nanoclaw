@@ -72,6 +72,7 @@ export type AgentEvent =
   | { type: 'result'; result: string }
   | { type: 'tool_start'; toolName: string; preview: string }
   | { type: 'tool_progress'; toolName: string; elapsedSeconds?: number }
+  | { type: 'thinking'; content: string }
   | { type: 'adapter_stderr'; message: string };
 ```
 
@@ -81,6 +82,7 @@ export type AgentEvent =
 | `result` | The final text response from the model |
 | `tool_start` | A tool call has begun; includes name and argument preview (200 chars) |
 | `tool_progress` | Periodic progress for long-running tools (Claude SDK only) |
+| `thinking` | Snapshot of model's extended thinking/reasoning (both adapters) |
 | `adapter_stderr` | Stderr output from the underlying CLI/process (Claude SDK only) |
 
 ### AdapterInput
@@ -240,6 +242,10 @@ export function createIpcMcp(ctx: IpcMcpContext) {
 
 Tools are accessed by the model as `mcp__nanoclaw__<tool_name>` (matched by the `mcp__nanoclaw__*` glob in `allowedTools`).
 
+### Extended Thinking
+
+The Claude adapter supports extended thinking via `maxThinkingTokens` (env var `MAX_THINKING_TOKENS`, default: 10000, set to 0 to disable). Thinking deltas are accumulated and yielded as `thinking` events (throttled to every 3 seconds, truncated to 200 chars). The host displays these as italic status messages in Telegram when the `/thinking` toggle is enabled.
+
 ### Built-in Tools
 
 The Claude adapter enables these built-in Claude Agent SDK tools via `allowedTools`:
@@ -347,6 +353,10 @@ OpenAI sessions are persisted as JSON files in `/workspace/group/.openai-session
 
 **Atomic writes:** Session files use temp + rename to prevent corruption.
 
+### Reasoning Content (o-series Models)
+
+For o-series models (o1, o3, etc.), the OpenAI adapter captures `reasoning_content` from the response and yields it as a `thinking` event (truncated to the last 200 chars). This provides the same thinking status display as the Claude adapter's extended thinking.
+
 ### Default Model
 
 When no model is specified, the OpenAI adapter defaults to `gpt-4o`.
@@ -364,6 +374,7 @@ When no model is specified, the OpenAI adapter defaults to `gpt-4o`.
 | **Context handling** | SDK-managed compaction (PreCompact hook) | Manual trim: keep first + last 99 messages |
 | **Max iterations** | SDK-managed (no explicit cap) | 50 (`MAX_ITERATIONS`) |
 | **Conversation archiving** | PreCompact hook writes Markdown transcripts | No archiving |
+| **Extended thinking** | `maxThinkingTokens` (env: `MAX_THINKING_TOKENS`) | `reasoning_content` from o-series models |
 | **Default model** | SDK default (determined by Claude CLI) | `gpt-4o` |
 | **CLAUDE.md loading** | Via `settingSources: ['project']` (SDK auto-discovers) | Manually read and injected into system prompt |
 | **SOUL.md loading** | Injected by `index.ts` `preparePrompt()` (shared) | Injected by `index.ts` `preparePrompt()` (shared) |

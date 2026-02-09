@@ -339,6 +339,41 @@ For `cua-to-agent` transfers, the filename is appended with a timestamp to avoid
 
 ---
 
+### CUA Follow (Live Activity Monitoring)
+
+The Follow page provides real-time visibility into CUA browser automation activity. It combines a live noVNC desktop view with an activity feed showing agent actions.
+
+**Access:** Via the `/follow` Telegram command, which opens a scoped Mini App session.
+
+#### `GET /cua/follow`
+
+Serves the Follow page HTML (single-page app with embedded noVNC viewer and activity feed).
+
+#### `GET /api/cua/follow/stream`
+
+SSE endpoint for real-time CUA activity events (clicks, navigations, screenshots, etc.). Events include timestamps, action types, and parameter summaries.
+
+**Query parameters:**
+
+| Parameter | Required | Description |
+|---|---|---|
+| `group` | No | Group folder to filter events (auto-set from session scope) |
+
+#### `GET /api/cua/follow/vnc-info`
+
+Returns VNC connection info for the embedded noVNC viewer.
+
+#### `POST /api/cua/follow/message`
+
+Send a message to the agent from the Follow page (rate-limited to 10 messages per minute).
+
+**Notes:**
+- Follow sessions are scoped to the group associated with the Telegram chat where `/follow` was invoked
+- A summary of CUA activity is periodically sent to the Telegram chat while a Follow session is active
+- Activity events are buffered in a ring buffer for catch-up on reconnect
+
+---
+
 ## Telegram Integration
 
 ### Menu Button

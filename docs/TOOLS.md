@@ -21,6 +21,7 @@ All agent tools are defined in `container/agent-runner/src/tool-registry.ts` usi
 | Communication | Fire-and-forget | `/workspace/ipc/messages/` | Agent writes JSON file; host polls, processes, deletes |
 | Task Scheduling | Fire-and-forget | `/workspace/ipc/tasks/` | Agent writes JSON file; host polls, processes, deletes |
 | Group Management | Fire-and-forget | `/workspace/ipc/tasks/` | Uses the tasks IPC directory |
+| Skills | Filesystem + IPC | `/workspace/group/skills/` | JSON files on disk; IPC notification to host for command re-registration |
 | Browser Automation | Request/Response | `/workspace/ipc/browse/` | Agent writes `req-{id}.json`, polls for `res-{id}.json`; host processes request and writes response atomically |
 | Web Crawling | Direct API | N/A | Calls Firecrawl API directly from the container (no IPC) |
 | Long-term Memory | Direct API | N/A | Calls Supermemory API directly from the container (no IPC) |
@@ -163,6 +164,43 @@ Register a new Telegram chat so the agent can respond to messages there. **Main 
 **Authorization:** Returns an error if called from a non-main group.
 
 **Notes:** Use `available_groups.json` (written by the host to the IPC directory) to find chat IDs of unregistered groups.
+
+---
+
+## Skill Tools
+
+IPC mechanism: fire-and-forget via `/workspace/ipc/tasks/` (for `store_skill` and `delete_skill` notifications); filesystem for storage.
+
+Skills are reusable workflows that become Telegram slash commands. When a user invokes a stored skill, the instructions guide a fresh agent session through the workflow automatically.
+
+### store_skill
+
+Save a reusable skill (workflow) that becomes a Telegram `/command`. Write clear, step-by-step instructions that a fresh agent session can follow. If a skill with the same name already exists, it will be overwritten.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | Yes | Skill name (lowercase, hyphens, used as the `/command` name, 1-32 chars, must match `^[a-z][a-z0-9_]{0,31}$`) |
+| `description` | string | Yes | Short description shown in Telegram command list (max 256 chars) |
+| `instructions` | string | Yes | Detailed step-by-step instructions the agent follows when the skill is invoked |
+| `parameters` | string | No | Description of parameters the skill accepts (shown to users) |
+
+**Notes:** Writes a JSON file to `/workspace/group/skills/{name}.json` and notifies the host to re-register Telegram commands.
+
+### list_skills
+
+List all stored skills for the current group.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| *(none)* | | | |
+
+### delete_skill
+
+Delete a stored skill. Removes it from Telegram commands.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | Yes | The skill name to delete |
 
 ---
 

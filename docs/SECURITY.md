@@ -112,7 +112,16 @@ The CUA sandbox is a shared Docker container (one per NanoClaw instance, not per
 
 **Mitigation for shared state:** In practice, only the main group (trusted) typically uses browser automation. Non-main groups have the same browse tools available but the shared nature means cross-group browser state leakage is possible.
 
-### 8. Tailscale Considerations
+### 8. Skill Storage Security
+
+Skills (reusable workflows) are stored as JSON files in `groups/{folder}/skills/{name}.json`:
+
+- **Path traversal protection** — Skill names are validated against `^[a-z][a-z0-9_]{0,31}$` before filesystem operations. Names containing `/`, `..`, or special characters are rejected.
+- **Per-group isolation** — Each group stores skills in its own directory. Non-main groups cannot access or modify other groups' skills.
+- **XML injection mitigation** — Skill instructions are injected into the agent prompt as XML blocks; content is escaped before injection.
+- **Skill deletion** — Only the owning group's agent can delete skills via the `delete_skill` tool.
+
+### 9. Tailscale Considerations
 
 When `SANDBOX_TAILSCALE_ENABLED=true` (default), the dashboard and CUA takeover UI are exposed via Tailscale serve (HTTPS reverse proxy):
 

@@ -200,6 +200,7 @@ nanoclaw/
 │   └── {group-name}/              # Per-group folders (created on registration)
 │       ├── CLAUDE.md              # Group-specific memory
 │       ├── SOUL.md                # Group personality (optional)
+│       ├── skills/                # Stored skills (reusable workflows as JSON)
 │       ├── logs/
 │       ├── media/
 │       └── conversations/
@@ -260,7 +261,10 @@ Configuration constants live in `src/config.ts`. All settings can be overridden 
 | `CUA_SANDBOX_VNC_PORT` | `5901` | `CUA_SANDBOX_VNC_PORT` | VNC port |
 | `CUA_SANDBOX_NOVNC_PORT` | `6901` | `CUA_SANDBOX_NOVNC_PORT` | noVNC browser viewer port |
 | `CUA_TAKEOVER_WEB_PORT` | `7788` | `CUA_TAKEOVER_WEB_PORT` | Takeover web UI port |
+| `CUA_SANDBOX_PERSIST` | `true` | `CUA_SANDBOX_PERSIST` | Persist sandbox state across restarts |
+| `CUA_SANDBOX_HOME_VOLUME` | `nanoclaw-cua-home` | `CUA_SANDBOX_HOME_VOLUME` | Docker volume for persistent `/home/cua` |
 | `SANDBOX_IDLE_TIMEOUT_MS` | `1800000` (30 min) | `SANDBOX_IDLE_TIMEOUT_MS` | Idle auto-stop |
+| `MAX_THINKING_TOKENS` | `10000` | `MAX_THINKING_TOKENS` | Max extended thinking tokens for Claude (0 to disable) |
 
 ### Per-Group Container Configuration
 
@@ -422,6 +426,12 @@ Sessions enable conversation continuity.
     ├── Send voice message if Freya TTS enabled and response is short
     ├── Update session ID
     └── Store interaction to Supermemory (async, non-blocking)
+
+During agent execution, the host shows live progress in Telegram:
+- Tool activity and thinking snippets are displayed as an italic status message
+- The status message is updated in-place (edited) as the agent works
+- Thinking display can be toggled per-chat via /thinking command
+- Verbose tool details can be toggled via /verbose command
 ```
 
 ### Message Format (XML)
@@ -480,19 +490,37 @@ Each group can use a different provider:
 
 ## Commands
 
-### Any Group
+### Telegram Slash Commands
 
-| Command | Example | Effect |
-|---------|---------|--------|
-| `@Assistant [message]` | `@Andy what's the weather?` | Talk to the agent |
+| Command | Description |
+|---------|-------------|
+| `/help` | List all available commands |
+| `/new` | Start a new conversation thread |
+| `/clear` | Clear conversation history and reset session |
+| `/status` | Show session info, message count, uptime |
+| `/stop` | Interrupt a running agent mid-response |
+| `/tasks` | List scheduled tasks and automations |
+| `/runtask <id>` | Trigger a task immediately |
+| `/skills` | List stored skills (reusable workflows) |
+| `/thinking` | Toggle display of agent thinking/reasoning status |
+| `/verbose` | Toggle verbose tool-activity status messages |
+| `/update` | Check for updates; requires `/update confirm` within 30 seconds (also rebuilds agent container) |
+| `/rebuild` | Re-install dependencies and rebuild agent container (no git pull) |
+| `/dashboard` | Open the web dashboard (Telegram Mini App) |
+| `/follow` | Open the CUA Follow page to watch agent browser activity live |
+| `/takeover` | Get URL for manual browser control |
 
-### Main Channel Only
+The trigger word (`@Andy`) is used for natural language messages. Slash commands work without the trigger.
 
-| Command | Example | Effect |
-|---------|---------|--------|
-| `@Assistant add group "Name"` | `@Andy add group "Family Chat"` | Register a new group |
-| `/update` | `/update` | Self-update from git remote |
-| `/dashboard` | `/dashboard` | Open web dashboard |
+### Telegram Skills (Custom Commands)
+
+Agents can create reusable workflows stored as Telegram slash commands. Users teach the agent a workflow conversationally, then say "store this as a skill called `<name>`". The agent calls `store_skill` to persist it.
+
+- Skills are stored as JSON files in `groups/{folder}/skills/{name}.json`
+- Each skill contains: name, description, instructions, optional parameters
+- Skills appear as Telegram slash commands (auto-registered via `setMyCommands`)
+- When invoked, the skill instructions guide a fresh agent session through the workflow
+- Use `/skills` to list stored skills, or the `delete_skill` tool to remove one
 
 ---
 
@@ -534,6 +562,7 @@ NanoClaw provides 26+ IPC tools to agents. See [TOOLS.md](TOOLS.md) for the full
 | Communication | `send_message`, `send_file`, `send_voice` | Fire-and-forget |
 | Task Scheduling | `schedule_task`, `list_tasks`, `pause_task`, `resume_task`, `cancel_task` | Fire-and-forget |
 | Group Management | `register_group` | Fire-and-forget |
+| Skills | `store_skill`, `list_skills`, `delete_skill` | Fire-and-forget |
 | Web Crawling | `firecrawl_scrape`, `firecrawl_crawl`, `firecrawl_map` | Direct API call |
 | Long-term Memory | `memory_save`, `memory_search` | Direct API call |
 | Browser Automation | 14 `browse_*` tools | Request/response |
@@ -552,7 +581,9 @@ The CUA desktop sandbox provides full browser automation via a Docker container 
 
 - **Lazy start** — Sandbox only starts on first `browse_*` tool call
 - **Shared sidecar** — One sandbox per NanoClaw instance, shared across groups
+- **Persistent storage** — When `CUA_SANDBOX_PERSIST=true` (default), a named Docker volume (`CUA_SANDBOX_HOME_VOLUME`) persists `/home/cua` across container restarts. The container is stopped (not removed) on idle/shutdown.
 - **Idle auto-stop** — Stops after 30 minutes of inactivity
+- **No step limits** — Agents can perform unlimited browse actions per session
 - **Ports**: 8000 (command API), 5901 (VNC), 6901 (noVNC), 7788 (takeover UI)
 
 ### User Handoff (`browse_wait_for_user`)
