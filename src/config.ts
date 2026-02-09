@@ -35,6 +35,10 @@ export const CONTAINER_MAX_OUTPUT_SIZE = parseInt(
 ); // 10MB default
 export const IPC_POLL_INTERVAL = 1000;
 
+// Agent retry on container error (self-heal)
+export const MAX_AGENT_RETRIES = parseInt(process.env.MAX_AGENT_RETRIES || '7', 10);
+export const AGENT_RETRY_DELAY = 2000; // ms between retries
+
 // Sandbox configuration (CUA desktop sandbox)
 export const SANDBOX_IDLE_TIMEOUT_MS = parseInt(
   process.env.SANDBOX_IDLE_TIMEOUT_MS || `${30 * 60 * 1000}`,

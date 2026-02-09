@@ -20,6 +20,8 @@ import {
   TELEGRAM_OWNER_ID,
   TIMEZONE,
   TRIGGER_PATTERN,
+  MAX_AGENT_RETRIES,
+  AGENT_RETRY_DELAY,
 } from './config.js';
 import {
   AvailableGroup,
@@ -564,37 +566,56 @@ async function runAgent(
   const provider = group.providerConfig?.provider || DEFAULT_PROVIDER;
   const model = group.providerConfig?.model || DEFAULT_MODEL || undefined;
 
-  try {
-    const output = await runContainerAgent(group, {
-      prompt,
-      sessionId,
-      groupFolder: group.folder,
-      chatJid,
-      isMain,
-      isSkillInvocation: opts?.isSkillInvocation,
-      assistantName: ASSISTANT_NAME,
-      provider,
-      model,
-    });
+  const input = {
+    prompt,
+    sessionId,
+    groupFolder: group.folder,
+    chatJid,
+    isMain,
+    isSkillInvocation: opts?.isSkillInvocation,
+    assistantName: ASSISTANT_NAME,
+    provider,
+    model,
+  };
 
-    if (output.newSessionId) {
-      sessions[group.folder] = output.newSessionId;
-      saveJson(path.join(DATA_DIR, 'sessions.json'), sessions);
+  for (let attempt = 0; attempt <= MAX_AGENT_RETRIES; attempt++) {
+    if (attempt > 0) {
+      logger.warn(
+        { module: 'index', group: group.name, attempt, maxRetries: MAX_AGENT_RETRIES },
+        `Retrying agent after error (attempt ${attempt + 1}/${MAX_AGENT_RETRIES + 1})`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, AGENT_RETRY_DELAY));
     }
 
-    if (output.status === 'error') {
+    try {
+      const output = await runContainerAgent(group, input);
+
+      if (output.newSessionId) {
+        sessions[group.folder] = output.newSessionId;
+        saveJson(path.join(DATA_DIR, 'sessions.json'), sessions);
+      }
+
+      if (output.status === 'error') {
+        if (attempt < MAX_AGENT_RETRIES) continue;
+        logger.error(
+          { module: 'index', group: group.name, error: output.error, attempts: attempt + 1 },
+          'Container agent error (retries exhausted)',
+        );
+        return null;
+      }
+
+      return output.result;
+    } catch (err) {
+      if (attempt < MAX_AGENT_RETRIES) continue;
       logger.error(
-        { module: 'index', group: group.name, error: output.error },
-        'Container agent error',
+        { module: 'index', group: group.name, err, attempts: attempt + 1 },
+        'Agent error (retries exhausted)',
       );
       return null;
     }
-
-    return output.result;
-  } catch (err) {
-    logger.error({ module: 'index', group: group.name, err }, 'Agent error');
-    return null;
   }
+
+  return null;
 }
 
 async function sendMessage(jid: string, text: string): Promise<void> {
