@@ -1,0 +1,174 @@
+/* ── CUA Takeover page-specific styles ────────────────────────────────── */
+
+:root {
+  --radius: 18px;
+}
+
+body {
+  background:
+    radial-gradient(1300px circle at 5% 0%, rgba(56, 189, 248, 0.16) 0%, transparent 55%),
+    radial-gradient(900px circle at 95% 100%, rgba(245, 158, 11, 0.16) 0%, transparent 44%),
+    var(--bg);
+  display: flex;
+  flex-direction: column;
+  animation: fadeIn 260ms ease-out;
+}
+
+/* Header */
+
+header {
+  padding: 16px 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(11, 18, 25, 0.84);
+  backdrop-filter: blur(8px);
+}
+
+.title {
+  margin: 0;
+  font-size: 20px;
+  letter-spacing: 0.02em;
+}
+
+.subtitle {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+/* Shell layout */
+
+.shell {
+  display: grid;
+  grid-template-columns: minmax(260px, 350px) minmax(0, 1fr);
+  gap: 14px;
+  padding: 14px;
+  flex: 1;
+  min-height: 0;
+}
+
+/* Metadata sidebar */
+
+.meta {
+  padding: 16px;
+  display: grid;
+  gap: 14px;
+  align-content: start;
+}
+
+.meta-item {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 11px;
+}
+
+.meta-label {
+  font-family: "IBM Plex Mono", "Menlo", "Consolas", monospace;
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.meta-value {
+  margin-top: 6px;
+  word-break: break-word;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+/* Controls */
+
+.controls {
+  display: grid;
+  gap: 10px;
+}
+
+/* Workspace */
+
+.workspace {
+  min-height: 420px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.workspace-bar {
+  height: 42px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 14px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.workspace-frame {
+  border: 0;
+  width: 100%;
+  flex: 1;
+  background: var(--panel-2);
+}
+
+/* Fallback */
+
+.fallback {
+  padding: 16px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+/* Expired state */
+
+.expired-card {
+  width: min(720px, 100%);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02));
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 18px;
+  padding: 22px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.32);
+}
+
+.expired-card h1 {
+  margin: 0 0 8px;
+  font-size: 26px;
+}
+
+.expired-card p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.expired-card .warn {
+  color: var(--accent-2);
+  margin-top: 10px;
+}
+
+/* Status text colors */
+
+.status-ok {
+  color: var(--ok);
+}
+
+.status-error {
+  color: var(--danger);
+}
+
+.status-muted {
+  color: var(--muted);
+}
+
+/* Responsive */
+
+@media (max-width: 900px) {
+  .shell {
+    grid-template-columns: 1fr;
+  }
+
+  .workspace {
+    min-height: 56vh;
+  }
+}
