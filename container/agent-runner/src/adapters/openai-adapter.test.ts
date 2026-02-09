@@ -3,7 +3,6 @@
  *
  * Focuses on what is testable without an API key:
  * - buildSystemPrompt() -- fully testable, no API needed
- * - MAX_ITERATIONS constant
  * - OpenAIAdapter instantiation and interface compliance
  */
 
@@ -11,7 +10,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { buildSystemPrompt, MAX_ITERATIONS, OpenAIAdapter } from './openai-adapter.js';
+import { buildSystemPrompt, OpenAIAdapter } from './openai-adapter.js';
 import { NANOCLAW_TOOLS } from '../tool-registry.js';
 import type { AdapterInput, ProviderAdapter, IpcMcpContext } from '../types.js';
 
@@ -37,18 +36,6 @@ function makeMockInput(overrides: Partial<AdapterInput> = {}): AdapterInput {
 }
 
 describe('openai-adapter', () => {
-  // -- MAX_ITERATIONS -------------------------------------------------------
-
-  describe('MAX_ITERATIONS', () => {
-    test('is 50', () => {
-      expect(MAX_ITERATIONS).toBe(50);
-    });
-
-    test('is a number', () => {
-      expect(typeof MAX_ITERATIONS).toBe('number');
-    });
-  });
-
   // -- buildSystemPrompt() --------------------------------------------------
 
   describe('buildSystemPrompt()', () => {
