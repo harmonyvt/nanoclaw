@@ -60,6 +60,7 @@ export interface NewMessage {
   timestamp: string;
   media_type?: string;
   media_path?: string;
+  thread_id?: string;
 }
 
 export interface ScheduledTask {
@@ -93,4 +94,18 @@ export interface Skill {
   parameters?: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface Thread {
+  id: string;
+  chat_jid: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+  session_id: string | null;
+}
+
+export interface ActiveThread {
+  chat_jid: string;
+  thread_id: string;
 }

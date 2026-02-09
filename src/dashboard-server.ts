@@ -33,6 +33,18 @@ import {
   getAllTasks,
   getTaskRunLogs,
   getAllTaskRunLogs,
+  getThreadsForChat,
+  getActiveThread,
+  getThread,
+  getThreadMessages,
+  getThreadMessageCount,
+  createThread,
+  setActiveThread,
+  renameThread,
+  deleteThread,
+  ensureDefaultThread,
+  updateThreadSession,
+  getThreadByName,
 } from './db.js';
 import {
   runCuaCommand,
@@ -297,6 +309,106 @@ function handleTaskRunLogsList(url: URL): Response {
       offset ? parseInt(offset, 10) : 0,
     ),
   );
+}
+
+// ── Threads API handlers ────────────────────────────────────────────────
+
+function handleThreadsList(url: URL): Response {
+  const chatJid = url.searchParams.get('chat_jid');
+  if (!chatJid) {
+    return jsonResponse({ error: 'chat_jid parameter required' }, 400);
+  }
+  const threads = getThreadsForChat(chatJid);
+  const active = getActiveThread(chatJid);
+  return jsonResponse({
+    threads: threads.map(t => ({
+      ...t,
+      is_active: active?.id === t.id,
+      message_count: getThreadMessageCount(t.id),
+    })),
+    active_thread_id: active?.id ?? null,
+  });
+}
+
+function handleThreadMessages(url: URL): Response {
+  const threadId = url.searchParams.get('thread_id');
+  if (!threadId) {
+    return jsonResponse({ error: 'thread_id parameter required' }, 400);
+  }
+  const limit = parseInt(url.searchParams.get('limit') || '50', 10);
+  const offset = parseInt(url.searchParams.get('offset') || '0', 10);
+  const messages = getThreadMessages(threadId, limit, offset);
+  const total = getThreadMessageCount(threadId);
+  return jsonResponse({ messages, total });
+}
+
+async function handleThreadCreate(req: Request): Promise<Response> {
+  const body = await req.json() as { chat_jid?: string; name?: string };
+  if (!body.chat_jid || !body.name) {
+    return jsonResponse({ error: 'chat_jid and name are required' }, 400);
+  }
+  const existing = getThreadByName(body.chat_jid, body.name);
+  if (existing) {
+    return jsonResponse({ error: 'A thread with this name already exists' }, 409);
+  }
+  const id = `thread-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const thread = createThread(id, body.chat_jid, body.name);
+  return jsonResponse(thread, 201);
+}
+
+async function handleThreadSwitch(req: Request): Promise<Response> {
+  const body = await req.json() as { chat_jid?: string; thread_id?: string };
+  if (!body.chat_jid || !body.thread_id) {
+    return jsonResponse({ error: 'chat_jid and thread_id are required' }, 400);
+  }
+  const thread = getThread(body.thread_id);
+  if (!thread || thread.chat_jid !== body.chat_jid) {
+    return jsonResponse({ error: 'Thread not found' }, 404);
+  }
+  setActiveThread(body.chat_jid, body.thread_id);
+  return jsonResponse({ ...thread, is_active: true });
+}
+
+async function handleThreadRename(req: Request): Promise<Response> {
+  const body = await req.json() as { thread_id?: string; name?: string };
+  if (!body.thread_id || !body.name) {
+    return jsonResponse({ error: 'thread_id and name are required' }, 400);
+  }
+  const thread = getThread(body.thread_id);
+  if (!thread) {
+    return jsonResponse({ error: 'Thread not found' }, 404);
+  }
+  const conflict = getThreadByName(thread.chat_jid, body.name);
+  if (conflict && conflict.id !== thread.id) {
+    return jsonResponse({ error: 'A thread with this name already exists' }, 409);
+  }
+  renameThread(body.thread_id, body.name);
+  return jsonResponse({ ...thread, name: body.name });
+}
+
+async function handleThreadDelete(req: Request): Promise<Response> {
+  const body = await req.json() as { chat_jid?: string; thread_id?: string };
+  if (!body.chat_jid || !body.thread_id) {
+    return jsonResponse({ error: 'chat_jid and thread_id are required' }, 400);
+  }
+  const threads = getThreadsForChat(body.chat_jid);
+  if (threads.length <= 1) {
+    return jsonResponse({ error: 'Cannot delete the only remaining thread' }, 400);
+  }
+  const thread = getThread(body.thread_id);
+  if (!thread || thread.chat_jid !== body.chat_jid) {
+    return jsonResponse({ error: 'Thread not found' }, 404);
+  }
+  deleteThread(body.thread_id);
+  // If deleted thread was active, activate next
+  const active = getActiveThread(body.chat_jid);
+  if (!active) {
+    const remaining = getThreadsForChat(body.chat_jid);
+    if (remaining.length > 0) {
+      setActiveThread(body.chat_jid, remaining[0].id);
+    }
+  }
+  return jsonResponse({ deleted: true });
 }
 
 // ── Files API helpers ────────────────────────────────────────────────────
@@ -1222,6 +1334,14 @@ function handleRequest(req: Request, server: import('bun').Server<NoVncWsData>):
   // Tasks
   if (pathname === '/api/tasks') return handleTasksList(url);
   if (pathname === '/api/tasks/runs') return handleTaskRunLogsList(url);
+
+  // Threads
+  if (pathname === '/api/threads' && req.method === 'GET') return handleThreadsList(url);
+  if (pathname === '/api/threads/messages' && req.method === 'GET') return handleThreadMessages(url);
+  if (pathname === '/api/threads' && req.method === 'POST') return handleThreadCreate(req);
+  if (pathname === '/api/threads/switch' && req.method === 'POST') return handleThreadSwitch(req);
+  if (pathname === '/api/threads/rename' && req.method === 'POST') return handleThreadRename(req);
+  if (pathname === '/api/threads/delete' && req.method === 'POST') return handleThreadDelete(req);
 
   // Files API — GET routes
   if (pathname === '/api/files/groups') return handleFilesGroupsList();

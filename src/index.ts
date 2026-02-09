@@ -35,11 +35,24 @@ import {
   writeTasksSnapshot,
 } from './container-runner.js';
 import {
+  ensureDefaultThread,
+  getActiveThread,
   getAllChats,
   getAllTasks,
   getMessagesSince,
   getNewMessages,
+  getThread,
+  getThreadByName,
+  getThreadMessageCount,
+  getThreadMessages,
+  getThreadsForChat,
   initDatabase,
+  setActiveThread,
+  updateThreadSession,
+  updateThreadTimestamp,
+  createThread,
+  renameThread,
+  deleteThread as deleteThreadFromDb,
 } from './db.js';
 import { runTaskNow, startSchedulerLoop } from './task-scheduler.js';
 import {
@@ -59,8 +72,8 @@ import {
   setTelegramTyping,
   stopTelegram,
 } from './telegram.js';
-import type { SessionManager, TaskActionHandler, InterruptHandler } from './telegram.js';
-import { NewMessage, RegisteredGroup, Session } from './types.js';
+import type { SessionManager, TaskActionHandler, InterruptHandler, ThreadManager } from './telegram.js';
+import { NewMessage, RegisteredGroup, Session, Thread } from './types.js';
 import {
   detectEmotionFromText,
   formatFreyaText,
@@ -256,6 +269,11 @@ async function processMessage(msg: NewMessage): Promise<void> {
   const content = msg.content.trim();
   const isMainGroup = group.folder === MAIN_GROUP_FOLDER;
 
+  // Ensure an active thread exists for this chat
+  const activeThread = ensureDefaultThread(msg.chat_jid);
+  const threadId = activeThread.id;
+  const threadTimestampKey = `${msg.chat_jid}:${threadId}`;
+
   // Check if user is saying "continue" to unblock a browse_wait_for_user request.
   // Supports both: "continue" and "continue <requestId>".
   const continueMatch = content.match(/^continue(?:\s+(\S+))?$/i);
@@ -296,7 +314,7 @@ async function processMessage(msg: NewMessage): Promise<void> {
     const skill = getSkill(group.folder, skillName);
     if (skill) {
       logger.info(
-        { module: 'index', skill: skillName, group: group.name, params: skillParams },
+        { module: 'index', skill: skillName, group: group.name, params: skillParams, thread: threadId },
         'Skill invocation detected',
       );
 
@@ -308,9 +326,9 @@ async function processMessage(msg: NewMessage): Promise<void> {
       if (skill.parameters) skillXml += ` accepts="${escapeXml(skill.parameters)}"`;
       skillXml += `>\n${escapeXml(skill.instructions)}\n</skill>`;
 
-      // Get messages for context (same as normal flow)
-      const sinceTimestamp = lastAgentTimestamp[msg.chat_jid] || '';
-      const missedMessages = getMessagesSince(msg.chat_jid, sinceTimestamp, ASSISTANT_NAME);
+      // Get messages for context (thread-filtered)
+      const sinceTimestamp = lastAgentTimestamp[threadTimestampKey] || '';
+      const missedMessages = getMessagesSince(msg.chat_jid, sinceTimestamp, ASSISTANT_NAME, threadId);
 
       let memoryXml = '';
       if (isSupermemoryEnabled()) {
@@ -338,12 +356,23 @@ async function processMessage(msg: NewMessage): Promise<void> {
       const parts = [memoryXml, skillXml, messagesXml].filter(Boolean);
       const prompt = parts.join('\n\n');
 
+      // Load thread's session into sessions map
+      if (activeThread.session_id) {
+        sessions[group.folder] = activeThread.session_id;
+      }
+
       await setTyping(msg.chat_jid, true);
       const response = await runAgent(group, prompt, msg.chat_jid, { isSkillInvocation: true });
       await setTyping(msg.chat_jid, false);
 
+      // Save session back to thread
+      if (sessions[group.folder]) {
+        updateThreadSession(threadId, sessions[group.folder]);
+      }
+
       if (response) {
-        lastAgentTimestamp[msg.chat_jid] = msg.timestamp;
+        lastAgentTimestamp[threadTimestampKey] = msg.timestamp;
+        updateThreadTimestamp(threadId);
         saveState();
 
         // Strip voice separator if present (skill responses are typically text)
@@ -371,12 +400,18 @@ async function processMessage(msg: NewMessage): Promise<void> {
   // Main group responds to all messages; other groups require trigger prefix
   if (!isMainGroup && !TRIGGER_PATTERN.test(content)) return;
 
-  // Get all messages since last agent interaction so the session has full context
-  const sinceTimestamp = lastAgentTimestamp[msg.chat_jid] || '';
+  // Load thread's session into sessions map
+  if (activeThread.session_id) {
+    sessions[group.folder] = activeThread.session_id;
+  }
+
+  // Get all messages since last agent interaction (thread-filtered)
+  const sinceTimestamp = lastAgentTimestamp[threadTimestampKey] || '';
   const missedMessages = getMessagesSince(
     msg.chat_jid,
     sinceTimestamp,
     ASSISTANT_NAME,
+    threadId,
   );
 
   // Retrieve relevant memories from Supermemory (non-blocking)
@@ -418,7 +453,7 @@ async function processMessage(msg: NewMessage): Promise<void> {
   if (!prompt) return;
 
   logger.info(
-    { module: 'index', group: group.name, messageCount: missedMessages.length },
+    { module: 'index', group: group.name, messageCount: missedMessages.length, thread: activeThread.name },
     'Processing message',
   );
 
@@ -442,6 +477,11 @@ async function processMessage(msg: NewMessage): Promise<void> {
 
   await setTyping(msg.chat_jid, false);
 
+  // Save session back to thread
+  if (sessions[group.folder]) {
+    updateThreadSession(threadId, sessions[group.folder]);
+  }
+
   // Clean up the thinking status message(s)
   const statusEntry = activeStatusMessages.get(group.folder);
   if (statusEntry) {
@@ -461,13 +501,11 @@ async function processMessage(msg: NewMessage): Promise<void> {
   }
 
   if (response) {
-    lastAgentTimestamp[msg.chat_jid] = msg.timestamp;
+    lastAgentTimestamp[threadTimestampKey] = msg.timestamp;
+    updateThreadTimestamp(threadId);
     let text = response;
     if (DEBUG_THREADS) {
-      const threadId = sessions[group.folder];
-      if (threadId) {
-        text += `\n[thread: ${threadId.slice(0, 8)}]`;
-      }
+      text += `\n[thread: ${activeThread.name} | session: ${(sessions[group.folder] || '').slice(0, 8)}]`;
     }
 
     // Auto-TTS: parse structured voice response (---voice--- separator)
@@ -1757,6 +1795,75 @@ async function main(): Promise<void> {
     },
   };
 
+  const threadManager: ThreadManager = {
+    getActiveThread(chatJid: string): Thread | undefined {
+      return getActiveThread(chatJid);
+    },
+    ensureDefaultThread(chatJid: string): Thread {
+      return ensureDefaultThread(chatJid);
+    },
+    getThreadsForChat(chatJid: string): Thread[] {
+      return getThreadsForChat(chatJid);
+    },
+    createThread(chatJid: string, name: string): Thread {
+      const id = `thread-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const thread = createThread(id, chatJid, name);
+      return thread;
+    },
+    switchThread(chatJid: string, threadId: string): Thread | undefined {
+      const thread = getThread(threadId);
+      if (!thread || thread.chat_jid !== chatJid) return undefined;
+      // Save current session to old active thread
+      const group = registeredGroups[chatJid];
+      const oldThread = getActiveThread(chatJid);
+      if (group && oldThread && sessions[group.folder]) {
+        updateThreadSession(oldThread.id, sessions[group.folder]);
+      }
+      // Switch to new thread
+      setActiveThread(chatJid, threadId);
+      // Load new thread's session
+      if (group) {
+        if (thread.session_id) {
+          sessions[group.folder] = thread.session_id;
+        } else {
+          delete sessions[group.folder];
+        }
+        saveJson(path.join(DATA_DIR, 'sessions.json'), sessions);
+      }
+      return thread;
+    },
+    renameThread(threadId: string, newName: string): void {
+      renameThread(threadId, newName);
+    },
+    deleteThread(chatJid: string, threadId: string): boolean {
+      const thread = getThread(threadId);
+      if (!thread || thread.chat_jid !== chatJid) return false;
+      const active = getActiveThread(chatJid);
+      deleteThreadFromDb(threadId);
+      // If we deleted the active thread, activate the next available one
+      if (active && active.id === threadId) {
+        const remaining = getThreadsForChat(chatJid);
+        if (remaining.length > 0) {
+          setActiveThread(chatJid, remaining[0].id);
+          // Load its session
+          const group = registeredGroups[chatJid];
+          if (group) {
+            if (remaining[0].session_id) {
+              sessions[group.folder] = remaining[0].session_id;
+            } else {
+              delete sessions[group.folder];
+            }
+            saveJson(path.join(DATA_DIR, 'sessions.json'), sessions);
+          }
+        }
+      }
+      return true;
+    },
+    getThreadByName(chatJid: string, name: string): Thread | undefined {
+      return getThreadByName(chatJid, name);
+    },
+  };
+
   const schedulerDeps = {
     sendMessage,
     registeredGroups: () => registeredGroups,
@@ -1788,6 +1895,7 @@ async function main(): Promise<void> {
     sessionManager,
     taskActions,
     interruptHandler,
+    threadManager,
   );
   startSchedulerLoop(schedulerDeps);
   startIpcWatcher();
