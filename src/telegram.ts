@@ -60,6 +60,13 @@ export interface TaskActionHandler {
   ): Promise<{ success: boolean; error?: string; durationMs?: number }>;
 }
 
+/**
+ * Interface for interrupting a running agent from telegram command handlers.
+ */
+export interface InterruptHandler {
+  interrupt(chatJid: string): { interrupted: boolean; message: string };
+}
+
 // --- Task formatting helpers ---
 
 function shortId(taskId: string): string {
@@ -240,6 +247,7 @@ type SlashCommandSpec = {
     | 'dashboard'
     | 'follow'
     | 'verbose'
+    | 'stop'
     | 'help';
   description: string;
   help: string;
@@ -295,6 +303,11 @@ const TELEGRAM_SLASH_COMMANDS: SlashCommandSpec[] = [
     command: 'verbose',
     description: 'Toggle verbose mode (show agent tool use)',
     help: 'Toggle verbose mode (show agent tool use)',
+  },
+  {
+    command: 'stop',
+    description: 'Interrupt the running agent',
+    help: 'Stop the currently running agent operation',
   },
   {
     command: 'help',
@@ -457,6 +470,7 @@ export async function connectTelegram(
   onRegisterGroup?: (jid: string, group: RegisteredGroup) => void,
   sessionManager?: SessionManager,
   taskActions?: TaskActionHandler,
+  interruptHandler?: InterruptHandler,
 ): Promise<void> {
   bot = new Bot(TELEGRAM_BOT_TOKEN);
   const apiCommands = TELEGRAM_SLASH_COMMANDS.map((c) => ({
@@ -738,6 +752,17 @@ export async function connectTelegram(
       verboseChats.add(chatId);
       await ctx.reply('Verbose mode on');
     }
+  });
+
+  bot.command('stop', async (ctx) => {
+    if (!shouldAccept(ctx)) return;
+    if (!interruptHandler) {
+      await ctx.reply('Interrupt not available.');
+      return;
+    }
+    const chatId = makeTelegramChatId(ctx.chat.id);
+    const result = interruptHandler.interrupt(chatId);
+    await ctx.reply(result.message);
   });
 
   bot.command('update', async (ctx) => {

@@ -83,6 +83,15 @@ interface PersistentContainer {
 const runningContainers = new Map<string, PersistentContainer>();
 let idleCleanupTimer: ReturnType<typeof setInterval> | null = null;
 
+// ─── Interrupt Tracking ──────────────────────────────────────────────────────
+
+interface ActiveRequest {
+  groupFolder: string;
+  abortController: AbortController;
+}
+
+const activeRequests = new Map<string, ActiveRequest>();
+
 function sanitizeDockerNamePart(input: string): string {
   const value = input.toLowerCase().replace(/[^a-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '');
   return value || 'default';
@@ -1229,55 +1238,76 @@ async function sendToPersistentContainer(
     'Wrote input file to persistent container',
   );
 
-  // Poll for output file
-  const deadline = Date.now() + timeout;
+  // Register this request so it can be interrupted
+  const abortController = new AbortController();
+  activeRequests.set(container.groupFolder, {
+    groupFolder: container.groupFolder,
+    abortController,
+  });
 
-  while (Date.now() < deadline) {
-    if (fs.existsSync(outputFile)) {
-      try {
-        const raw = fs.readFileSync(outputFile, 'utf-8');
-        const output: ContainerOutput = JSON.parse(raw);
+  try {
+    // Poll for output file
+    const deadline = Date.now() + timeout;
 
-        // Clean up output file
-        try { fs.unlinkSync(outputFile); } catch {}
-
-        return output;
-      } catch (err) {
-        logger.error(
-          { module: 'container', outputFile, error: err },
-          'Failed to parse output file from persistent container',
-        );
-        try { fs.unlinkSync(outputFile); } catch {}
+    while (Date.now() < deadline) {
+      // Check for interrupt
+      if (abortController.signal.aborted) {
+        try { fs.unlinkSync(inputFile); } catch {}
         return {
           status: 'error',
           result: null,
-          error: `Failed to parse output: ${err instanceof Error ? err.message : String(err)}`,
+          error: 'Interrupted by user',
         };
       }
+
+      if (fs.existsSync(outputFile)) {
+        try {
+          const raw = fs.readFileSync(outputFile, 'utf-8');
+          const output: ContainerOutput = JSON.parse(raw);
+
+          // Clean up output file
+          try { fs.unlinkSync(outputFile); } catch {}
+
+          return output;
+        } catch (err) {
+          logger.error(
+            { module: 'container', outputFile, error: err },
+            'Failed to parse output file from persistent container',
+          );
+          try { fs.unlinkSync(outputFile); } catch {}
+          return {
+            status: 'error',
+            result: null,
+            error: `Failed to parse output: ${err instanceof Error ? err.message : String(err)}`,
+          };
+        }
+      }
+
+      // Check if container is still alive while waiting
+      if (!isContainerRunning(container.containerId)) {
+        // Clean up stale input file if it still exists
+        try { fs.unlinkSync(inputFile); } catch {}
+        return {
+          status: 'error',
+          result: null,
+          error: 'Persistent container died while processing request',
+        };
+      }
+
+      await new Promise(resolve => setTimeout(resolve, OUTPUT_POLL_INTERVAL));
     }
 
-    // Check if container is still alive while waiting
-    if (!isContainerRunning(container.containerId)) {
-      // Clean up stale input file if it still exists
-      try { fs.unlinkSync(inputFile); } catch {}
-      return {
-        status: 'error',
-        result: null,
-        error: 'Persistent container died while processing request',
-      };
-    }
+    // Timeout - clean up input file if it wasn't consumed
+    try { fs.unlinkSync(inputFile); } catch {}
 
-    await new Promise(resolve => setTimeout(resolve, OUTPUT_POLL_INTERVAL));
+    return {
+      status: 'error',
+      result: null,
+      error: `Persistent container request timed out after ${timeout}ms`,
+    };
+  } finally {
+    activeRequests.delete(container.groupFolder);
   }
-
-  // Timeout - clean up input file if it wasn't consumed
-  try { fs.unlinkSync(inputFile); } catch {}
-
-  return {
-    status: 'error',
-    result: null,
-    error: `Persistent container request timed out after ${timeout}ms`,
-  };
 }
 
 /**
@@ -1366,6 +1396,50 @@ async function runPersistentContainer(
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
+
+/**
+ * Interrupt a running container agent for the given group.
+ * Writes a cancel file for cooperative abort, aborts host-side polling,
+ * and escalates to SIGTERM if the agent doesn't respond within 5 seconds.
+ */
+export function interruptContainer(
+  groupFolder: string,
+): { interrupted: boolean; message: string } {
+  const active = activeRequests.get(groupFolder);
+  if (!active) {
+    return { interrupted: false, message: 'No agent is currently running.' };
+  }
+
+  // 1. Write cancel file to IPC directory (cooperative signal to container)
+  const cancelDir = path.join(DATA_DIR, 'ipc', groupFolder);
+  fs.mkdirSync(cancelDir, { recursive: true });
+  const cancelFile = path.join(cancelDir, 'cancel');
+  fs.writeFileSync(cancelFile, JSON.stringify({ timestamp: Date.now(), reason: 'user_interrupt' }));
+
+  // 2. Abort the host-side polling loop
+  active.abortController.abort();
+
+  // 3. Escalate to SIGTERM after grace period if agent didn't pick up the cancel
+  const container = runningContainers.get(groupFolder);
+  if (container) {
+    setTimeout(() => {
+      try {
+        if (fs.existsSync(cancelFile)) {
+          logger.warn(
+            { module: 'container', groupFolder },
+            'Agent did not respond to cancel, sending SIGTERM',
+          );
+          try {
+            execSync(`docker kill --signal=SIGTERM ${container.containerId} 2>/dev/null`, { timeout: 5000 });
+          } catch {}
+        }
+      } catch {}
+    }, 5000);
+  }
+
+  logger.info({ module: 'container', groupFolder }, 'Container interrupt requested');
+  return { interrupted: true, message: 'Interrupting' };
+}
 
 /**
  * Run a container agent for the given group and input.

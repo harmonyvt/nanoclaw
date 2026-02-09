@@ -24,6 +24,7 @@ import {
 import {
   AvailableGroup,
   cleanupOrphanPersistentContainers,
+  interruptContainer,
   killAllContainers,
   runContainerAgent,
   startContainerIdleCleanup,
@@ -48,7 +49,7 @@ import {
   setTelegramTyping,
   stopTelegram,
 } from './telegram.js';
-import type { SessionManager, TaskActionHandler } from './telegram.js';
+import type { SessionManager, TaskActionHandler, InterruptHandler } from './telegram.js';
 import { NewMessage, RegisteredGroup, Session } from './types.js';
 import {
   detectEmotionFromText,
@@ -67,6 +68,7 @@ import {
   formatMemoryContext,
 } from './supermemory.js';
 import {
+  cancelWaitingRequests,
   processBrowseRequest,
   resolveWaitForUser,
   hasWaitingRequests,
@@ -514,6 +516,17 @@ function startIpcWatcher(): void {
       const isMain = sourceGroup === MAIN_GROUP_FOLDER;
       const messagesDir = path.join(ipcBaseDir, sourceGroup, 'messages');
       const tasksDir = path.join(ipcBaseDir, sourceGroup, 'tasks');
+
+      // Clean up stale cancel files (older than 30s) to prevent leftover state
+      try {
+        const cancelFile = path.join(ipcBaseDir, sourceGroup, 'cancel');
+        if (fs.existsSync(cancelFile)) {
+          const stat = fs.statSync(cancelFile);
+          if (Date.now() - stat.mtimeMs > 30000) {
+            fs.unlinkSync(cancelFile);
+          }
+        }
+      } catch {}
 
       // Process messages from this group's IPC directory
       try {
@@ -1402,11 +1415,23 @@ async function main(): Promise<void> {
   startDashboardServer();
   initTailscaleServe();
 
+  const interruptHandler: InterruptHandler = {
+    interrupt(chatJid: string) {
+      const group = registeredGroups[chatJid];
+      if (!group) {
+        return { interrupted: false, message: 'No registered group for this chat.' };
+      }
+      cancelWaitingRequests(group.folder);
+      return interruptContainer(group.folder);
+    },
+  };
+
   await connectTelegram(
     () => registeredGroups,
     registerGroup,
     sessionManager,
     taskActions,
+    interruptHandler,
   );
   startSchedulerLoop(schedulerDeps);
   startIpcWatcher();
