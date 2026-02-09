@@ -780,7 +780,10 @@ export async function connectTelegram(
       return;
     }
 
-    const ownerSession = createSessionForOwner();
+    // Scope session to the current chat's group folder
+    const chatId = makeTelegramChatId(ctx.chat.id);
+    const group = registeredGroups()[chatId];
+    const ownerSession = createSessionForOwner(group?.folder);
     if (!ownerSession) {
       await ctx.reply('Could not create session. Check TELEGRAM_OWNER_ID.');
       return;

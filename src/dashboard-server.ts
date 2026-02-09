@@ -42,7 +42,7 @@ import {
   resolveWaitForUserByToken,
 } from './browse-host.js';
 import { serveStaticAsset } from './ui-assets.js';
-import { proxyNoVncHttp, createNoVncWebSocketHandler, makeNoVncWsData, type NoVncWsData } from './novnc-proxy.js';
+import { proxyNoVncHttp, proxyNoVncFollowPage, createNoVncWebSocketHandler, makeNoVncWsData, type NoVncWsData } from './novnc-proxy.js';
 import {
   cuaActivityEmitter,
   registerFollowSession,
@@ -66,6 +66,11 @@ const MAX_PREVIEW_IMAGE = 2 * 1024 * 1024; // 2MB
 const PROTECTED_FILES = ['CLAUDE.md', 'SOUL.md'];
 const CUA_SAFE_ROOTS = ['/home/', '/tmp/', '/root/', '/var/', '/opt/'];
 
+// Rate limiting for follow message endpoint
+const MESSAGE_RATE_LIMIT = 10;
+const MESSAGE_RATE_WINDOW_MS = 60_000;
+const messageRateMap = new Map<string, number[]>();
+
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
@@ -83,16 +88,17 @@ function htmlResponse(html: string, status = 200): Response {
   });
 }
 
+function extractToken(req: Request, url: URL): string | null {
+  const authHeader = req.headers.get('authorization');
+  if (authHeader?.startsWith('Bearer ')) return authHeader.slice(7);
+  return url.searchParams.get('token');
+}
+
 function authenticateRequest(
   req: Request,
   url: URL,
-): { userId: number } | null {
-  const authHeader = req.headers.get('authorization');
-  if (authHeader?.startsWith('Bearer ')) {
-    const token = authHeader.slice(7);
-    return validateSession(token);
-  }
-  const token = url.searchParams.get('token');
+): { userId: number; groupFolder?: string } | null {
+  const token = extractToken(req, url);
   if (token) return validateSession(token);
   return null;
 }
@@ -1094,8 +1100,9 @@ function renderFollowPage(): string {
 </html>`;
 }
 
-function handleFollowSSEStream(req: Request, url: URL): Response {
-  const groupFolder = url.searchParams.get('group') || 'main';
+function handleFollowSSEStream(req: Request, url: URL, scopedGroup?: string): Response {
+  // If session is scoped to a group, enforce it; otherwise allow query param
+  const groupFolder = scopedGroup || url.searchParams.get('group') || 'main';
   const sessionId = `follow-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
   const stream = new ReadableStream({
@@ -1188,20 +1195,33 @@ function handleFollowSSEStream(req: Request, url: URL): Response {
 function handleFollowVncInfo(): Response {
   return jsonResponse({
     liveViewUrl: getSandboxUrl(),
-    vncPassword: getSandboxVncPassword(),
     sandboxRunning: isSandboxRunning(),
   });
 }
 
-async function handleFollowMessage(req: Request): Promise<Response> {
+async function handleFollowMessage(req: Request, url: URL, scopedGroup?: string): Promise<Response> {
   try {
+    // Rate limit per session token
+    const token = extractToken(req, url);
+    if (token) {
+      const now = Date.now();
+      const timestamps = messageRateMap.get(token) || [];
+      const recent = timestamps.filter((t) => now - t < MESSAGE_RATE_WINDOW_MS);
+      if (recent.length >= MESSAGE_RATE_LIMIT) {
+        return jsonResponse({ error: 'rate limit exceeded, try again later' }, 429);
+      }
+      recent.push(now);
+      messageRateMap.set(token, recent);
+    }
+
     const body = (await req.json()) as { text?: string; groupFolder?: string };
     const text = body.text?.trim();
     if (!text) {
       return jsonResponse({ error: 'text is required' }, 400);
     }
 
-    const groupFolder = body.groupFolder || 'main';
+    // If session is scoped to a group, enforce it; otherwise allow body param
+    const groupFolder = scopedGroup || body.groupFolder || 'main';
 
     // Resolve chat JID from registered groups
     const groups = loadJson<Record<string, RegisteredGroup>>(
@@ -1249,6 +1269,11 @@ function handleRequest(req: Request, server: import('bun').Server<NoVncWsData>):
     return upgraded ? undefined : new Response('WebSocket upgrade failed', { status: 500 });
   }
 
+  // noVNC follow page — injects VNC password server-side so it never reaches the client
+  if (req.method === 'GET' && pathname === '/novnc/follow') {
+    return proxyNoVncFollowPage(getSandboxVncPassword());
+  }
+
   // noVNC HTTP proxy (no auth — within authenticated iframe)
   if (req.method === 'GET' && pathname.startsWith('/novnc/')) {
     return proxyNoVncHttp(pathname);
@@ -1273,10 +1298,10 @@ function handleRequest(req: Request, server: import('bun').Server<NoVncWsData>):
     return jsonResponse({ error: 'unauthorized' }, 401);
   }
 
-  // CUA Follow API
-  if (pathname === '/api/cua/follow/stream') return handleFollowSSEStream(req, url);
+  // CUA Follow API — enforce group scope from session
+  if (pathname === '/api/cua/follow/stream') return handleFollowSSEStream(req, url, session.groupFolder);
   if (pathname === '/api/cua/follow/vnc-info') return handleFollowVncInfo();
-  if (req.method === 'POST' && pathname === '/api/cua/follow/message') return handleFollowMessage(req);
+  if (req.method === 'POST' && pathname === '/api/cua/follow/message') return handleFollowMessage(req, url, session.groupFolder);
 
   // Logs
   if (pathname === '/api/logs/stream') return handleSSEStream(req, url);
@@ -1380,7 +1405,16 @@ export function startDashboardServer(): void {
     websocket: createNoVncWebSocketHandler(),
   });
 
-  sessionCleanupInterval = setInterval(cleanExpiredSessions, 60 * 60 * 1000);
+  sessionCleanupInterval = setInterval(() => {
+    cleanExpiredSessions();
+    // Prune stale rate-limit entries
+    const now = Date.now();
+    for (const [key, timestamps] of messageRateMap) {
+      const recent = timestamps.filter((t) => now - t < MESSAGE_RATE_WINDOW_MS);
+      if (recent.length === 0) messageRateMap.delete(key);
+      else messageRateMap.set(key, recent);
+    }
+  }, 60 * 60 * 1000);
 
   logger.info(
     { port: DASHBOARD_PORT, url: getDashboardUrl() },
