@@ -1059,101 +1059,361 @@ input[type="text"] {
   flex: 1;
   display: flex;
   flex-direction: column;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.takeover-shell {
-  display: grid;
-  grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
-  grid-template-rows: 1fr;
-  gap: 12px;
+  align-items: center;
   padding: 12px;
-  flex: 1;
   min-height: 0;
+  overflow-y: auto;
 }
 
-.takeover-pane .meta {
-  padding: 14px;
-  display: grid;
-  gap: 12px;
-  align-content: start;
-}
-
-.takeover-pane .meta-item {
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 10px;
-  padding: 10px;
-}
-
-.takeover-pane .meta-label {
-  font-family: "IBM Plex Mono", "Menlo", "Consolas", monospace;
-  font-size: 11px;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
-.takeover-pane .meta-value {
-  margin-top: 5px;
-  word-break: break-word;
-  font-size: 13px;
-  line-height: 1.4;
-}
-
-.takeover-pane .controls {
-  display: grid;
-  gap: 8px;
-}
-
-.takeover-workspace {
-  min-height: 0;
+.takeover-pane .takeover-card {
+  width: 100%;
+  max-width: 680px;
+  background: rgba(15, 23, 42, 0.7);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 20px;
+  box-shadow:
+    0 0 40px rgba(56, 189, 248, 0.06),
+    0 24px 64px rgba(0, 0, 0, 0.35);
   overflow: hidden;
-  display: flex;
-  flex-direction: column;
 }
 
-.takeover-workspace-bar {
-  height: 38px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+/* Status Bar */
+.takeover-pane .status-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 12px;
-  color: var(--muted);
-  font-size: 12px;
+  padding: 10px 20px;
+  background: rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
-.takeover-pane .workspace-frame {
-  border: 0;
-  width: 100%;
-  min-height: 0;
-  flex: 1;
-  display: block;
-  background: var(--panel-2);
+.takeover-pane .status-bar-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
-.takeover-pane .fallback {
-  padding: 14px;
-  color: var(--muted);
-  line-height: 1.5;
+.takeover-pane .status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent-2);
+  animation: takeover-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
-.takeover-pane .open-desktop-btn {
+.takeover-pane .status-dot-ok { background: var(--ok); animation: none; }
+.takeover-pane .status-dot-error { background: var(--danger); animation: none; }
+
+@keyframes takeover-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(1.15); }
+}
+
+.takeover-pane .status-bar-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--accent-2);
+}
+
+.takeover-pane .status-bar-label-ok { color: var(--ok); }
+.takeover-pane .status-bar-label-error { color: var(--danger); }
+
+.takeover-pane .status-bar-id {
+  font-family: "IBM Plex Mono", "Menlo", "Consolas", monospace;
+  font-size: 11px;
+  color: rgba(148, 163, 184, 0.6);
+  letter-spacing: -0.02em;
+}
+
+/* Card Body */
+.takeover-pane .card-body {
+  padding: 28px 24px 30px;
+}
+
+/* Header */
+.takeover-pane .card-header {
+  margin-bottom: 24px;
+}
+
+.takeover-pane .header-icon {
   display: inline-flex;
-  margin-top: 12px;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  background: rgba(56, 189, 248, 0.1);
+  color: var(--accent);
+  margin-bottom: 16px;
 }
 
-.takeover-pane .status-ok { color: var(--ok); }
-.takeover-pane .status-error { color: var(--danger); }
-.takeover-pane .status-muted { color: var(--muted); }
+.takeover-pane .header-icon svg {
+  width: 24px;
+  height: 24px;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  fill: none;
+}
 
-@media (max-width: 900px) {
-  .takeover-shell {
+.takeover-pane .card-title {
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: #fff;
+  margin: 0 0 6px;
+}
+
+.takeover-pane .card-subtitle {
+  color: rgba(148, 163, 184, 0.85);
+  font-size: 14px;
+  line-height: 1.55;
+  margin: 0;
+  max-width: 440px;
+}
+
+/* Info Grid */
+.takeover-pane .info-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 24px;
+}
+
+.takeover-pane .info-cell {
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  transition: border-color 160ms ease;
+}
+
+.takeover-pane .info-cell:hover {
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.takeover-pane .info-cell-wide {
+  grid-column: 1 / -1;
+}
+
+.takeover-pane .info-cell-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.takeover-pane .info-cell-head svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 1.8;
+  fill: none;
+  flex-shrink: 0;
+}
+
+.takeover-pane .info-cell-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: rgba(148, 163, 184, 0.5);
+}
+
+.takeover-pane .info-cell-value {
+  font-size: 12px;
+  color: rgba(186, 207, 228, 0.85);
+  word-break: break-all;
+  font-family: "IBM Plex Mono", "Menlo", "Consolas", monospace;
+  user-select: all;
+  line-height: 1.45;
+}
+
+.takeover-pane .info-cell-inline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.takeover-pane .info-cell-inline .info-cell-head {
+  margin-bottom: 0;
+}
+
+.takeover-pane .info-cell-inline .info-cell-value {
+  font-size: 13px;
+  font-weight: 500;
+  color: #fff;
+  font-family: inherit;
+  user-select: auto;
+}
+
+.takeover-pane .info-cell-inline .info-cell-value-mono {
+  font-family: "IBM Plex Mono", "Menlo", "Consolas", monospace;
+  font-size: 11px;
+  font-weight: 400;
+  color: rgba(148, 163, 184, 0.7);
+}
+
+/* Icon colors */
+.takeover-pane .icon-sky { stroke: var(--accent); }
+.takeover-pane .icon-indigo { stroke: #818cf8; }
+.takeover-pane .icon-slate { stroke: rgba(148, 163, 184, 0.55); }
+
+/* Actions */
+.takeover-pane .action-area {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.takeover-pane .action-buttons {
+  display: flex;
+  gap: 10px;
+}
+
+.takeover-pane .btn-return {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-radius: 14px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #0a1628;
+  background: var(--accent);
+  border: none;
+  cursor: pointer;
+  transition: all 160ms ease;
+  box-shadow: 0 8px 24px rgba(56, 189, 248, 0.22);
+  font-family: inherit;
+}
+
+.takeover-pane .btn-return:hover {
+  background: #7dd3fc;
+  transform: translateY(-1px);
+}
+
+.takeover-pane .btn-return:active { transform: scale(0.98); }
+
+.takeover-pane .btn-return:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.takeover-pane .btn-return svg {
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+  stroke-width: 2;
+  fill: none;
+  transition: transform 160ms ease;
+}
+
+.takeover-pane .btn-return:hover svg {
+  transform: translateX(2px);
+}
+
+.takeover-pane .btn-return-done {
+  background: var(--ok);
+  box-shadow: 0 8px 24px rgba(34, 197, 94, 0.22);
+}
+
+.takeover-pane .btn-return-done:hover { background: #4ade80; }
+
+.takeover-pane .btn-desktop {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-radius: 14px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #fff;
+  background: rgba(30, 41, 59, 0.8);
+  border: 1px solid rgba(51, 65, 85, 0.8);
+  cursor: pointer;
+  text-decoration: none;
+  transition: all 160ms ease;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.takeover-pane .btn-desktop:hover {
+  background: rgba(51, 65, 85, 0.8);
+  border-color: rgba(71, 85, 105, 0.8);
+}
+
+.takeover-pane .btn-desktop svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  stroke-width: 2;
+  fill: none;
+}
+
+/* Info Banner */
+.takeover-pane .info-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(56, 189, 248, 0.05);
+  border: 1px solid rgba(56, 189, 248, 0.15);
+}
+
+.takeover-pane .info-banner svg {
+  width: 15px;
+  height: 15px;
+  stroke: var(--accent);
+  stroke-width: 2;
+  fill: none;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.takeover-pane .info-banner p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: rgba(125, 211, 252, 0.65);
+}
+
+/* Footer */
+.takeover-pane .card-footer {
+  padding: 14px 24px;
+  background: rgba(0, 0, 0, 0.2);
+  text-align: center;
+}
+
+.takeover-pane .card-footer span {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.25em;
+  color: rgba(71, 85, 105, 0.7);
+}
+
+@media (max-width: 600px) {
+  .takeover-pane .card-body {
+    padding: 20px 16px 24px;
+  }
+
+  .takeover-pane .card-title {
+    font-size: 20px;
+  }
+
+  .takeover-pane .info-grid {
     grid-template-columns: 1fr;
   }
-  .takeover-workspace {
-    min-height: 50vh;
+
+  .takeover-pane .action-buttons {
+    flex-direction: column;
   }
 }

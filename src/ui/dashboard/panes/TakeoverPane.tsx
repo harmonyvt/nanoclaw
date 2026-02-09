@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback } from 'preact/hooks';
 import { apiFetch } from '../../shared/api.js';
 import { useInterval } from '../../shared/hooks.js';
 import { MetadataPanel } from '../../takeover/MetadataPanel.js';
-import { DesktopViewer } from '../../takeover/DesktopViewer.js';
 
 interface TakeoverRequest {
   requestId: string;
@@ -60,39 +59,29 @@ export function TakeoverPane() {
           <h3>No Active Takeover Sessions</h3>
           <p>
             When an agent requests <code>browse_wait_for_user</code>, the session
-            will appear here with a live desktop view and control options.
+            will appear here with control options.
           </p>
         </div>
       </div>
     );
   }
 
-  // Show the first (oldest) pending request
   const active = requests[0];
-  const liveAvailable = !!active.liveViewUrl;
-  const launchReady = !!active.liveViewUrl && !!active.vncPassword;
 
   return (
     <div class="pane active">
       <div class="takeover-pane">
-        <div class="takeover-shell">
+        <div class="takeover-card">
           <MetadataPanel
             requestId={active.requestId}
             groupFolder={active.groupFolder}
             createdAt={active.createdAt}
             token={active.token}
             session=""
+            message={active.message ?? undefined}
+            liveViewUrl={active.liveViewUrl}
+            vncPassword={active.vncPassword}
           />
-          <main class="takeover-workspace panel">
-            <div class="takeover-workspace-bar">
-              <span>Live CUA Desktop</span>
-              <span>{launchReady ? 'ready' : liveAvailable ? 'preparing' : 'unavailable'}</span>
-            </div>
-            <DesktopViewer
-              liveViewUrl={active.liveViewUrl}
-              vncPassword={active.vncPassword}
-            />
-          </main>
         </div>
       </div>
     </div>
