@@ -88,6 +88,13 @@ export const CUA_SANDBOX_SCREEN_DEPTH = parseInt(
 export const CUA_SANDBOX_SHM_SIZE = process.env.CUA_SANDBOX_SHM_SIZE || '512m';
 export const CUA_API_KEY = process.env.CUA_API_KEY || '';
 
+// CUA sandbox persistence (default: true)
+// When enabled, sandbox container is stopped (not removed) on idle/shutdown,
+// and restarted on next use. Named volume persists /home/cua across container recreates.
+export const CUA_SANDBOX_PERSIST = process.env.CUA_SANDBOX_PERSIST !== 'false';
+export const CUA_SANDBOX_HOME_VOLUME =
+  process.env.CUA_SANDBOX_HOME_VOLUME || 'nanoclaw-cua-home';
+
 // Freya TTS configuration (disabled by default, set FREYA_TTS_ENABLED=true to enable)
 export const FREYA_TTS_ENABLED = process.env.FREYA_TTS_ENABLED === 'true';
 export const FREYA_API_KEY = process.env.FREYA_API_KEY || '';

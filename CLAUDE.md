@@ -130,6 +130,7 @@ Media path is translated from host path to container path in the XML prompt (`me
 - **Idle timeout**: Stops after 30 min of no browse activity
 - **Live URL in wait-for-user**: takeover URL `http://<tailscale-ip>:<CUA_TAKEOVER_WEB_PORT>/cua/takeover/<token>` (includes embedded noVNC + continue button; fallback `127.0.0.1`)
 - **Screenshot feedback**: `browse_screenshot` always saves to group media and is sent as Telegram photo
+- **Persistence**: Sandbox state (browser sessions, cookies, installed software) persists across restarts by default. The container is stopped (not removed) on idle, and restarted on next use. A named Docker volume (`nanoclaw-cua-home`) backs `/home/cua` as a safety net for image updates. Disable with `CUA_SANDBOX_PERSIST=false`.
 
 ## IPC Patterns
 
@@ -267,6 +268,8 @@ Requires `SUPERMEMORY_API_KEY`. When enabled, memories are also automatically re
 | `CUA_SANDBOX_SCREEN_HEIGHT` | `768`                    | CUA desktop height                      |
 | `CUA_SANDBOX_SCREEN_DEPTH`  | `24`                     | CUA desktop color depth                 |
 | `CUA_SANDBOX_SHM_SIZE`      | `512m`                   | Shared memory for Chromium stability    |
+| `CUA_SANDBOX_PERSIST`       | `true`                   | Persist sandbox state across restarts   |
+| `CUA_SANDBOX_HOME_VOLUME`   | `nanoclaw-cua-home`      | Docker volume for CUA home dir          |
 | `CUA_API_KEY`               | --                       | Optional CUA API key passed to sandbox  |
 | `LOG_LEVEL`                 | `info`                   | Pino log level                          |
 | `TZ`                        | system                   | Timezone for scheduled tasks            |
