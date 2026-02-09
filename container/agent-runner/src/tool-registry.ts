@@ -673,6 +673,15 @@ If a skill with the same name already exists, it will be overwritten.`,
     }),
     handler: async (args, ctx): Promise<ToolResult> => {
       const name = args.name as string;
+
+      // Validate name format (same check as store_skill)
+      if (!/^[a-z][a-z0-9_]{1,30}$/.test(name)) {
+        return {
+          content: 'Invalid skill name.',
+          isError: true,
+        };
+      }
+
       const skillPath = `/workspace/group/skills/${name}.json`;
 
       if (!fs.existsSync(skillPath)) {

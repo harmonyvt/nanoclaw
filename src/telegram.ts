@@ -1151,7 +1151,12 @@ export async function connectTelegram(
         return;
       }
       const skAction = skParts[1];
-      const skName = skParts.slice(2).join(':'); // name may contain colons (unlikely but safe)
+      const skName = skParts.slice(2).join(':');
+      // Validate skill name to prevent path traversal via crafted callback data
+      if (!/^[a-z][a-z0-9_]{1,30}$/.test(skName)) {
+        await ctx.answerCallbackQuery({ text: 'Invalid skill name' });
+        return;
+      }
       const skChatId = makeTelegramChatId(ctx.chat.id);
       const skGroup = registeredGroups()[skChatId];
 
