@@ -837,6 +837,7 @@ function startIpcWatcher(): void {
                   action,
                   phase: 'start',
                   description: startNote || action,
+                  requestId,
                   params: browseParams,
                 });
 
@@ -865,6 +866,7 @@ function startIpcWatcher(): void {
                   action,
                   phase: 'end',
                   description: describeCuaActionStart(action, browseParams) || action,
+                  requestId,
                   status: result.status,
                   durationMs: browseDurationMs,
                   error: result.status === 'error' ? String(result.error || 'unknown') : undefined,
