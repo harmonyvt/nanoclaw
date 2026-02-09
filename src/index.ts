@@ -98,6 +98,8 @@ import {
   initTailscaleServe,
   stopTailscaleServe,
 } from './tailscale-serve.js';
+import { emitCuaActivity, hasActiveFollowSession } from './cua-activity.js';
+import { queueActionForSummary } from './cua-follow-summary.js';
 
 let lastTimestamp = '';
 let sessions: Session = {};
@@ -782,9 +784,20 @@ function startIpcWatcher(): void {
                     `${waitMessage}${takeoverPart}\nRequest ID: ${requestId}\n\nWhen done, click "Return Control To Agent" in the takeover page.\nFallback: reply "continue ${requestId}".`,
                   );
                 }
-              } else if (chatJid) {
+              } else {
                 const startNote = describeCuaActionStart(action, browseParams);
-                if (startNote) {
+
+                // Emit activity event for follow page
+                emitCuaActivity({
+                  groupFolder: sourceGroup,
+                  action,
+                  phase: 'start',
+                  description: startNote || action,
+                  params: browseParams,
+                });
+
+                // Send Telegram start message only if no follow session
+                if (chatJid && startNote && !hasActiveFollowSession(sourceGroup)) {
                   await sendMessage(chatJid, `CUA: ${startNote}`);
                 }
               }
@@ -801,17 +814,37 @@ function startIpcWatcher(): void {
               const browseDurationMs = Date.now() - browseStartMs;
               const usage = updateCuaUsage(sourceGroup, action, result.status);
 
+              // Emit activity end event for follow page
+              if (action !== 'wait_for_user') {
+                emitCuaActivity({
+                  groupFolder: sourceGroup,
+                  action,
+                  phase: 'end',
+                  description: describeCuaActionStart(action, browseParams) || action,
+                  status: result.status,
+                  durationMs: browseDurationMs,
+                  error: result.status === 'error' ? String(result.error || 'unknown') : undefined,
+                  screenshotPath: action === 'screenshot' && result.status === 'ok' ? (result.result as string) : undefined,
+                  usage: { total: usage.total, ok: usage.ok, failed: usage.failed },
+                });
+              }
+
               if (chatJid && action !== 'wait_for_user') {
-                const statusText =
-                  result.status === 'ok'
-                    ? 'ok'
-                    : `error: ${truncateForTelegram(String(result.error || 'unknown'), 140)}`;
-                const summaryText = `Usage ${usage.total} actions (${usage.ok} ok, ${usage.failed} failed)`;
-                const recentText = usage.recent.join(' -> ');
-                await sendMessage(
-                  chatJid,
-                  `CUA ${action}: ${statusText} (${browseDurationMs}ms)\n${summaryText}\nRecent: ${recentText}`,
-                );
+                if (hasActiveFollowSession(sourceGroup)) {
+                  // Queue for periodic summary instead of individual messages
+                  queueActionForSummary(sourceGroup, action, result.status, browseDurationMs);
+                } else {
+                  const statusText =
+                    result.status === 'ok'
+                      ? 'ok'
+                      : `error: ${truncateForTelegram(String(result.error || 'unknown'), 140)}`;
+                  const summaryText = `Usage ${usage.total} actions (${usage.ok} ok, ${usage.failed} failed)`;
+                  const recentText = usage.recent.join(' -> ');
+                  await sendMessage(
+                    chatJid,
+                    `CUA ${action}: ${statusText} (${browseDurationMs}ms)\n${summaryText}\nRecent: ${recentText}`,
+                  );
+                }
               }
 
               // Write response file (atomic: temp + rename)
@@ -823,13 +856,13 @@ function startIpcWatcher(): void {
               // Clean up request file
               fs.unlinkSync(filePath);
 
-              // Send screenshots as Telegram photos for better UX
+              // Send screenshots as Telegram photos (suppressed during follow mode)
               if (
                 action === 'screenshot' &&
                 result.status === 'ok' &&
                 result.result
               ) {
-                if (chatJid) {
+                if (chatJid && !hasActiveFollowSession(sourceGroup)) {
                   // Translate container path back to host path
                   const containerPath = result.result as string;
                   const hostPath = path.join(

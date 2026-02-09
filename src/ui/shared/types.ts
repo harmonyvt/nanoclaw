@@ -65,3 +65,18 @@ export interface FileEntry {
   path: string;
   permissions?: string;
 }
+
+export interface CuaActivityEvent {
+  id: string;
+  timestamp: number;
+  groupFolder: string;
+  action: string;
+  phase: 'start' | 'end';
+  description: string;
+  params?: Record<string, unknown>;
+  status?: 'ok' | 'error';
+  durationMs?: number;
+  error?: string;
+  screenshotPath?: string;
+  usage?: { total: number; ok: number; failed: number };
+}

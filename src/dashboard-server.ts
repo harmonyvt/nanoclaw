@@ -8,8 +8,9 @@ import {
   DASHBOARD_TLS_KEY,
   DASHBOARD_URL,
   GROUPS_DIR,
+  DATA_DIR,
 } from './config.js';
-import { getSandboxHostIp, isSandboxRunning, ensureSandbox, getSandboxUrl, resetIdleTimer } from './sandbox-manager.js';
+import { getSandboxHostIp, isSandboxRunning, ensureSandbox, getSandboxUrl, getSandboxVncPassword, resetIdleTimer } from './sandbox-manager.js';
 import { getTailscaleHttpsUrl } from './tailscale-serve.js';
 import { logger } from './logger.js';
 import {
@@ -42,6 +43,18 @@ import {
 } from './browse-host.js';
 import { serveStaticAsset } from './ui-assets.js';
 import { proxyNoVncHttp, createNoVncWebSocketHandler, makeNoVncWsData, type NoVncWsData } from './novnc-proxy.js';
+import {
+  cuaActivityEmitter,
+  registerFollowSession,
+  unregisterFollowSession,
+  hasActiveFollowSession,
+  getActivityRingBuffer,
+  type CuaActivityEvent,
+} from './cua-activity.js';
+import { startFollowSummaryTimer, stopFollowSummaryTimer } from './cua-follow-summary.js';
+import { sendTelegramMessage } from './telegram.js';
+import { loadJson } from './utils.js';
+import type { RegisteredGroup } from './types.js';
 
 let dashboardServer: ReturnType<typeof Bun.serve> | null = null;
 let sessionCleanupInterval: ReturnType<typeof setInterval> | null = null;
@@ -1063,6 +1076,156 @@ function renderDashboardPage(): string {
 </html>`;
 }
 
+// ── Follow Page ─────────────────────────────────────────────────────────
+
+function renderFollowPage(): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CUA Follow</title>
+  <link rel="stylesheet" href="/assets/follow.css">
+</head>
+<body>
+  <div id="app"></div>
+  <script type="module" src="/assets/follow.js"><\/script>
+</body>
+</html>`;
+}
+
+function handleFollowSSEStream(req: Request, url: URL): Response {
+  const groupFolder = url.searchParams.get('group') || 'main';
+  const sessionId = `follow-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+  const stream = new ReadableStream({
+    start(controller) {
+      const encoder = new TextEncoder();
+
+      function send(eventType: string, data: unknown) {
+        try {
+          controller.enqueue(
+            encoder.encode(
+              `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`,
+            ),
+          );
+        } catch {
+          // Stream closed
+        }
+      }
+
+      // Register follow session and start summary timer
+      registerFollowSession(groupFolder, sessionId);
+
+      // Resolve chat JID for summary timer
+      const groups = loadJson<Record<string, RegisteredGroup>>(
+        path.join(DATA_DIR, 'registered_groups.json'),
+        {},
+      );
+      const chatJid = Object.entries(groups).find(
+        ([, g]) => g.folder === groupFolder,
+      )?.[0];
+
+      if (chatJid) {
+        startFollowSummaryTimer(groupFolder, async (summary) => {
+          try {
+            await sendTelegramMessage(chatJid, summary);
+          } catch (err) {
+            logger.warn({ module: 'dashboard', err }, 'Failed to send follow summary');
+          }
+        });
+      }
+
+      // Send catch-up events
+      const catchUp = getActivityRingBuffer(groupFolder);
+      for (const entry of catchUp) {
+        send('activity', entry);
+      }
+
+      // Subscribe to new events
+      const onActivity = (event: CuaActivityEvent) => {
+        if (event.groupFolder === groupFolder) {
+          send('activity', event);
+        }
+      };
+      cuaActivityEmitter.on('activity', onActivity);
+
+      // Heartbeat
+      const heartbeat = setInterval(() => {
+        try {
+          controller.enqueue(encoder.encode(': heartbeat\n\n'));
+        } catch {
+          clearInterval(heartbeat);
+        }
+      }, 15_000);
+
+      // Cleanup on disconnect
+      req.signal.addEventListener('abort', () => {
+        cuaActivityEmitter.off('activity', onActivity);
+        clearInterval(heartbeat);
+        const disconnectedGroup = unregisterFollowSession(sessionId);
+        if (disconnectedGroup && !hasActiveFollowSession(disconnectedGroup)) {
+          stopFollowSummaryTimer(disconnectedGroup);
+        }
+        try {
+          controller.close();
+        } catch {
+          // Already closed
+        }
+      });
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      'content-type': 'text/event-stream',
+      'cache-control': 'no-cache',
+      connection: 'keep-alive',
+    },
+  });
+}
+
+function handleFollowVncInfo(): Response {
+  return jsonResponse({
+    liveViewUrl: getSandboxUrl(),
+    vncPassword: getSandboxVncPassword(),
+    sandboxRunning: isSandboxRunning(),
+  });
+}
+
+async function handleFollowMessage(req: Request): Promise<Response> {
+  try {
+    const body = (await req.json()) as { text?: string; groupFolder?: string };
+    const text = body.text?.trim();
+    if (!text) {
+      return jsonResponse({ error: 'text is required' }, 400);
+    }
+
+    const groupFolder = body.groupFolder || 'main';
+
+    // Resolve chat JID from registered groups
+    const groups = loadJson<Record<string, RegisteredGroup>>(
+      path.join(DATA_DIR, 'registered_groups.json'),
+      {},
+    );
+    const chatJid = Object.entries(groups).find(
+      ([, g]) => g.folder === groupFolder,
+    )?.[0];
+
+    if (!chatJid) {
+      return jsonResponse({ error: 'group not found' }, 404);
+    }
+
+    await sendTelegramMessage(chatJid, text);
+    return jsonResponse({ ok: true });
+  } catch (err) {
+    return jsonResponse(
+      { error: `send failed: ${err instanceof Error ? err.message : String(err)}` },
+      500,
+    );
+  }
+}
+
 // ── Request router ──────────────────────────────────────────────────────
 
 function handleRequest(req: Request, server: import('bun').Server<NoVncWsData>): Response | Promise<Response> | undefined {
@@ -1091,9 +1254,12 @@ function handleRequest(req: Request, server: import('bun').Server<NoVncWsData>):
     return proxyNoVncHttp(pathname);
   }
 
-  // HTML page (no auth — JS handles it)
+  // HTML pages (no auth — JS handles it)
   if (pathname === '/' || pathname === '/app') {
     return htmlResponse(renderDashboardPage());
+  }
+  if (pathname === '/cua/follow') {
+    return htmlResponse(renderFollowPage());
   }
 
   // Auth endpoint
@@ -1106,6 +1272,11 @@ function handleRequest(req: Request, server: import('bun').Server<NoVncWsData>):
   if (!session) {
     return jsonResponse({ error: 'unauthorized' }, 401);
   }
+
+  // CUA Follow API
+  if (pathname === '/api/cua/follow/stream') return handleFollowSSEStream(req, url);
+  if (pathname === '/api/cua/follow/vnc-info') return handleFollowVncInfo();
+  if (req.method === 'POST' && pathname === '/api/cua/follow/message') return handleFollowMessage(req);
 
   // Logs
   if (pathname === '/api/logs/stream') return handleSSEStream(req, url);

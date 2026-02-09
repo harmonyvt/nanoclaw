@@ -99,6 +99,14 @@ export function useSSE(
       }
     });
 
+    es.addEventListener('activity', (e) => {
+      try {
+        onMessageRef.current('activity', JSON.parse((e as MessageEvent).data));
+      } catch {
+        // Ignore parse errors
+      }
+    });
+
     // Generic message event
     es.onmessage = (e) => {
       try {
