@@ -24,8 +24,6 @@ import { isCancelled } from '../cancel.js';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
-/** Maximum agentic loop iterations to prevent runaway tool-calling */
-export const MAX_ITERATIONS = 50;
 
 // ─── Logging ────────────────────────────────────────────────────────────────
 
@@ -117,7 +115,8 @@ export class OpenAIAdapter implements ProviderAdapter {
     ];
 
     let iterations = 0;
-    while (iterations++ < MAX_ITERATIONS) {
+    while (true) {
+      iterations++;
       // Check for user interrupt
       if (isCancelled()) {
         log('Cancel detected, stopping OpenAI loop');
@@ -175,9 +174,6 @@ export class OpenAIAdapter implements ProviderAdapter {
       }
     }
 
-    if (iterations > MAX_ITERATIONS) {
-      log(`Hit max iterations (${MAX_ITERATIONS}), stopping`);
-    }
 
     // Save conversation history (exclude system prompt, we rebuild it each time).
     // Cast to SessionMessage[] -- the session layer uses loose types for serialization.
