@@ -235,6 +235,11 @@ export function isVerbose(chatJid: string): boolean {
   return verboseChats.has(chatJid);
 }
 
+const thinkingDisabledChats = new Set<string>();
+export function isThinkingEnabled(chatJid: string): boolean {
+  return !thinkingDisabledChats.has(chatJid);
+}
+
 const TELEGRAM_MAX_LENGTH = 4096;
 
 type SlashCommandSpec = {
@@ -250,6 +255,7 @@ type SlashCommandSpec = {
     | 'dashboard'
     | 'follow'
     | 'verbose'
+    | 'thinking'
     | 'stop'
     | 'help';
   description: string;
@@ -311,6 +317,11 @@ const TELEGRAM_SLASH_COMMANDS: SlashCommandSpec[] = [
     command: 'verbose',
     description: 'Toggle verbose mode (show agent tool use)',
     help: 'Toggle verbose mode (show agent tool use)',
+  },
+  {
+    command: 'thinking',
+    description: 'Toggle thinking status display',
+    help: 'Toggle italic thinking/tool status in chat (on by default)',
   },
   {
     command: 'stop',
@@ -818,6 +829,18 @@ export async function connectTelegram(
     } else {
       verboseChats.add(chatId);
       await ctx.reply('Verbose mode on');
+    }
+  });
+
+  bot.command('thinking', async (ctx) => {
+    if (!shouldAccept(ctx)) return;
+    const chatId = makeTelegramChatId(ctx.chat.id);
+    if (thinkingDisabledChats.has(chatId)) {
+      thinkingDisabledChats.delete(chatId);
+      await ctx.reply('Thinking status on');
+    } else {
+      thinkingDisabledChats.add(chatId);
+      await ctx.reply('Thinking status off');
     }
   });
 
@@ -1478,6 +1501,65 @@ export async function sendTelegramMessage(
 
   for (const chunk of chunks) {
     await bot.api.sendMessage(numericId, chunk);
+  }
+}
+
+/**
+ * Send an italic HTML status message and return its message_id.
+ * Used for the thinking/tool activity indicator.
+ */
+export async function sendTelegramStatusMessage(
+  chatId: string,
+  text: string,
+): Promise<number | null> {
+  if (!bot) return null;
+  const numericId = extractTelegramChatId(chatId);
+  try {
+    const msg = await bot.api.sendMessage(numericId, `<i>${escapeHtml(text)}</i>`, {
+      parse_mode: 'HTML',
+    });
+    return msg.message_id;
+  } catch (err) {
+    logger.debug({ module: 'telegram', chatId, err }, 'Failed to send status message');
+    return null;
+  }
+}
+
+/**
+ * Edit an existing status message in-place with new italic text.
+ */
+export async function editTelegramStatusMessage(
+  chatId: string,
+  messageId: number,
+  text: string,
+): Promise<boolean> {
+  if (!bot) return false;
+  const numericId = extractTelegramChatId(chatId);
+  try {
+    await bot.api.editMessageText(numericId, messageId, `<i>${escapeHtml(text)}</i>`, {
+      parse_mode: 'HTML',
+    });
+    return true;
+  } catch (err) {
+    // Telegram returns 400 if content is identical or message was deleted
+    logger.debug({ module: 'telegram', chatId, messageId, err }, 'Failed to edit status message');
+    return false;
+  }
+}
+
+/**
+ * Delete a Telegram message. Silently ignores failures.
+ */
+export async function deleteTelegramMessage(
+  chatId: string,
+  messageId: number,
+): Promise<void> {
+  if (!bot) return;
+  const numericId = extractTelegramChatId(chatId);
+  try {
+    await bot.api.deleteMessage(numericId, messageId);
+  } catch (err) {
+    logger.debug({ module: 'telegram', chatId, messageId, err }, 'Failed to delete status message');
   }
 }
 

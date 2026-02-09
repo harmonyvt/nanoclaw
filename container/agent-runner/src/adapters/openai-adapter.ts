@@ -140,6 +140,13 @@ export class OpenAIAdapter implements ProviderAdapter {
       const assistantMessage = choice.message;
       messages.push(assistantMessage);
 
+      // Capture reasoning content from o-series models (o1, o3, etc.)
+      const reasoning = (assistantMessage as unknown as Record<string, unknown>).reasoning_content;
+      if (reasoning && typeof reasoning === 'string') {
+        const snippet = reasoning.length > 200 ? '...' + reasoning.slice(-200) : reasoning;
+        yield { type: 'thinking', content: snippet };
+      }
+
       // No tool calls = final response
       if (!assistantMessage.tool_calls || assistantMessage.tool_calls.length === 0) {
         if (assistantMessage.content) {

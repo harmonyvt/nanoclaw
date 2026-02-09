@@ -290,6 +290,7 @@ Requires `SUPERMEMORY_API_KEY`. When enabled, memories are also automatically re
 | `CUA_SANDBOX_PERSIST`       | `true`                   | Persist sandbox state across restarts   |
 | `CUA_SANDBOX_HOME_VOLUME`   | `nanoclaw-cua-home`      | Docker volume for CUA home dir          |
 | `CUA_API_KEY`               | --                       | Optional CUA API key passed to sandbox  |
+| `MAX_THINKING_TOKENS`       | `10000`                  | Claude extended thinking token budget   |
 | `LOG_LEVEL`                 | `info`                   | Pino log level                          |
 | `TZ`                        | system                   | Timezone for scheduled tasks            |
 
