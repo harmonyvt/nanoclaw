@@ -853,9 +853,6 @@ export async function connectTelegram(
       }
 
       pendingUpdatesByChat.delete(chatId);
-      await ctx.reply(
-        `Starting update now. I will post progress updates in this chat as each step runs.\nI will also write detailed logs to ${SELF_UPDATE_LOG}.`,
-      );
 
       try {
         startSelfUpdateProcess(ctx.chat.id);
@@ -1030,9 +1027,6 @@ export async function connectTelegram(
       pendingUpdatesByChat.delete(chatId);
       await ctx.editMessageReplyMarkup({ reply_markup: undefined });
       await ctx.answerCallbackQuery({ text: 'Starting update...' });
-      await ctx.reply(
-        `Starting update now. I will post progress updates in this chat as each step runs.\nI will also write detailed logs to ${SELF_UPDATE_LOG}.`,
-      );
       try {
         startSelfUpdateProcess(ctx.chat.id);
       } catch (err) {
@@ -1050,9 +1044,6 @@ export async function connectTelegram(
         return;
       }
       await ctx.answerCallbackQuery({ text: 'Starting rebuild...' });
-      await ctx.reply(
-        `Rebuilding now (install, build, container, restart). Progress updates will appear here.\nDetailed logs: ${SELF_UPDATE_LOG}`,
-      );
       try {
         startSelfUpdateProcess(ctx.chat.id, { rebuildOnly: true });
       } catch (err) {

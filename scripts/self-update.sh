@@ -13,39 +13,94 @@ if [[ -n "$SELF_UPDATE_CHAT_ID" && -n "$TELEGRAM_TOKEN" ]] && command -v curl >/
   CAN_NOTIFY=1
 fi
 
-notify_telegram() {
-  local text="$1"
-  if [[ "$CAN_NOTIFY" != "1" ]]; then
-    return 0
-  fi
+# --- Progressive single-message Telegram notifications ---
+# Instead of flooding the chat with one message per step, we send a single
+# message and edit it as each step completes. Completed steps get a checkmark,
+# the current step gets a spinner, and failures get an X.
 
-  curl \
-    --silent \
-    --show-error \
-    --max-time 10 \
-    --request POST \
-    "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
-    --data-urlencode "chat_id=${SELF_UPDATE_CHAT_ID}" \
-    --data-urlencode "text=${text}" \
-    >/dev/null || true
+PROGRESS_MSG_ID="${_SELF_UPDATE_MSG_ID:-}"
+PROGRESS_DONE="${_SELF_UPDATE_DONE:-}"
+CURRENT_STEP=""
+
+render_progress() {
+  local text="${PROGRESS_DONE}"
+  if [[ -n "$CURRENT_STEP" ]]; then
+    text+="$(printf '⏳ %s...' "$CURRENT_STEP")"
+  fi
+  printf '%s' "$text"
+}
+
+send_or_edit() {
+  local text="$1"
+  [[ "$CAN_NOTIFY" == "1" ]] || return 0
+  [[ -n "$text" ]] || return 0
+
+  if [[ -z "$PROGRESS_MSG_ID" ]]; then
+    local resp
+    resp=$(curl -s --max-time 10 -X POST \
+      "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+      --data-urlencode "chat_id=${SELF_UPDATE_CHAT_ID}" \
+      --data-urlencode "text=${text}" 2>/dev/null) || return 0
+    PROGRESS_MSG_ID=$(printf '%s' "$resp" | sed -n 's/.*"message_id":\([0-9]*\).*/\1/p' | head -1)
+  else
+    curl -s --max-time 10 -X POST \
+      "https://api.telegram.org/bot${TELEGRAM_TOKEN}/editMessageText" \
+      --data-urlencode "chat_id=${SELF_UPDATE_CHAT_ID}" \
+      --data-urlencode "message_id=${PROGRESS_MSG_ID}" \
+      --data-urlencode "text=${text}" \
+      >/dev/null 2>&1 || true
+  fi
 }
 
 log_step() {
   local message="$1"
   echo "${LOG_PREFIX} ${message}"
-  notify_telegram "Update progress: ${message}"
+
+  # Mark previous step as completed
+  if [[ -n "$CURRENT_STEP" ]]; then
+    PROGRESS_DONE+="$(printf '✓ %s\n' "$CURRENT_STEP")"
+  fi
+  CURRENT_STEP="$message"
+
+  send_or_edit "$(render_progress)"
+}
+
+# Mark current step done and show final success
+log_done() {
+  local message="$1"
+  echo "${LOG_PREFIX} ${message}"
+
+  if [[ -n "$CURRENT_STEP" ]]; then
+    PROGRESS_DONE+="$(printf '✓ %s\n' "$CURRENT_STEP")"
+  fi
+  CURRENT_STEP=""
+  PROGRESS_DONE+="$(printf '✅ %s' "$message")"
+
+  send_or_edit "$PROGRESS_DONE"
 }
 
 fail() {
   local message="$1"
   echo "${LOG_PREFIX} ERROR: ${message}" >&2
-  notify_telegram "Update failed: ${message}"
+
+  local text="${PROGRESS_DONE}"
+  if [[ -n "$CURRENT_STEP" ]]; then
+    text+="$(printf '✗ %s\n' "$CURRENT_STEP")"
+  fi
+  text+="$(printf '❌ %s' "$message")"
+
+  send_or_edit "$text"
   exit 1
 }
 
 on_error() {
   local line="$1"
-  notify_telegram "Update failed near script line ${line}. Check logs/self-update.log for details."
+  local text="${PROGRESS_DONE}"
+  if [[ -n "$CURRENT_STEP" ]]; then
+    text+="$(printf '✗ %s\n' "$CURRENT_STEP")"
+  fi
+  text+="$(printf '❌ Failed near line %s. Check logs/self-update.log' "$line")"
+  send_or_edit "$text"
 }
 
 trap 'on_error "$LINENO"' ERR
@@ -55,9 +110,9 @@ REEXECED="${_SELF_UPDATE_REEXECED:-0}"
 REBUILD_ONLY="${SELF_UPDATE_REBUILD_ONLY:-0}"
 
 if [[ "$REBUILD_ONLY" == "1" ]]; then
-  log_step "rebuild-only mode (no git pull)"
+  log_step "Rebuild (no git pull)"
 else
-  log_step "triggered for ${REMOTE}/${BRANCH}"
+  log_step "Updating from ${REMOTE}/${BRANCH}"
 fi
 
 if command -v bun >/dev/null 2>&1; then
@@ -80,18 +135,18 @@ if [[ "$REBUILD_ONLY" != "1" ]]; then
   if [[ "$REEXECED" != "1" ]]; then
     DIRTY="$(git diff --stat)"
     if [[ -n "$DIRTY" ]]; then
-      log_step "found local uncommitted changes; resetting to HEAD before update"
+      log_step "Resetting local changes"
       echo "$DIRTY"
     fi
     git reset --hard HEAD
 
-    log_step "fetching ${REMOTE}/${BRANCH}"
+    log_step "Fetching ${REMOTE}/${BRANCH}"
     git fetch --quiet "$REMOTE" "$BRANCH"
 
     REMOTE_REF="${REMOTE}/${BRANCH}"
     BEHIND="$(git rev-list --count "HEAD..${REMOTE_REF}")"
     if [[ "$BEHIND" == "0" ]]; then
-      log_step "already up to date on ${REMOTE_REF}"
+      log_done "Already up to date"
       exit 0
     fi
 
@@ -100,30 +155,36 @@ if [[ "$REBUILD_ONLY" != "1" ]]; then
     # Snapshot the updater script hash before pulling
     OLD_SCRIPT_HASH="$(shasum -a 256 "$SELF_SCRIPT" | cut -d' ' -f1)"
 
-    log_step "updating to ${REMOTE_REF} (${BEHIND} commit(s) behind)"
+    log_step "Pulling ${BEHIND} commit(s)"
     git reset --hard "${REMOTE_REF}"
 
     # Re-exec if the updater itself changed
     NEW_SCRIPT_HASH="$(shasum -a 256 "$SELF_SCRIPT" | cut -d' ' -f1)"
     if [[ "$OLD_SCRIPT_HASH" != "$NEW_SCRIPT_HASH" ]]; then
-      log_step "updater script changed; re-executing fresh version"
+      log_step "Re-executing updated script"
+      # Carry progress state across exec
+      if [[ -n "$CURRENT_STEP" ]]; then
+        PROGRESS_DONE+="$(printf '✓ %s\n' "$CURRENT_STEP")"
+      fi
       export _SELF_UPDATE_REEXECED=1
       export _SELF_UPDATE_OLD_HEAD="$OLD_HEAD"
+      export _SELF_UPDATE_MSG_ID="$PROGRESS_MSG_ID"
+      export _SELF_UPDATE_DONE="$PROGRESS_DONE"
       exec bash "$SELF_SCRIPT"
     fi
   else
-    # Recover OLD_HEAD passed from the previous exec
+    # Recover state passed from the previous exec
     OLD_HEAD="${_SELF_UPDATE_OLD_HEAD:-$(git rev-parse HEAD)}"
   fi
 fi
 
-log_step "installing dependencies"
+log_step "Installing dependencies"
 if ! "$BUN_PATH" install --frozen-lockfile; then
-  log_step "frozen lockfile install failed; retrying without --frozen-lockfile"
+  log_step "Retrying install (no frozen lockfile)"
   "$BUN_PATH" install
 fi
 
-log_step "building"
+log_step "Building"
 "$BUN_PATH" run build
 
 # Rebuild the agent container if needed
@@ -135,13 +196,14 @@ else
 fi
 if [[ -n "$CONTAINER_CHANGED" ]]; then
   if command -v docker >/dev/null 2>&1; then
-    log_step "rebuilding agent image"
+    log_step "Rebuilding agent container"
     bash "${ROOT_DIR}/container/build.sh"
   else
-    log_step "docker not found; skipping image rebuild"
+    log_step "Skipping container (docker not found)"
   fi
 else
-  log_step "no container changes; skipping image rebuild"
+  # Mark as skipped in log but don't update progress (not interesting)
+  echo "${LOG_PREFIX} no container changes; skipping image rebuild"
 fi
 
 # Write a marker so the new process can verify the update on startup
@@ -157,18 +219,21 @@ cat > "$MARKER_FILE" <<MARKER_EOF
 {"expectedHead":"${NEW_HEAD}","chatId":"${SELF_UPDATE_CHAT_ID}","timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)","containerRebuilt":${REBUILT_FLAG}}
 MARKER_EOF
 
+log_step "Restarting service"
+
 OS="$(uname -s)"
 if [[ "$OS" == "Darwin" ]]; then
   if ! command -v launchctl >/dev/null 2>&1; then
     fail "launchctl not found on Darwin host"
   fi
-  log_step "restarting launchd service com.nanoclaw"
+  # On macOS, kickstart -k kills this process, so the progress message
+  # will show "⏳ Restarting service..." as the last state. The post-restart
+  # verification (verifySelfUpdate) sends the final confirmation.
   launchctl kickstart -k "gui/${UID}/com.nanoclaw"
 elif [[ "$OS" == "Linux" ]]; then
   if ! command -v systemctl >/dev/null 2>&1; then
     fail "systemctl not found on Linux host"
   fi
-  log_step "restarting systemd user service com.nanoclaw.service"
   # Use systemd-run to restart from a separate cgroup scope, so this script
   # isn't killed when systemd tears down the service's cgroup.
   if command -v systemd-run >/dev/null 2>&1; then
@@ -182,4 +247,4 @@ else
   fail "unsupported OS for self-update: ${OS}"
 fi
 
-log_step "self-update complete"
+log_done "Update complete"
