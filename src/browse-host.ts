@@ -29,7 +29,6 @@ export type PendingWaitForUserView = {
 // Pending wait-for-user requests: requestId -> metadata + resolver
 const waitingForUser: Map<string, PendingWaitForUser> = new Map();
 const waitingForUserByToken: Map<string, string> = new Map();
-const lastNavigatedUrlByGroup = new Map<string, string>();
 
 type BrowseResponse = {
   status: 'ok' | 'error';
@@ -339,17 +338,6 @@ async function runCuaCommandWithFallback(
     : new Error('CUA command fallback failed: no compatible command succeeded');
 }
 
-async function tryCuaCommandWithFallback(
-  attempts: Array<{ command: string; args?: Record<string, unknown> }>,
-): Promise<boolean> {
-  try {
-    await runCuaCommandWithFallback(attempts);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 async function sleep(ms: number): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
@@ -387,127 +375,6 @@ function coerceSnapshotRecord(input: unknown): Record<string, unknown> | null {
     }
   }
   return null;
-}
-
-function looksLikeDesktopSnapshot(snapshot: unknown): boolean {
-  const record = coerceSnapshotRecord(snapshot);
-  if (!record) return false;
-  const title = String(record.title || '').toLowerCase();
-  const role = String(record.role || '').toLowerCase();
-  const children = Array.isArray(record.children) ? record.children : [];
-  return (
-    children.length === 0 &&
-    role === 'window' &&
-    (title.includes('linux window') || title.includes('desktop'))
-  );
-}
-
-function collectWindowIds(payload: unknown): Array<string | number> {
-  const ids: Array<string | number> = [];
-
-  const pushIfId = (candidate: unknown): void => {
-    if (typeof candidate === 'string' || typeof candidate === 'number') {
-      ids.push(candidate);
-    }
-  };
-
-  const visit = (value: unknown): void => {
-    if (Array.isArray(value)) {
-      for (const entry of value) visit(entry);
-      return;
-    }
-    if (!value || typeof value !== 'object') return;
-
-    const record = value as Record<string, unknown>;
-    pushIfId(record.window_id);
-    pushIfId(record.windowId);
-    pushIfId(record.id);
-
-    if (Array.isArray(record.windows)) {
-      visit(record.windows);
-    }
-  };
-
-  visit(payload);
-  return ids;
-}
-
-async function focusBrowserWindow(): Promise<boolean> {
-  const candidates = ['chromium', 'google-chrome', 'chrome', 'firefox'];
-
-  for (const app of candidates) {
-    let windows: unknown;
-    try {
-      windows = await runCuaCommand('get_application_windows', { app });
-    } catch {
-      continue;
-    }
-
-    const windowIds = collectWindowIds(windows);
-    for (const windowId of windowIds) {
-      const activated = await tryCuaCommandWithFallback([
-        { command: 'activate_window', args: { window_id: windowId } },
-      ]);
-      if (!activated) continue;
-
-      await tryCuaCommandWithFallback([
-        { command: 'maximize_window', args: { window_id: windowId } },
-      ]);
-      return true;
-    }
-  }
-
-  return false;
-}
-
-async function stabilizeBrowserForScreenshot(
-  groupFolder: string,
-): Promise<void> {
-  const focusedWindow = await focusBrowserWindow();
-  if (focusedWindow) {
-    await sleep(250);
-  } else {
-    // Only use alt+tab as last resort when API-based window focus failed.
-    // Sending alt+tab unconditionally causes window flickering and disrupts
-    // active editing (e.g. spreadsheet cells, form fields).
-    const switched = await tryCuaCommandWithFallback([
-      { command: 'hotkey', args: { keys: 'alt+tab' } },
-      { command: 'press_key', args: { key: 'alt+tab' } },
-    ]);
-    if (switched) await sleep(300);
-  }
-
-  let snapshot: unknown = null;
-  try {
-    snapshot = await runCuaCommand('get_accessibility_tree');
-  } catch {
-    // Snapshot may fail on some CUA builds; continue best-effort.
-  }
-
-  if (!looksLikeDesktopSnapshot(snapshot)) {
-    return;
-  }
-
-  const lastUrl = lastNavigatedUrlByGroup.get(groupFolder);
-  if (!lastUrl) {
-    logger.warn(
-      { groupFolder },
-      'Desktop appears focused before screenshot and no last URL is available',
-    );
-    return;
-  }
-
-  const reopened = await tryCuaCommandWithFallback(
-    buildOpenUrlAttempts(lastUrl),
-  );
-  if (reopened) {
-    await focusBrowserWindow();
-    logger.debug(
-      { groupFolder, lastUrl },
-      'Re-opened last URL before screenshot due to desktop-focused snapshot',
-    );
-    await sleep(2200);
-  }
 }
 
 function normalizeSelectorToken(value: string): string {
@@ -1695,7 +1562,6 @@ async function processCuaRequest(
 
       // Some CUA builds do not expose a `wait` command. Keep a host-side delay.
       await sleep(openedViaDirectCommand ? 2200 : 1500);
-      lastNavigatedUrlByGroup.set(groupFolder, url);
       return { status: 'ok', result: `Navigated to ${url}` };
     }
     case 'snapshot': {
@@ -1865,7 +1731,6 @@ async function processCuaRequest(
       };
     }
     case 'screenshot': {
-      await stabilizeBrowserForScreenshot(groupFolder);
       const screenshotContent = await runCuaCommand('screenshot');
       const base64 = extractBase64Png(screenshotContent);
       if (!base64) {
