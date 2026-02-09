@@ -15,9 +15,11 @@ interface Props {
 
 type StatusColor = 'muted' | 'ok' | 'error';
 
-function buildNoVncUrl(liveViewUrl: string, vncPassword: string): string | null {
+function buildNoVncUrl(_liveViewUrl: string, vncPassword: string): string | null {
   try {
-    const url = new URL('/vnc.html', liveViewUrl);
+    // Route through the takeover server's /novnc/ proxy so the URL works over
+    // Tailscale HTTPS on the same origin (port 6901 isn't Tailscale-served).
+    const url = new URL('/novnc/vnc.html', window.location.origin);
     url.searchParams.set('autoconnect', 'true');
     url.searchParams.set('resize', 'scale');
     url.searchParams.set('scale', 'true');
