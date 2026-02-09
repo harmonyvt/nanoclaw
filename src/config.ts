@@ -167,6 +167,13 @@ export const CUA_TAKEOVER_HTTPS_PORT = parseInt(
 export const TIMEZONE =
   process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
 
+// 1Password Vault configuration (agent credential retrieval for CUA login flows)
+// Requires a 1Password service account with access to the dedicated vault
+export const OP_SERVICE_ACCOUNT_TOKEN =
+  process.env.OP_SERVICE_ACCOUNT_TOKEN || '';
+export const OP_VAULT_NAME =
+  process.env.OP_VAULT_NAME || 'NanoClaw Agent';
+
 // Default AI provider configuration
 // Groups without explicit providerConfig use these values
 export const DEFAULT_PROVIDER = process.env.DEFAULT_PROVIDER || 'anthropic';

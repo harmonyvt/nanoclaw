@@ -35,6 +35,7 @@ Telegram <-> Host (Bun) <-> SQLite
 | `src/sandbox-manager.ts`  | CUA sandbox lifecycle: start/stop/idle timeout (Docker)            |
 | `src/mount-security.ts`   | Validates additional mounts against external allowlist             |
 | `src/supermemory.ts`      | Optional Supermemory integration: retrieve/store long-term memory  |
+| `src/vault-host.ts`      | 1Password vault integration: credential retrieval via IPC          |
 | `src/types.ts`            | Shared TypeScript interfaces                                       |
 | `src/logger.ts`           | Pino logger with pino-pretty                                       |
 | `src/skills.ts`           | Skill loading utilities (per-group skill files)                    |
@@ -141,9 +142,9 @@ Media path is translated from host path to container path in the XML prompt (`me
 
 Agent writes JSON to `/workspace/ipc/messages/` or `/workspace/ipc/tasks/`. Host polls every 1s, processes, deletes.
 
-### Request/Response (browse)
+### Request/Response (browse, vault)
 
-Agent writes `req-{id}.json` to `/workspace/ipc/browse/`, polls for `res-{id}.json`. Host processes request, writes response (atomic: temp+rename). Agent cleans up both files.
+Agent writes `req-{id}.json` to `/workspace/ipc/browse/` or `/workspace/ipc/vault/`, polls for `res-{id}.json`. Host processes request, writes response (atomic: temp+rename). Agent cleans up both files.
 
 ### Authorization
 
@@ -215,6 +216,13 @@ Supported actions: `click`, `double_click`, `right_click`, `key`, `type`, `scrol
 - `firecrawl_crawl` -- Multi-page crawl with depth/limit (100KB max)
 - `firecrawl_map` -- Discover all URLs on a domain
 
+### 1Password Vault (Credential Retrieval)
+
+- `vault_list_items` -- List all credentials in the agent's dedicated vault (names only, no secrets)
+- `vault_get_item` -- Retrieve full credential details (username, password, URLs) for a specific item
+
+The vault runs on the host via the 1Password JavaScript SDK. The `OP_SERVICE_ACCOUNT_TOKEN` never enters agent containers — credentials are fetched via IPC request/response files in `/workspace/ipc/vault/`. The agent is restricted to a single dedicated vault configured by `OP_VAULT_NAME` (default: "NanoClaw Agent"). Requires `OP_SERVICE_ACCOUNT_TOKEN` and `@1password/sdk`.
+
 ### Long-term Memory (Supermemory)
 
 - `memory_save` -- Explicitly save a note/fact to long-term memory
@@ -276,6 +284,8 @@ Requires `SUPERMEMORY_API_KEY`. When enabled, memories are also automatically re
 | `SUPERMEMORY_API_KEY`       | --                       | Supermemory long-term memory (preferred) |
 | `SUPERMEMORY_OPENCLAW_API_KEY` | --                    | Supermemory key alias (accepted fallback) |
 | `SUPERMEMORY_CC_API_KEY`    | --                       | Supermemory key alias (accepted fallback) |
+| `OP_SERVICE_ACCOUNT_TOKEN`  | --                       | 1Password service account token for vault |
+| `OP_VAULT_NAME`             | `NanoClaw Agent`         | Dedicated 1Password vault name           |
 | `FREYA_TTS_ENABLED`         | `false`                  | Enable Freya TTS (`true` to enable)     |
 | `FREYA_API_KEY`             | --                       | Freya TTS voice synthesis               |
 | `FREYA_CHARACTER_ID`        | `Amika2`                 | Freya TTS character voice               |
