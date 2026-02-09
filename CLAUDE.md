@@ -37,6 +37,7 @@ Telegram <-> Host (Bun) <-> SQLite
 | `src/supermemory.ts`      | Optional Supermemory integration: retrieve/store long-term memory  |
 | `src/types.ts`            | Shared TypeScript interfaces                                       |
 | `src/logger.ts`           | Pino logger with pino-pretty                                       |
+| `src/skills.ts`           | Skill loading utilities (per-group skill files)                    |
 | `src/utils.ts`            | `loadJson` / `saveJson` helpers                                    |
 
 ### Agent Container
@@ -63,6 +64,7 @@ Telegram <-> Host (Bun) <-> SQLite
 | `groups/{name}/SOUL.md`        | Per-group personality/behavior (optional)           |
 | `groups/{name}/media/`         | Downloaded photos, voice, docs, screenshots         |
 | `groups/{name}/conversations/` | Archived conversation transcripts (PreCompact hook) |
+| `groups/{name}/skills/`        | Stored skill definitions (JSON, one per skill)      |
 | `groups/{name}/logs/`          | Per-container run logs                              |
 | `groups/global/CLAUDE.md`      | Global memory shared read-only to non-main groups   |
 
@@ -164,6 +166,14 @@ Per-group IPC directories prevent cross-group access. Non-main groups can only s
 ### Group Management
 
 - `register_group` -- Register new Telegram chat (main only). Accepts optional `provider` (`anthropic`/`openai`) and `model` params for per-group AI configuration.
+
+### Skills (Reusable Workflows)
+
+- `store_skill` -- Save a reusable workflow as a Telegram /command. Agent extracts steps from conversation, validates name, writes to `groups/{folder}/skills/{name}.json`, and notifies host to re-register Telegram commands. Can use `memory_search` to enrich instructions with past workflow details.
+- `list_skills` -- List all stored skills for the current group
+- `delete_skill` -- Delete a stored skill and remove its Telegram command
+
+Skills are stored as JSON files in `groups/{folder}/skills/`. When a user types `/{skill_name}` in Telegram, the host reads the skill file, wraps the instructions in a `<skill>` XML block, and injects it into the agent prompt. The agent then follows the stored instructions. Skills support parameters: text after the command (e.g., `/check_analytics last_week`) is passed to the agent.
 
 ### Browser Automation
 

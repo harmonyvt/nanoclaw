@@ -95,6 +95,10 @@ export function preparePrompt(input: ContainerInput): string {
     prompt = `[SCHEDULED TASK - You are running automatically, not in response to a user message. Use mcp__nanoclaw__send_message if needed to communicate with the user.]\n\n${prompt}`;
   }
 
+  if (input.isSkillInvocation) {
+    prompt = `[SKILL INVOCATION - You are executing a stored skill. Follow the instructions in the <skill> block precisely. Report progress and results using send_message.]\n\n${prompt}`;
+  }
+
   return prompt;
 }
 

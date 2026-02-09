@@ -38,6 +38,12 @@ import { downloadTelegramFile, transcribeAudio } from './media.js';
 import { logger } from './logger.js';
 import { ensureSandbox } from './sandbox-manager.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
+import {
+  loadSkillsForGroup,
+  getSkill as getSkillFromDisk,
+  deleteSkill as deleteSkillFromDisk,
+  getSkillCommandsForGroup,
+} from './skills.js';
 
 /**
  * Interface for managing sessions from telegram command handlers.
@@ -251,7 +257,8 @@ type SlashCommandSpec = {
     | 'follow'
     | 'verbose'
     | 'stop'
-    | 'help';
+    | 'help'
+    | 'skills';
   description: string;
   help: string;
 };
@@ -321,6 +328,11 @@ const TELEGRAM_SLASH_COMMANDS: SlashCommandSpec[] = [
     command: 'help',
     description: 'List commands',
     help: 'List available commands',
+  },
+  {
+    command: 'skills',
+    description: 'List and run stored skills',
+    help: 'List stored skills (reusable workflows)',
   },
 ];
 
@@ -537,15 +549,31 @@ export async function connectTelegram(
   interruptHandler?: InterruptHandler,
 ): Promise<void> {
   bot = new Bot(TELEGRAM_BOT_TOKEN);
-  const apiCommands = TELEGRAM_SLASH_COMMANDS.map((c) => ({
+  const builtinCommands = TELEGRAM_SLASH_COMMANDS.map((c) => ({
     command: c.command,
     description: c.description,
   }));
   const syncedCommandScopes = new Set<string>();
 
+  function getCommandsForGroup(groupFolder?: string): Array<{ command: string; description: string }> {
+    if (!groupFolder) return builtinCommands;
+    const skillCmds = getSkillCommandsForGroup(groupFolder);
+    if (skillCmds.length === 0) return builtinCommands;
+    // Telegram allows up to 100 commands
+    const maxSkills = 100 - builtinCommands.length;
+    if (skillCmds.length > maxSkills) {
+      logger.warn(
+        { module: 'telegram', skillCount: skillCmds.length, maxSkills },
+        'Too many skills, truncating command list',
+      );
+    }
+    return [...builtinCommands, ...skillCmds.slice(0, maxSkills)];
+  }
+
   async function syncChatCommandsIfNeeded(
     chatId: number,
     languageCode?: LanguageCode,
+    groupFolder?: string,
   ): Promise<void> {
     const defaultKey = `${chatId}:default`;
     const langKey = languageCode ? `${chatId}:${languageCode}` : null;
@@ -556,14 +584,16 @@ export async function connectTelegram(
       return;
     }
 
+    const commands = getCommandsForGroup(groupFolder);
+
     try {
-      await bot!.api.setMyCommands(apiCommands, {
+      await bot!.api.setMyCommands(commands, {
         scope: { type: 'chat', chat_id: chatId },
       });
       syncedCommandScopes.add(defaultKey);
 
       if (languageCode && !syncedCommandScopes.has(langKey!)) {
-        await bot!.api.setMyCommands(apiCommands, {
+        await bot!.api.setMyCommands(commands, {
           scope: { type: 'chat', chat_id: chatId },
           language_code: languageCode,
         });
@@ -580,9 +610,9 @@ export async function connectTelegram(
   // Register slash commands with Telegram immediately so they appear in the command menu.
   // This runs before bot.start() since bot.api only needs the token, not full initialization.
   try {
-    await bot.api.setMyCommands(apiCommands);
+    await bot.api.setMyCommands(builtinCommands);
     // Also set commands specifically for private chats so they appear in the / menu
-    await bot.api.setMyCommands(apiCommands, {
+    await bot.api.setMyCommands(builtinCommands, {
       scope: { type: 'all_private_chats' },
     });
 
@@ -807,6 +837,40 @@ export async function connectTelegram(
       (c) => `/${c.command} - ${c.help}`,
     );
     await ctx.reply(lines.join('\n'));
+  });
+
+  bot.command('skills', async (ctx) => {
+    if (!shouldAccept(ctx)) return;
+    const chatId = makeTelegramChatId(ctx.chat.id);
+    const group = registeredGroups()[chatId];
+    if (!group) {
+      await ctx.reply('No group registered for this chat.');
+      return;
+    }
+
+    const skills = loadSkillsForGroup(group.folder);
+    if (skills.length === 0) {
+      await ctx.reply(
+        'No skills stored yet.\n\nTeach me a workflow, then say "store this as a skill called <name>" to create one.',
+      );
+      return;
+    }
+
+    let text = `<b>Stored Skills</b> (${skills.length})\n\n`;
+    for (const s of skills) {
+      text += `/<b>${escapeHtml(s.name)}</b> - ${escapeHtml(s.description)}`;
+      if (s.parameters) text += `\n  <i>Params: ${escapeHtml(s.parameters)}</i>`;
+      text += '\n';
+    }
+
+    const kb = new InlineKeyboard();
+    for (const s of skills) {
+      kb.text(`Run /${s.name}`, `sk:run:${s.name}`)
+        .text('Delete', `sk:del:${s.name}`)
+        .row();
+    }
+
+    await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb });
   });
 
   bot.command('verbose', async (ctx) => {
@@ -1053,6 +1117,103 @@ export async function connectTelegram(
         logger.error({ module: 'telegram', err }, 'Failed to start rebuild process');
         await ctx.reply('Failed to start rebuild. Check logs and try again.');
       }
+      return;
+    }
+
+    // --- Skill inline button callbacks ---
+    if (data.startsWith('sk:')) {
+      const skParts = data.split(':');
+      if (skParts.length < 3) {
+        await ctx.answerCallbackQuery({ text: 'Invalid skill action' });
+        return;
+      }
+      const skAction = skParts[1];
+      const skName = skParts.slice(2).join(':'); // name may contain colons (unlikely but safe)
+      const skChatId = makeTelegramChatId(ctx.chat.id);
+      const skGroup = registeredGroups()[skChatId];
+
+      if (!skGroup) {
+        await ctx.answerCallbackQuery({ text: 'No group found' });
+        return;
+      }
+
+      if (skAction === 'run') {
+        await ctx.answerCallbackQuery({ text: `Running /${skName}...` });
+        // Store as a text message so processMessage picks it up
+        const numericId = extractTelegramChatId(skChatId);
+        try {
+          // Send the skill command as a regular message from the user
+          // The message handler in index.ts will detect it as a skill invocation
+          const msgId = `sk-${Date.now()}`;
+          storeTextMessage(
+            msgId,
+            skChatId,
+            ctx.from.id.toString(),
+            ctx.from.first_name + (ctx.from.last_name ? ` ${ctx.from.last_name}` : ''),
+            `/${skName}`,
+            new Date().toISOString(),
+            false,
+          );
+        } catch (err) {
+          logger.error({ module: 'telegram', err, skill: skName }, 'Failed to queue skill run');
+          await bot!.api.sendMessage(numericId, `Failed to run skill: ${skName}`);
+        }
+        return;
+      }
+
+      if (skAction === 'del') {
+        const skill = getSkillFromDisk(skGroup.folder, skName);
+        if (!skill) {
+          await ctx.answerCallbackQuery({ text: 'Skill not found' });
+          return;
+        }
+        const confirmText = `Delete skill <b>/${escapeHtml(skName)}</b>?\n\n<i>${escapeHtml(skill.description)}</i>\n\nThis cannot be undone.`;
+        const confirmKb = new InlineKeyboard()
+          .text('Yes, Delete', `sk:confirm_del:${skName}`)
+          .text('Cancel', `sk:cancel_del:${skName}`);
+        await ctx.editMessageText(confirmText, {
+          parse_mode: 'HTML',
+          reply_markup: confirmKb,
+        });
+        await ctx.answerCallbackQuery();
+        return;
+      }
+
+      if (skAction === 'confirm_del') {
+        deleteSkillFromDisk(skGroup.folder, skName);
+        // Refresh Telegram commands
+        const numericId = extractTelegramChatId(skChatId);
+        syncedCommandScopes.delete(`${numericId}:default`);
+        await syncChatCommandsIfNeeded(numericId, undefined, skGroup.folder);
+        // Show updated skills list
+        const skills = loadSkillsForGroup(skGroup.folder);
+        const text = skills.length > 0
+          ? `Skill deleted.\n\n<b>Remaining Skills</b> (${skills.length}):\n${skills.map((s) => `/${escapeHtml(s.name)} - ${escapeHtml(s.description)}`).join('\n')}`
+          : 'Skill deleted. No skills remaining.';
+        await ctx.editMessageText(text, { parse_mode: 'HTML' });
+        await ctx.answerCallbackQuery({ text: 'Skill deleted' });
+        return;
+      }
+
+      if (skAction === 'cancel_del') {
+        await ctx.answerCallbackQuery({ text: 'Canceled' });
+        // Show skills list again
+        const skills = loadSkillsForGroup(skGroup.folder);
+        let text = `<b>Stored Skills</b> (${skills.length})\n\n`;
+        for (const s of skills) {
+          text += `/<b>${escapeHtml(s.name)}</b> - ${escapeHtml(s.description)}\n`;
+        }
+        const kb = new InlineKeyboard();
+        for (const s of skills) {
+          kb.text(`Run /${s.name}`, `sk:run:${s.name}`)
+            .text('Delete', `sk:del:${s.name}`)
+            .row();
+        }
+        await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
+        return;
+      }
+
+      await ctx.answerCallbackQuery({ text: 'Unknown skill action' });
       return;
     }
 
@@ -1548,6 +1709,42 @@ export async function setTelegramTyping(chatId: string): Promise<void> {
     await bot.api.sendChatAction(extractTelegramChatId(chatId), 'typing');
   } catch (err) {
     logger.debug({ module: 'telegram', chatId, err }, 'Failed to send Telegram typing action');
+  }
+}
+
+/**
+ * Re-register Telegram commands for a specific chat to include updated skill commands.
+ * Called by the host when a skill_changed IPC event is processed.
+ */
+export async function refreshSkillCommands(
+  chatJid: string,
+  groupFolder: string,
+): Promise<void> {
+  if (!bot) return;
+  const numericId = extractTelegramChatId(chatJid);
+
+  // Build commands with skills
+  const builtinCmds = TELEGRAM_SLASH_COMMANDS.map((c) => ({
+    command: c.command,
+    description: c.description,
+  }));
+  const skillCmds = getSkillCommandsForGroup(groupFolder);
+  const maxSkills = 100 - builtinCmds.length;
+  const commands = [...builtinCmds, ...skillCmds.slice(0, maxSkills)];
+
+  try {
+    await bot.api.setMyCommands(commands, {
+      scope: { type: 'chat', chat_id: numericId },
+    });
+    logger.info(
+      { module: 'telegram', chatJid, groupFolder, skillCount: skillCmds.length },
+      'Skill commands refreshed',
+    );
+  } catch (err) {
+    logger.error(
+      { module: 'telegram', err, chatJid, groupFolder },
+      'Failed to refresh skill commands',
+    );
   }
 }
 
