@@ -78,7 +78,6 @@ import {
   cleanupSandbox,
   ensureSandbox,
   startIdleWatcher,
-  getSandboxUrl,
 } from './sandbox-manager.js';
 import {
   getTakeoverUrl,
@@ -775,16 +774,12 @@ function startIpcWatcher(): void {
                 if (chatJid) {
                   const ownerSession = createSessionForOwner();
                   const takeoverUrl = getTakeoverUrl(waitRequest.token, ownerSession?.token);
-                  const sandboxUrl = getSandboxUrl();
                   const takeoverPart = takeoverUrl
                     ? `\nTake over CUA: ${takeoverUrl}`
                     : '';
-                  const urlPart = sandboxUrl
-                    ? `\nDirect noVNC: ${sandboxUrl}`
-                    : '';
                   await sendMessage(
                     chatJid,
-                    `${waitMessage}${takeoverPart}${urlPart}\nRequest ID: ${requestId}\n\nWhen done, click "Return Control To Agent" in the takeover page.\nFallback: reply "continue ${requestId}".`,
+                    `${waitMessage}${takeoverPart}\nRequest ID: ${requestId}\n\nWhen done, click "Return Control To Agent" in the takeover page.\nFallback: reply "continue ${requestId}".`,
                   );
                 }
               } else if (chatJid) {

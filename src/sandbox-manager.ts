@@ -1,4 +1,5 @@
-import { execSync } from 'child_process';
+import { execSync, exec } from 'child_process';
+import { randomBytes } from 'crypto';
 import {
   CUA_API_KEY,
   CUA_SANDBOX_COMMAND_PORT,
@@ -19,6 +20,11 @@ import { logger } from './logger.js';
 let lastBrowseActivity = 0;
 let idleWatcherInterval: ReturnType<typeof setInterval> | null = null;
 let cachedTailscaleIp: string | null = null;
+let currentVncPassword: string | null = null;
+
+function generateVncPassword(): string {
+  return randomBytes(16).toString('base64url');
+}
 
 export interface SandboxConnection {
   commandUrl: string;
@@ -65,6 +71,10 @@ function startCuaSandbox(): void {
     envArgs.push(`-e CUA_API_KEY=${CUA_API_KEY}`);
   }
 
+  // Generate a random VNC password for this sandbox instance
+  currentVncPassword = generateVncPassword();
+  envArgs.push(`-e VNC_PW=${currentVncPassword}`);
+
   try {
     execSync(
       `docker run -d --name ${CUA_SANDBOX_CONTAINER_NAME} --platform ${CUA_SANDBOX_PLATFORM} --shm-size ${CUA_SANDBOX_SHM_SIZE} -p ${CUA_SANDBOX_COMMAND_PORT}:8000 -p ${CUA_SANDBOX_VNC_PORT}:5901 -p ${CUA_SANDBOX_NOVNC_PORT}:6901 ${envArgs.join(' ')} ${CUA_SANDBOX_IMAGE}`,
@@ -79,6 +89,7 @@ function startCuaSandbox(): void {
 
 function stopCuaSandbox(): void {
   logger.info('Stopping CUA desktop sandbox');
+  currentVncPassword = null;
   try {
     execSync(`docker stop ${CUA_SANDBOX_CONTAINER_NAME}`, { stdio: 'pipe' });
   } catch {
@@ -181,4 +192,65 @@ export function cleanupSandbox(): void {
   if (isSandboxRunning()) {
     stopCuaSandbox();
   }
+}
+
+export function getSandboxVncPassword(): string | null {
+  return currentVncPassword;
+}
+
+/**
+ * Rotate the VNC password inside the running sandbox container.
+ * Generates a new random password, updates it in the container, and returns it.
+ * Returns null if the sandbox is not running or password rotation fails.
+ */
+export async function rotateSandboxVncPassword(): Promise<string | null> {
+  if (!isSandboxRunning()) return null;
+
+  const newPassword = generateVncPassword();
+  const container = CUA_SANDBOX_CONTAINER_NAME;
+
+  try {
+    // Try the rotation helper script first (available in custom sandbox image)
+    await execAsync(
+      `docker exec ${container} /rotate-vnc-pw.sh ${shellQuote(newPassword)}`,
+    );
+    currentVncPassword = newPassword;
+    logger.info('VNC password rotated via /rotate-vnc-pw.sh');
+    return newPassword;
+  } catch {
+    // Helper script not available (e.g. trycua image) — try inline rotation
+  }
+
+  try {
+    // Inline fallback: update password file and restart x11vnc directly
+    const cmd = [
+      `x11vnc -storepasswd ${shellQuote(newPassword)} /tmp/vncpasswd 2>/dev/null`,
+      'pkill -x x11vnc 2>/dev/null || true',
+      'sleep 0.3',
+      'x11vnc -display :99 -forever -shared -rfbport 5900 -rfbauth /tmp/vncpasswd &',
+    ].join(' && ');
+    await execAsync(`docker exec ${container} bash -c ${shellQuote(cmd)}`);
+    currentVncPassword = newPassword;
+    logger.info('VNC password rotated via inline exec');
+    return newPassword;
+  } catch (err) {
+    logger.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      'Failed to rotate VNC password — sandbox may not support x11vnc password rotation',
+    );
+    return null;
+  }
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function execAsync(command: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    exec(command, { timeout: 10_000 }, (err, stdout) => {
+      if (err) reject(err);
+      else resolve(stdout.toString());
+    });
+  });
 }

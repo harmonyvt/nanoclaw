@@ -144,8 +144,19 @@ function renderTakeoverPage(token: string, sessionToken?: string): string {
   const escapedRequestId = escapeHtml(pending.requestId);
   const escapedGroup = escapeHtml(pending.groupFolder);
   const escapedCreatedAt = escapeHtml(pending.createdAt);
-  const escapedLiveView = liveViewUrl ? escapeHtml(liveViewUrl) : '';
   const escapedTakeoverUrl = takeoverUrl ? escapeHtml(takeoverUrl) : '';
+
+  // Build authenticated noVNC iframe URL with per-session VNC password
+  let iframeSrc = '';
+  if (liveViewUrl) {
+    const noVncUrl = new URL('/vnc_lite.html', liveViewUrl);
+    noVncUrl.searchParams.set('autoconnect', 'true');
+    noVncUrl.searchParams.set('resize', 'scale');
+    if (pending.vncPassword) {
+      noVncUrl.searchParams.set('password', pending.vncPassword);
+    }
+    iframeSrc = escapeHtml(noVncUrl.toString());
+  }
 
   return `<!doctype html>
 <html lang="en">
@@ -343,11 +354,6 @@ function renderTakeoverPage(token: string, sessionToken?: string): string {
         <div class="meta-value">${escapedCreatedAt}</div>
       </div>
       <div class="controls">
-        ${
-          liveViewUrl
-            ? `<a class="btn btn-link" href="${escapedLiveView}" target="_blank" rel="noopener noreferrer">Open Desktop In New Tab</a>`
-            : ''
-        }
         <button class="btn btn-primary" id="continueBtn">Return Control To Agent</button>
         <div class="status" id="statusText">${
           escapedTakeoverUrl
@@ -360,11 +366,11 @@ function renderTakeoverPage(token: string, sessionToken?: string): string {
     <main class="panel workspace">
       <div class="workspace-bar">
         <span>Live CUA Desktop</span>
-        <span id="liveIndicator">${liveViewUrl ? 'active' : 'unavailable'}</span>
+        <span id="liveIndicator">${iframeSrc ? 'active' : 'unavailable'}</span>
       </div>
       ${
-        liveViewUrl
-          ? `<iframe class="workspace-frame" src="${escapedLiveView}" title="CUA Live Desktop"></iframe>`
+        iframeSrc
+          ? `<iframe class="workspace-frame" src="${iframeSrc}" title="CUA Live Desktop"></iframe>`
           : `<div class="fallback">Sandbox live view is currently unavailable. Keep this page open and try again, or request a new handoff link from chat.</div>`
       }
     </main>
