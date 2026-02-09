@@ -7,7 +7,6 @@ import { ActivityPanel } from './ActivityPanel.js';
 
 interface VncInfo {
   liveViewUrl: string | null;
-  vncPassword: string | null;
   sandboxRunning: boolean;
 }
 
@@ -77,8 +76,6 @@ export function FollowApp() {
   return (
     <div class="follow-layout">
       <DesktopPanel
-        liveViewUrl={vncInfo?.liveViewUrl ?? null}
-        vncPassword={vncInfo?.vncPassword ?? null}
         sandboxRunning={vncInfo?.sandboxRunning ?? false}
       />
       <ActivityPanel

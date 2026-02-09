@@ -9,7 +9,7 @@ export interface AuthResult {
 }
 
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
-const sessions = new Map<string, { userId: number; expiresAt: number }>();
+const sessions = new Map<string, { userId: number; expiresAt: number; groupFolder?: string }>();
 
 /**
  * Validate Telegram WebApp initData using HMAC-SHA256.
@@ -82,34 +82,34 @@ export function validateTelegramInitData(initDataRaw: string): AuthResult {
   }
 }
 
-export function createSession(userId: number): {
+export function createSession(userId: number, groupFolder?: string): {
   token: string;
   expiresAt: number;
 } {
   const token = randomUUID();
   const expiresAt = Date.now() + SESSION_TTL_MS;
-  sessions.set(token, { userId, expiresAt });
+  sessions.set(token, { userId, expiresAt, groupFolder });
   return { token, expiresAt };
 }
 
 export function validateSession(
   token: string,
-): { userId: number } | null {
+): { userId: number; groupFolder?: string } | null {
   const session = sessions.get(token);
   if (!session) return null;
   if (Date.now() > session.expiresAt) {
     sessions.delete(token);
     return null;
   }
-  return { userId: session.userId };
+  return { userId: session.userId, groupFolder: session.groupFolder };
 }
 
-export function createSessionForOwner(): {
+export function createSessionForOwner(groupFolder?: string): {
   token: string;
   expiresAt: number;
 } | null {
   if (!TELEGRAM_OWNER_ID) return null;
-  return createSession(Number(TELEGRAM_OWNER_ID));
+  return createSession(Number(TELEGRAM_OWNER_ID), groupFolder);
 }
 
 export function cleanExpiredSessions(): void {

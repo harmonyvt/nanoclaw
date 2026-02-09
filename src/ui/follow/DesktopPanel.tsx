@@ -1,24 +1,11 @@
 interface Props {
-  liveViewUrl: string | null;
-  vncPassword: string | null;
   sandboxRunning: boolean;
 }
 
-function buildNoVncUrl(liveViewUrl: string, vncPassword: string): string | null {
-  try {
-    const url = new URL('/novnc/vnc_lite.html', window.location.origin);
-    url.searchParams.set('autoconnect', 'true');
-    url.searchParams.set('resize', 'scale');
-    url.searchParams.set('scale', 'true');
-    url.searchParams.set('view_only', 'true');
-    url.searchParams.set('password', vncPassword);
-    return url.toString();
-  } catch {
-    return null;
-  }
-}
+/** noVNC follow page — password is injected server-side, never sent to client */
+const NOVNC_FOLLOW_URL = '/novnc/follow';
 
-export function DesktopPanel({ liveViewUrl, vncPassword, sandboxRunning }: Props) {
+export function DesktopPanel({ sandboxRunning }: Props) {
   if (!sandboxRunning) {
     return (
       <div class="follow-desktop">
@@ -35,24 +22,10 @@ export function DesktopPanel({ liveViewUrl, vncPassword, sandboxRunning }: Props
     );
   }
 
-  const noVncUrl = liveViewUrl && vncPassword
-    ? buildNoVncUrl(liveViewUrl, vncPassword)
-    : null;
-
-  if (!noVncUrl) {
-    return (
-      <div class="follow-desktop">
-        <div class="follow-desktop-empty">
-          <div class="loading">Connecting to desktop viewer</div>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div class="follow-desktop">
       <iframe
-        src={noVncUrl}
+        src={NOVNC_FOLLOW_URL}
         class="follow-vnc-iframe"
         title="CUA Desktop Viewer"
       />
