@@ -287,7 +287,7 @@ async function processMessage(msg: NewMessage): Promise<void> {
       let skillXml = `<skill name="${skillName}"`;
       if (skillParams) skillXml += ` parameters="${escapeXml(skillParams)}"`;
       if (skill.parameters) skillXml += ` accepts="${escapeXml(skill.parameters)}"`;
-      skillXml += `>\n${skill.instructions}\n</skill>`;
+      skillXml += `>\n${escapeXml(skill.instructions)}\n</skill>`;
 
       // Get messages for context (same as normal flow)
       const sinceTimestamp = lastAgentTimestamp[msg.chat_jid] || '';
