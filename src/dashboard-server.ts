@@ -33,6 +33,9 @@ import {
   getAllTasks,
   getTaskRunLogs,
   getAllTaskRunLogs,
+  getAllSkillQueueItems,
+  removeFromSkillQueue,
+  clearSkillQueue,
 } from './db.js';
 import {
   runCuaCommand,
@@ -297,6 +300,33 @@ function handleTaskRunLogsList(url: URL): Response {
       offset ? parseInt(offset, 10) : 0,
     ),
   );
+}
+
+// ── Skill Queue API ──────────────────────────────────────────────────────
+
+function handleQueueList(url: URL): Response {
+  const group = url.searchParams.get('group');
+  if (!group) {
+    return jsonResponse({ error: 'group parameter required' }, 400);
+  }
+  return jsonResponse(getAllSkillQueueItems(group));
+}
+
+async function handleQueueAction(req: Request): Promise<Response> {
+  try {
+    const body = (await req.json()) as { action: string; group?: string; id?: string };
+    if (body.action === 'remove' && body.id) {
+      const removed = removeFromSkillQueue(body.id);
+      return jsonResponse({ success: removed });
+    }
+    if (body.action === 'clear' && body.group) {
+      const count = clearSkillQueue(body.group);
+      return jsonResponse({ cleared: count });
+    }
+    return jsonResponse({ error: 'invalid action' }, 400);
+  } catch {
+    return jsonResponse({ error: 'invalid request body' }, 400);
+  }
 }
 
 // ── Files API helpers ────────────────────────────────────────────────────
@@ -1222,6 +1252,10 @@ function handleRequest(req: Request, server: import('bun').Server<NoVncWsData>):
   // Tasks
   if (pathname === '/api/tasks') return handleTasksList(url);
   if (pathname === '/api/tasks/runs') return handleTaskRunLogsList(url);
+
+  // Queue
+  if (pathname === '/api/queue') return handleQueueList(url);
+  if (pathname === '/api/queue/action' && req.method === 'POST') return handleQueueAction(req);
 
   // Files API — GET routes
   if (pathname === '/api/files/groups') return handleFilesGroupsList();

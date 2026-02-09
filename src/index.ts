@@ -39,7 +39,9 @@ import {
   getAllTasks,
   getMessagesSince,
   getNewMessages,
+  getSkillQueue,
   initDatabase,
+  updateQueuedSkillStatus,
 } from './db.js';
 import { runTaskNow, startSchedulerLoop } from './task-scheduler.js';
 import {
@@ -339,8 +341,27 @@ async function processMessage(msg: NewMessage): Promise<void> {
       const prompt = parts.join('\n\n');
 
       await setTyping(msg.chat_jid, true);
-      const response = await runAgent(group, prompt, msg.chat_jid, { isSkillInvocation: true });
-      await setTyping(msg.chat_jid, false);
+      // Track if this is a queued skill so we can update its status
+      const runningQueueItems = getSkillQueue(group.folder).filter(
+        (qi) => qi.status === 'running' && qi.skill_name === skillName,
+      );
+      let response: string | null = null;
+      try {
+        response = await runAgent(group, prompt, msg.chat_jid, { isSkillInvocation: true });
+      } catch (err) {
+        // Mark queued skill as failed
+        for (const qi of runningQueueItems) {
+          updateQueuedSkillStatus(qi.id, 'failed', { error: String(err) });
+        }
+        throw err;
+      } finally {
+        await setTyping(msg.chat_jid, false);
+      }
+
+      // Mark queued skill as completed
+      for (const qi of runningQueueItems) {
+        updateQueuedSkillStatus(qi.id, 'completed', response ? { result: response.slice(0, 500) } : undefined);
+      }
 
       if (response) {
         lastAgentTimestamp[msg.chat_jid] = msg.timestamp;
