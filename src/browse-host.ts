@@ -2288,6 +2288,23 @@ export function hasWaitingRequests(groupFolder?: string): boolean {
   return false;
 }
 
+/**
+ * Cancel all pending wait-for-user requests for a group.
+ * Used when the user interrupts a running agent via /stop.
+ */
+export function cancelWaitingRequests(groupFolder: string): number {
+  let count = 0;
+  for (const pending of [...waitingForUser.values()]) {
+    if (pending.groupFolder !== groupFolder) continue;
+    completePendingWaitForUser(pending, {
+      status: 'error',
+      error: 'Cancelled by user interrupt',
+    });
+    count++;
+  }
+  return count;
+}
+
 export async function disconnectBrowser(): Promise<void> {
   // No persistent Playwright browser in CUA mode.
 }

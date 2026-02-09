@@ -20,6 +20,7 @@ import {
   type SessionMessage,
 } from './openai-session.js';
 import { NANOCLAW_TOOLS } from '../tool-registry.js';
+import { isCancelled } from '../cancel.js';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -117,6 +118,15 @@ export class OpenAIAdapter implements ProviderAdapter {
 
     let iterations = 0;
     while (iterations++ < MAX_ITERATIONS) {
+      // Check for user interrupt
+      if (isCancelled()) {
+        log('Cancel detected, stopping OpenAI loop');
+        const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant');
+        const partial = lastAssistant && 'content' in lastAssistant ? String(lastAssistant.content) : null;
+        if (partial) yield { type: 'result', result: partial };
+        return;
+      }
+
       log(`Iteration ${iterations}, sending ${messages.length} messages to ${model}`);
 
       const response = await client.chat.completions.create({

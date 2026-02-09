@@ -9,6 +9,7 @@ import path from 'path';
 import { CronExpressionParser } from 'cron-parser';
 import Supermemory from 'supermemory';
 import type { NanoTool, IpcMcpContext, ToolResult } from './types.js';
+import { isCancelled } from './cancel.js';
 
 // ─── IPC Constants ──────────────────────────────────────────────────────────
 
@@ -79,6 +80,14 @@ export async function writeBrowseRequest(
 
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, pollInterval));
+
+    // Check for user interrupt
+    if (isCancelled()) {
+      try { fs.unlinkSync(reqFile); } catch {}
+      try { fs.unlinkSync(resFile); } catch {}
+      return { status: 'error', error: 'Browse request cancelled by user interrupt' };
+    }
+
     if (fs.existsSync(resFile)) {
       const data = JSON.parse(fs.readFileSync(resFile, 'utf-8'));
       // Clean up both files
