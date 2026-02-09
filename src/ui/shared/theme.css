@@ -1,0 +1,45 @@
+/* ── NanoClaw shared theme ────────────────────────────────────────────── */
+
+:root {
+  --bg: #0b1219;
+  --panel: #16212c;
+  --panel-2: #1d2b39;
+  --text: #edf3f9;
+  --muted: #9bb2c7;
+  --accent: #38bdf8;
+  --accent-2: #f59e0b;
+  --ok: #22c55e;
+  --danger: #ef4444;
+  --radius: 12px;
+
+  /* Log-level colors */
+  --level-trace: #94a3b8;
+  --level-debug: #38bdf8;
+  --level-info: #22c55e;
+  --level-warn: #f59e0b;
+  --level-error: #ef4444;
+  --level-fatal: #dc2626;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  min-height: 100vh;
+  font-family: "Space Grotesk", -apple-system, "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  -webkit-tap-highlight-color: transparent;
+}
+
+.mono {
+  font-family: "IBM Plex Mono", "Menlo", "Consolas", monospace;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
