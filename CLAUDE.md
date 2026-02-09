@@ -170,8 +170,9 @@ Per-group IPC directories prevent cross-group access. Non-main groups can only s
 - `browse_snapshot` -- Accessibility tree / aria snapshot
 - `browse_click` -- Click using description text (CSS-like selectors are treated as best-effort hints)
 - `browse_click_xy` -- Click at exact pixel coordinates (fallback when browse_click fails)
+- `browse_perform` -- Execute a sequence of desktop actions (click, double_click, right_click, key, type, scroll, drag, hover, wait). Use for keyboard shortcuts, double-clicking, and multi-step interactions. See examples below.
 - `browse_fill` -- Fill form field (description-based element search + typing)
-- `browse_type_at_xy` -- Click at coordinates then type text (fallback when browse_fill fails)
+- `browse_type_at_xy` -- Click at coordinates then type text (fallback when browse_fill fails). Supports `clear_first: true` to Ctrl+A before typing.
 - `browse_screenshot` -- Capture page (also sent as Telegram photo); use Read tool on path for visual inspection
 - `browse_wait_for_user` -- Handoff to user via takeover web URL, wait until user returns control
 - `browse_go_back` -- Browser back button
@@ -179,6 +180,23 @@ Per-group IPC directories prevent cross-group access. Non-main groups can only s
 - `browse_upload_file` -- Upload a file from agent into CUA sandbox (e.g., Telegram attachment → browser)
 - `browse_evaluate` -- Present for backward compatibility; currently unsupported in CUA mode
 - `browse_close` -- Close browser page
+
+#### `browse_perform` Examples
+
+Edit a spreadsheet cell (double-click → select all → type → confirm):
+```json
+{ "steps": [
+  { "action": "double_click", "x": 240, "y": 438 },
+  { "action": "wait", "ms": 300 },
+  { "action": "key", "key": "ctrl+a" },
+  { "action": "type", "text": "17:00" },
+  { "action": "key", "key": "enter" }
+]}
+```
+
+Single keyboard shortcut: `{ "steps": [{ "action": "key", "key": "ctrl+s" }] }`
+
+Supported actions: `click`, `double_click`, `right_click`, `key`, `type`, `scroll`, `drag`, `hover`, `wait`. Key combos use `+`: `ctrl+a`, `shift+enter`, `alt+tab`, `f2`, `delete`, `escape`, etc.
 
 ### Web Crawling (Firecrawl)
 

@@ -29,7 +29,6 @@ export type PendingWaitForUserView = {
 // Pending wait-for-user requests: requestId -> metadata + resolver
 const waitingForUser: Map<string, PendingWaitForUser> = new Map();
 const waitingForUserByToken: Map<string, string> = new Map();
-const lastNavigatedUrlByGroup = new Map<string, string>();
 
 type BrowseResponse = {
   status: 'ok' | 'error';
@@ -339,17 +338,6 @@ async function runCuaCommandWithFallback(
     : new Error('CUA command fallback failed: no compatible command succeeded');
 }
 
-async function tryCuaCommandWithFallback(
-  attempts: Array<{ command: string; args?: Record<string, unknown> }>,
-): Promise<boolean> {
-  try {
-    await runCuaCommandWithFallback(attempts);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 async function sleep(ms: number): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
@@ -387,125 +375,6 @@ function coerceSnapshotRecord(input: unknown): Record<string, unknown> | null {
     }
   }
   return null;
-}
-
-function looksLikeDesktopSnapshot(snapshot: unknown): boolean {
-  const record = coerceSnapshotRecord(snapshot);
-  if (!record) return false;
-  const title = String(record.title || '').toLowerCase();
-  const role = String(record.role || '').toLowerCase();
-  const children = Array.isArray(record.children) ? record.children : [];
-  return (
-    children.length === 0 &&
-    role === 'window' &&
-    (title.includes('linux window') || title.includes('desktop'))
-  );
-}
-
-function collectWindowIds(payload: unknown): Array<string | number> {
-  const ids: Array<string | number> = [];
-
-  const pushIfId = (candidate: unknown): void => {
-    if (typeof candidate === 'string' || typeof candidate === 'number') {
-      ids.push(candidate);
-    }
-  };
-
-  const visit = (value: unknown): void => {
-    if (Array.isArray(value)) {
-      for (const entry of value) visit(entry);
-      return;
-    }
-    if (!value || typeof value !== 'object') return;
-
-    const record = value as Record<string, unknown>;
-    pushIfId(record.window_id);
-    pushIfId(record.windowId);
-    pushIfId(record.id);
-
-    if (Array.isArray(record.windows)) {
-      visit(record.windows);
-    }
-  };
-
-  visit(payload);
-  return ids;
-}
-
-async function focusBrowserWindow(): Promise<boolean> {
-  const candidates = ['chromium', 'google-chrome', 'chrome', 'firefox'];
-
-  for (const app of candidates) {
-    let windows: unknown;
-    try {
-      windows = await runCuaCommand('get_application_windows', { app });
-    } catch {
-      continue;
-    }
-
-    const windowIds = collectWindowIds(windows);
-    for (const windowId of windowIds) {
-      const activated = await tryCuaCommandWithFallback([
-        { command: 'activate_window', args: { window_id: windowId } },
-      ]);
-      if (!activated) continue;
-
-      await tryCuaCommandWithFallback([
-        { command: 'maximize_window', args: { window_id: windowId } },
-      ]);
-      return true;
-    }
-  }
-
-  return false;
-}
-
-async function stabilizeBrowserForScreenshot(
-  groupFolder: string,
-): Promise<void> {
-  const focusedWindow = await focusBrowserWindow();
-  if (focusedWindow) {
-    await sleep(250);
-  }
-
-  // Quick focus nudge in case desktop grabbed focus.
-  const switched = await tryCuaCommandWithFallback([
-    { command: 'hotkey', args: { keys: 'alt+tab' } },
-    { command: 'press_key', args: { key: 'alt+tab' } },
-  ]);
-  if (switched) await sleep(300);
-
-  let snapshot: unknown = null;
-  try {
-    snapshot = await runCuaCommand('get_accessibility_tree');
-  } catch {
-    // Snapshot may fail on some CUA builds; continue best-effort.
-  }
-
-  if (!looksLikeDesktopSnapshot(snapshot)) {
-    return;
-  }
-
-  const lastUrl = lastNavigatedUrlByGroup.get(groupFolder);
-  if (!lastUrl) {
-    logger.warn(
-      { groupFolder },
-      'Desktop appears focused before screenshot and no last URL is available',
-    );
-    return;
-  }
-
-  const reopened = await tryCuaCommandWithFallback(
-    buildOpenUrlAttempts(lastUrl),
-  );
-  if (reopened) {
-    await focusBrowserWindow();
-    logger.debug(
-      { groupFolder, lastUrl },
-      'Re-opened last URL before screenshot due to desktop-focused snapshot',
-    );
-    await sleep(2200);
-  }
 }
 
 function normalizeSelectorToken(value: string): string {
@@ -1693,7 +1562,6 @@ async function processCuaRequest(
 
       // Some CUA builds do not expose a `wait` command. Keep a host-side delay.
       await sleep(openedViaDirectCommand ? 2200 : 1500);
-      lastNavigatedUrlByGroup.set(groupFolder, url);
       return { status: 'ok', result: `Navigated to ${url}` };
     }
     case 'snapshot': {
@@ -1770,6 +1638,15 @@ async function processCuaRequest(
       }
       const beforeSnapshot = await getAccessibilitySnapshotSafe();
       await runCuaCommand('left_click', { x, y });
+      if (params.clear_first) {
+        // Select all existing content before typing, so the new value
+        // replaces instead of appending (useful for spreadsheet cells, etc.)
+        await runCuaCommandWithFallback([
+          { command: 'press_key', args: { key: 'ctrl+a' } },
+          { command: 'hotkey', args: { keys: 'ctrl+a' } },
+        ]);
+        await sleep(100);
+      }
       await runCuaCommandWithFallback([
         { command: 'type', args: { text: value } },
         { command: 'type_text', args: { text: value } },
@@ -1829,16 +1706,24 @@ async function processCuaRequest(
       };
     }
     case 'scroll': {
-      const deltaY = Number(params.deltaY ?? params.dy ?? 500);
-      const deltaX = Number(params.deltaX ?? params.dx ?? 0);
+      const direction = String(params.direction || 'down');
+      const clicks = Math.max(1, Math.round(Number(params.clicks || 3)));
       const beforeSnapshot = await getAccessibilitySnapshotSafe();
+
+      // Use dedicated directional scroll commands which work in discrete
+      // "wheel click" units — much more reliable than raw pixel deltas.
+      const dirCommand: Record<string, string> = {
+        up: 'scroll_up',
+        down: 'scroll_down',
+        left: 'scroll_left',
+        right: 'scroll_right',
+      };
+      const cmd = dirCommand[direction] || 'scroll_down';
       await runCuaCommandWithFallback([
-        { command: 'scroll', args: { delta_x: deltaX, delta_y: deltaY } },
-        { command: 'scroll', args: { x: deltaX, y: deltaY } },
-        { command: 'mouse_wheel', args: { delta_x: deltaX, delta_y: deltaY } },
-        { command: 'mouse_wheel', args: { x: deltaX, y: deltaY } },
-        { command: 'wheel', args: { deltaY, deltaX } },
+        { command: cmd, args: { clicks } },
+        { command: 'scroll_direction', args: { direction, clicks } },
       ]);
+
       await sleep(250);
       const afterSnapshot = await getAccessibilitySnapshotSafe();
       const changed = didSnapshotChange(beforeSnapshot, afterSnapshot);
@@ -1850,11 +1735,10 @@ async function processCuaRequest(
             : 'not confirmed (snapshot unavailable)';
       return {
         status: 'ok',
-        result: `scrolled dx=${deltaX}, dy=${deltaY}${verificationSuffix(verify)}`,
+        result: `scrolled ${direction} ${clicks} clicks${verificationSuffix(verify)}`,
       };
     }
     case 'screenshot': {
-      await stabilizeBrowserForScreenshot(groupFolder);
       const screenshotContent = await runCuaCommand('screenshot');
       const base64 = extractBase64Png(screenshotContent);
       if (!base64) {
@@ -1908,6 +1792,164 @@ async function processCuaRequest(
         { command: 'hotkey', args: { keys: 'ctrl+w' } },
       ]);
       return { status: 'ok', result: 'closed' };
+
+    case 'perform': {
+      const steps = params.steps as
+        | Array<Record<string, unknown>>
+        | undefined;
+      if (!Array.isArray(steps) || steps.length === 0) {
+        return {
+          status: 'error',
+          error: 'perform requires a non-empty steps array',
+        };
+      }
+      if (steps.length > 50) {
+        return {
+          status: 'error',
+          error: 'perform supports a maximum of 50 steps per call',
+        };
+      }
+
+      const blockedKeys = ['ctrl+alt+delete', 'ctrl+alt+backspace'];
+      const results: string[] = [];
+      const beforeSnapshot = await getAccessibilitySnapshotSafe();
+
+      for (let i = 0; i < steps.length; i++) {
+        const step = steps[i];
+        const stepAction = String(step.action || '');
+        try {
+          switch (stepAction) {
+            case 'click':
+              await runCuaCommand('left_click', {
+                x: Number(step.x),
+                y: Number(step.y),
+              });
+              results.push(`click(${step.x},${step.y})`);
+              break;
+            case 'double_click':
+              await runCuaCommand('double_click', {
+                x: Number(step.x),
+                y: Number(step.y),
+              });
+              results.push(`double_click(${step.x},${step.y})`);
+              break;
+            case 'right_click':
+              await runCuaCommand('right_click', {
+                x: Number(step.x),
+                y: Number(step.y),
+              });
+              results.push(`right_click(${step.x},${step.y})`);
+              break;
+            case 'key': {
+              const key = String(step.key || '')
+                .trim()
+                .toLowerCase();
+              if (!key) {
+                results.push('key() SKIPPED: empty key');
+                break;
+              }
+              if (blockedKeys.includes(key)) {
+                results.push(`key(${key}) BLOCKED`);
+                break;
+              }
+              await runCuaCommandWithFallback([
+                { command: 'press_key', args: { key } },
+                { command: 'hotkey', args: { keys: key } },
+              ]);
+              results.push(`key(${key})`);
+              break;
+            }
+            case 'type': {
+              const text = String(step.text || '');
+              await runCuaCommandWithFallback([
+                { command: 'type', args: { text } },
+                { command: 'type_text', args: { text } },
+              ]);
+              results.push(
+                `type("${text.length > 30 ? text.slice(0, 30) + '…' : text}")`,
+              );
+              break;
+            }
+            case 'scroll': {
+              const scrollClicks = Math.max(
+                1,
+                Math.round(Number(step.amount || 3)),
+              );
+              const dir = String(step.direction || 'down');
+              const scrollDirCommand: Record<string, string> = {
+                up: 'scroll_up',
+                down: 'scroll_down',
+                left: 'scroll_left',
+                right: 'scroll_right',
+              };
+              const scrollCmd =
+                scrollDirCommand[dir] || 'scroll_down';
+              await runCuaCommandWithFallback([
+                {
+                  command: scrollCmd,
+                  args: { clicks: scrollClicks },
+                },
+                {
+                  command: 'scroll_direction',
+                  args: { direction: dir, clicks: scrollClicks },
+                },
+              ]);
+              results.push(`scroll(${dir},${scrollClicks})`);
+              break;
+            }
+            case 'drag':
+              await runCuaCommand('drag_to', {
+                x: Number(step.to_x),
+                y: Number(step.to_y),
+                start_x: Number(step.from_x),
+                start_y: Number(step.from_y),
+              });
+              results.push(
+                `drag(${step.from_x},${step.from_y}->${step.to_x},${step.to_y})`,
+              );
+              break;
+            case 'hover':
+              await runCuaCommand('move_cursor', {
+                x: Number(step.x),
+                y: Number(step.y),
+              });
+              results.push(`hover(${step.x},${step.y})`);
+              break;
+            case 'wait': {
+              const ms = Math.min(Math.max(Number(step.ms || 250), 0), 5000);
+              await sleep(ms);
+              results.push(`wait(${ms}ms)`);
+              break;
+            }
+            default:
+              results.push(`unknown(${stepAction})`);
+          }
+          // Small delay between steps for UI to settle (skip after explicit waits)
+          if (stepAction !== 'wait' && i < steps.length - 1) {
+            await sleep(100);
+          }
+        } catch (err) {
+          const msg =
+            err instanceof Error ? err.message : String(err);
+          results.push(`${stepAction} FAILED: ${msg}`);
+          // Continue executing remaining steps so partial sequences still work
+        }
+      }
+
+      await sleep(250);
+      const afterSnapshot = await getAccessibilitySnapshotSafe();
+      const changed = didSnapshotChange(beforeSnapshot, afterSnapshot);
+      const verify =
+        changed === true
+          ? 'verified (accessibility tree changed)'
+          : changed === false
+            ? 'not confirmed (no tree change detected)'
+            : 'not confirmed (snapshot unavailable)';
+      return {
+        status: 'ok',
+        result: `performed ${steps.length} steps: ${results.join(' → ')}${verificationSuffix(verify)}`,
+      };
+    }
 
     case 'extract_file': {
       const filePath = String(params.path || '').trim();
