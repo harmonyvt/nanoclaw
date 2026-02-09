@@ -10,6 +10,7 @@ export interface CuaActivityEvent {
   action: string;
   phase: 'start' | 'end';
   description: string;
+  requestId?: string;
   params?: Record<string, unknown>;
   status?: 'ok' | 'error';
   durationMs?: number;

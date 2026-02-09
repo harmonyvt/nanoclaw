@@ -40,14 +40,16 @@ export function FollowApp() {
       const evt = data as CuaActivityEvent;
       setActivities((prev) => {
         // When an end event arrives, replace the matching start event in-place
-        if (evt.phase === 'end') {
+        if (evt.phase === 'end' && evt.requestId) {
           for (let i = prev.length - 1; i >= 0; i--) {
-            if (prev[i].phase === 'start' && prev[i].action === evt.action && prev[i].groupFolder === evt.groupFolder) {
+            if (prev[i].phase === 'start' && prev[i].requestId === evt.requestId) {
               const next = [...prev];
               next[i] = evt;
               return next;
             }
           }
+          // No matching start event found, skip orphaned end event
+          return prev;
         }
         const next = [...prev, evt];
         // Cap at 500 events to avoid memory issues
