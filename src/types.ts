@@ -85,3 +85,12 @@ export interface TaskRunLog {
   result: string | null;
   error: string | null;
 }
+
+export interface Skill {
+  name: string;
+  description: string;
+  instructions: string;
+  parameters?: string;
+  created_at: string;
+  updated_at: string;
+}

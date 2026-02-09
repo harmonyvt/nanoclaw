@@ -76,6 +76,7 @@ import {
   ensureWaitForUserRequest,
 } from './browse-host.js';
 import { cleanupOldMedia } from './media.js';
+import { getSkill, getSkillNames } from './skills.js';
 import {
   cleanupSandbox,
   ensureSandbox,
@@ -218,6 +219,83 @@ async function processMessage(msg: NewMessage): Promise<void> {
     }
   }
 
+  // Check if message is a skill invocation: /skill_name [params]
+  const skillMatch = content.match(/^\/([a-z][a-z0-9_]{1,30})(?:\s+(.*))?$/);
+  if (skillMatch) {
+    const [, skillName, skillParams] = skillMatch;
+    const skill = getSkill(group.folder, skillName);
+    if (skill) {
+      logger.info(
+        { module: 'index', skill: skillName, group: group.name, params: skillParams },
+        'Skill invocation detected',
+      );
+
+      // Build prompt with skill instructions injected
+      let skillXml = `<skill name="${skillName}"`;
+      if (skillParams) skillXml += ` parameters="${skillParams.replace(/"/g, '&quot;')}"`;
+      if (skill.parameters) skillXml += ` accepts="${skill.parameters.replace(/"/g, '&quot;')}"`;
+      skillXml += `>\n${skill.instructions}\n</skill>`;
+
+      // Get messages for context (same as normal flow)
+      const sinceTimestamp = lastAgentTimestamp[msg.chat_jid] || '';
+      const missedMessages = getMessagesSince(msg.chat_jid, sinceTimestamp, ASSISTANT_NAME);
+
+      let memoryXml = '';
+      if (isSupermemoryEnabled()) {
+        const latestMessage = missedMessages[missedMessages.length - 1]?.content || '';
+        const memories = await retrieveMemories(group.folder, latestMessage);
+        if (memories) memoryXml = formatMemoryContext(memories);
+      }
+
+      const lines = missedMessages.map((m) => {
+        const escapeXml = (s: string) =>
+          s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        let mediaAttrs = '';
+        if (m.media_type && m.media_path) {
+          const groupDir = path.join(GROUPS_DIR, group.folder);
+          const containerPath = m.media_path.startsWith(groupDir)
+            ? '/workspace/group' + m.media_path.slice(groupDir.length)
+            : m.media_path;
+          mediaAttrs = ` media_type="${escapeXml(m.media_type)}" media_path="${escapeXml(containerPath)}"`;
+        }
+        return `<message sender="${escapeXml(m.sender_name)}" time="${m.timestamp}"${mediaAttrs}>${escapeXml(m.content)}</message>`;
+      });
+      const messagesXml = `<messages>\n${lines.join('\n')}\n</messages>`;
+
+      // Compose: memory + skill + messages
+      const parts = [memoryXml, skillXml, messagesXml].filter(Boolean);
+      const prompt = parts.join('\n\n');
+
+      await setTyping(msg.chat_jid, true);
+      const response = await runAgent(group, prompt, msg.chat_jid, { isSkillInvocation: true });
+      await setTyping(msg.chat_jid, false);
+
+      if (response) {
+        lastAgentTimestamp[msg.chat_jid] = msg.timestamp;
+        saveState();
+
+        // Strip voice separator if present (skill responses are typically text)
+        const voiceSep = '---voice---';
+        const sepIndex = response.indexOf(voiceSep);
+        const cleanText = sepIndex !== -1
+          ? response.replace(voiceSep, '').trim()
+          : response;
+        if (cleanText && !cleanText.startsWith('[') && !cleanText.endsWith('queued')) {
+          await sendMessage(msg.chat_jid, cleanText);
+        }
+
+        if (isSupermemoryEnabled()) {
+          void storeInteraction(group.folder, messagesXml, response, {
+            threadId: sessions[group.folder],
+            timestamp: msg.timestamp,
+            groupName: group.name,
+          });
+        }
+      }
+      return;
+    }
+  }
+
   // Main group responds to all messages; other groups require trigger prefix
   if (!isMainGroup && !TRIGGER_PATTERN.test(content)) return;
 
@@ -349,6 +427,7 @@ async function runAgent(
   group: RegisteredGroup,
   prompt: string,
   chatJid: string,
+  opts?: { isSkillInvocation?: boolean },
 ): Promise<string | null> {
   const isMain = group.folder === MAIN_GROUP_FOLDER;
   const sessionId = sessions[group.folder];
@@ -388,6 +467,7 @@ async function runAgent(
       groupFolder: group.folder,
       chatJid,
       isMain,
+      isSkillInvocation: opts?.isSkillInvocation,
       assistantName: ASSISTANT_NAME,
       provider,
       model,
@@ -1267,6 +1347,24 @@ async function processTaskIpc(
         );
       }
       break;
+
+    case 'skill_changed': {
+      // Re-register Telegram commands for the affected group's chat
+      const chatJidForSkill = getChatJidForGroup(sourceGroup);
+      if (chatJidForSkill) {
+        try {
+          const { refreshSkillCommands } = await import('./telegram.js');
+          await refreshSkillCommands(chatJidForSkill, sourceGroup);
+          logger.info(
+            { module: 'index', sourceGroup, action: (data as { action?: string }).action, skill: (data as { skillName?: string }).skillName },
+            'Skill changed, Telegram commands refreshed',
+          );
+        } catch (err) {
+          logger.error({ module: 'index', err }, 'Failed to refresh skill commands');
+        }
+      }
+      break;
+    }
 
     default:
       logger.warn({ module: 'index', type: data.type }, 'Unknown IPC task type');

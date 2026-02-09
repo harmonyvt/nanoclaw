@@ -48,6 +48,7 @@ export interface ContainerInput {
   chatJid: string;
   isMain: boolean;
   isScheduledTask?: boolean;
+  isSkillInvocation?: boolean;
   assistantName?: string;
   provider?: string;
   model?: string;
