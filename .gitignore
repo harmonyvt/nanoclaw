@@ -9,9 +9,10 @@ store/
 data/
 /logs/
 
-# Runtime data inside groups (media downloads, container logs)
+# Runtime data inside groups (media downloads, container logs, trajectory sessions)
 groups/*/media/
 groups/*/logs/
+groups/*/trajectory/
 
 # Secrets
 *.keys.json
