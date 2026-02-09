@@ -11,6 +11,7 @@
 import fs from 'fs';
 import path from 'path';
 import { createAdapter } from './adapters/index.js';
+import { isCancelled, clearCancelFile } from './cancel.js';
 import type { ContainerInput, ContainerOutput, AdapterInput } from './types.js';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -126,6 +127,13 @@ async function runQuery(input: ContainerInput): Promise<ContainerOutput> {
     log('Starting agent query...');
 
     for await (const event of adapter.run(adapterInput)) {
+      // Check for user interrupt between events
+      if (isCancelled()) {
+        log('Cancel file detected, aborting query');
+        clearCancelFile();
+        return { status: 'success', result: result || '[Interrupted by user]', newSessionId };
+      }
+
       switch (event.type) {
         case 'session_init':
           newSessionId = event.sessionId;
@@ -234,6 +242,9 @@ async function processInputFile(filename: string): Promise<void> {
 
   // Delete input file immediately so it won't be re-processed on restart
   try { fs.unlinkSync(inputPath); } catch {}
+
+  // Clear stale cancel files from previous requests
+  clearCancelFile();
 
   // Run the query
   const output = await runQuery(input);

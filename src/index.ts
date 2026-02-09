@@ -24,6 +24,7 @@ import {
 import {
   AvailableGroup,
   cleanupOrphanPersistentContainers,
+  interruptContainer,
   killAllContainers,
   runContainerAgent,
   startContainerIdleCleanup,
@@ -48,7 +49,7 @@ import {
   setTelegramTyping,
   stopTelegram,
 } from './telegram.js';
-import type { SessionManager, TaskActionHandler } from './telegram.js';
+import type { SessionManager, TaskActionHandler, InterruptHandler } from './telegram.js';
 import { NewMessage, RegisteredGroup, Session } from './types.js';
 import {
   detectEmotionFromText,
@@ -67,6 +68,7 @@ import {
   formatMemoryContext,
 } from './supermemory.js';
 import {
+  cancelWaitingRequests,
   processBrowseRequest,
   resolveWaitForUser,
   hasWaitingRequests,
@@ -78,7 +80,6 @@ import {
   cleanupSandbox,
   ensureSandbox,
   startIdleWatcher,
-  getSandboxUrl,
 } from './sandbox-manager.js';
 import {
   getTakeoverUrl,
@@ -99,6 +100,8 @@ import {
   initTailscaleServe,
   stopTailscaleServe,
 } from './tailscale-serve.js';
+import { emitCuaActivity, hasActiveFollowSession } from './cua-activity.js';
+import { queueActionForSummary } from './cua-follow-summary.js';
 
 let lastTimestamp = '';
 let sessions: Session = {};
@@ -464,6 +467,37 @@ function describeCuaActionStart(
       return 'Capturing page snapshot';
     case 'close':
       return 'Closing browser tab';
+    case 'click_xy': {
+      const x = params.x;
+      const y = params.y;
+      return x != null && y != null ? `Clicking at (${x}, ${y})` : 'Clicking at coordinates';
+    }
+    case 'type_at_xy': {
+      const x = params.x;
+      const y = params.y;
+      const len = String(params.text || '').length;
+      return x != null && y != null
+        ? `Typing at (${x}, ${y}) (${len} chars)`
+        : `Typing at coordinates (${len} chars)`;
+    }
+    case 'perform': {
+      const steps = Array.isArray(params.steps) ? params.steps : [];
+      return steps.length > 0
+        ? `Performing ${steps.length} action${steps.length === 1 ? '' : 's'}`
+        : 'Performing actions';
+    }
+    case 'extract_file': {
+      const name = String(params.path || params.filename || 'file');
+      return `Extracting ${name}`;
+    }
+    case 'upload_file': {
+      const name = String(params.path || params.filename || 'file');
+      return `Uploading ${name}`;
+    }
+    case 'evaluate':
+      return 'Evaluating script';
+    case 'wait_for_user':
+      return 'Waiting for user';
     default:
       return null;
   }
@@ -513,6 +547,17 @@ function startIpcWatcher(): void {
       const isMain = sourceGroup === MAIN_GROUP_FOLDER;
       const messagesDir = path.join(ipcBaseDir, sourceGroup, 'messages');
       const tasksDir = path.join(ipcBaseDir, sourceGroup, 'tasks');
+
+      // Clean up stale cancel files (older than 30s) to prevent leftover state
+      try {
+        const cancelFile = path.join(ipcBaseDir, sourceGroup, 'cancel');
+        if (fs.existsSync(cancelFile)) {
+          const stat = fs.statSync(cancelFile);
+          if (Date.now() - stat.mtimeMs > 30000) {
+            fs.unlinkSync(cancelFile);
+          }
+        }
+      } catch {}
 
       // Process messages from this group's IPC directory
       try {
@@ -775,21 +820,29 @@ function startIpcWatcher(): void {
                 if (chatJid) {
                   const ownerSession = createSessionForOwner();
                   const takeoverUrl = getTakeoverUrl(waitRequest.token, ownerSession?.token);
-                  const sandboxUrl = getSandboxUrl();
                   const takeoverPart = takeoverUrl
                     ? `\nTake over CUA: ${takeoverUrl}`
                     : '';
-                  const urlPart = sandboxUrl
-                    ? `\nDirect noVNC: ${sandboxUrl}`
-                    : '';
                   await sendMessage(
                     chatJid,
-                    `${waitMessage}${takeoverPart}${urlPart}\nRequest ID: ${requestId}\n\nWhen done, click "Return Control To Agent" in the takeover page.\nFallback: reply "continue ${requestId}".`,
+                    `${waitMessage}${takeoverPart}\nRequest ID: ${requestId}\n\nWhen done, click "Return Control To Agent" in the takeover page.\nFallback: reply "continue ${requestId}".`,
                   );
                 }
-              } else if (chatJid) {
+              } else {
                 const startNote = describeCuaActionStart(action, browseParams);
-                if (startNote) {
+
+                // Emit activity event for follow page
+                emitCuaActivity({
+                  groupFolder: sourceGroup,
+                  action,
+                  phase: 'start',
+                  description: startNote || action,
+                  requestId,
+                  params: browseParams,
+                });
+
+                // Send Telegram start message only if no follow session
+                if (chatJid && startNote && !hasActiveFollowSession(sourceGroup)) {
                   await sendMessage(chatJid, `CUA: ${startNote}`);
                 }
               }
@@ -806,17 +859,38 @@ function startIpcWatcher(): void {
               const browseDurationMs = Date.now() - browseStartMs;
               const usage = updateCuaUsage(sourceGroup, action, result.status);
 
+              // Emit activity end event for follow page
+              if (action !== 'wait_for_user') {
+                emitCuaActivity({
+                  groupFolder: sourceGroup,
+                  action,
+                  phase: 'end',
+                  description: describeCuaActionStart(action, browseParams) || action,
+                  requestId,
+                  status: result.status,
+                  durationMs: browseDurationMs,
+                  error: result.status === 'error' ? String(result.error || 'unknown') : undefined,
+                  screenshotPath: action === 'screenshot' && result.status === 'ok' ? (result.result as string) : undefined,
+                  usage: { total: usage.total, ok: usage.ok, failed: usage.failed },
+                });
+              }
+
               if (chatJid && action !== 'wait_for_user') {
-                const statusText =
-                  result.status === 'ok'
-                    ? 'ok'
-                    : `error: ${truncateForTelegram(String(result.error || 'unknown'), 140)}`;
-                const summaryText = `Usage ${usage.total} actions (${usage.ok} ok, ${usage.failed} failed)`;
-                const recentText = usage.recent.join(' -> ');
-                await sendMessage(
-                  chatJid,
-                  `CUA ${action}: ${statusText} (${browseDurationMs}ms)\n${summaryText}\nRecent: ${recentText}`,
-                );
+                if (hasActiveFollowSession(sourceGroup)) {
+                  // Queue for periodic summary instead of individual messages
+                  queueActionForSummary(sourceGroup, action, result.status, browseDurationMs);
+                } else {
+                  const statusText =
+                    result.status === 'ok'
+                      ? 'ok'
+                      : `error: ${truncateForTelegram(String(result.error || 'unknown'), 140)}`;
+                  const summaryText = `Usage ${usage.total} actions (${usage.ok} ok, ${usage.failed} failed)`;
+                  const recentText = usage.recent.join(' -> ');
+                  await sendMessage(
+                    chatJid,
+                    `CUA ${action}: ${statusText} (${browseDurationMs}ms)\n${summaryText}\nRecent: ${recentText}`,
+                  );
+                }
               }
 
               // Write response file (atomic: temp + rename)
@@ -828,13 +902,13 @@ function startIpcWatcher(): void {
               // Clean up request file
               fs.unlinkSync(filePath);
 
-              // Send screenshots as Telegram photos for better UX
+              // Send screenshots as Telegram photos (suppressed during follow mode)
               if (
                 action === 'screenshot' &&
                 result.status === 'ok' &&
                 result.result
               ) {
-                if (chatJid) {
+                if (chatJid && !hasActiveFollowSession(sourceGroup)) {
                   // Translate container path back to host path
                   const containerPath = result.result as string;
                   const hostPath = path.join(
@@ -1374,11 +1448,23 @@ async function main(): Promise<void> {
   startDashboardServer();
   initTailscaleServe();
 
+  const interruptHandler: InterruptHandler = {
+    interrupt(chatJid: string) {
+      const group = registeredGroups[chatJid];
+      if (!group) {
+        return { interrupted: false, message: 'No registered group for this chat.' };
+      }
+      cancelWaitingRequests(group.folder);
+      return interruptContainer(group.folder);
+    },
+  };
+
   await connectTelegram(
     () => registeredGroups,
     registerGroup,
     sessionManager,
     taskActions,
+    interruptHandler,
   );
   startSchedulerLoop(schedulerDeps);
   startIpcWatcher();

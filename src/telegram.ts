@@ -36,7 +36,7 @@ import { createSessionForOwner } from './dashboard-auth.js';
 import { getDashboardUrl } from './dashboard-server.js';
 import { downloadTelegramFile, transcribeAudio } from './media.js';
 import { logger } from './logger.js';
-import { ensureSandbox, getSandboxUrl } from './sandbox-manager.js';
+import { ensureSandbox } from './sandbox-manager.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
 
 /**
@@ -58,6 +58,13 @@ export interface TaskActionHandler {
   runTaskNow(
     taskId: string,
   ): Promise<{ success: boolean; error?: string; durationMs?: number }>;
+}
+
+/**
+ * Interface for interrupting a running agent from telegram command handlers.
+ */
+export interface InterruptHandler {
+  interrupt(chatJid: string): { interrupted: boolean; message: string };
 }
 
 // --- Task formatting helpers ---
@@ -238,7 +245,9 @@ type SlashCommandSpec = {
     | 'update'
     | 'takeover'
     | 'dashboard'
+    | 'follow'
     | 'verbose'
+    | 'stop'
     | 'help';
   description: string;
   help: string;
@@ -286,9 +295,19 @@ const TELEGRAM_SLASH_COMMANDS: SlashCommandSpec[] = [
     help: 'Open the realtime log dashboard',
   },
   {
+    command: 'follow',
+    description: 'Watch the agent work in CUA follow mode',
+    help: 'Open a live view of CUA browser activity',
+  },
+  {
     command: 'verbose',
     description: 'Toggle verbose mode (show agent tool use)',
     help: 'Toggle verbose mode (show agent tool use)',
+  },
+  {
+    command: 'stop',
+    description: 'Interrupt the running agent',
+    help: 'Stop the currently running agent operation',
   },
   {
     command: 'help',
@@ -451,6 +470,7 @@ export async function connectTelegram(
   onRegisterGroup?: (jid: string, group: RegisteredGroup) => void,
   sessionManager?: SessionManager,
   taskActions?: TaskActionHandler,
+  interruptHandler?: InterruptHandler,
 ): Promise<void> {
   bot = new Bot(TELEGRAM_BOT_TOKEN);
   const apiCommands = TELEGRAM_SLASH_COMMANDS.map((c) => ({
@@ -652,17 +672,15 @@ export async function connectTelegram(
 
     const ownerSession = createSessionForOwner();
     const takeoverUrl = getTakeoverUrl(request.token, ownerSession?.token);
-    const sandboxUrl = getSandboxUrl();
     const takeoverLine = takeoverUrl
       ? `Take over CUA: ${takeoverUrl}`
       : 'Takeover URL unavailable (takeover web UI may be disabled).';
-    const noVncLine = sandboxUrl ? `\nDirect noVNC: ${sandboxUrl}` : '';
     const requestLine = existing
       ? `\nReusing active request: ${request.requestId}`
       : `\nCreated request: ${request.requestId}`;
 
     await ctx.reply(
-      `Forced takeover ready.\n${takeoverLine}${noVncLine}${requestLine}\n\nWhen done, click "Return Control To Agent" in the takeover page.\nFallback: reply "continue ${request.requestId}".`,
+      `Forced takeover ready.\n${takeoverLine}${requestLine}\n\nWhen done, click "Return Control To Agent" in the takeover page.\nFallback: reply "continue ${request.requestId}".`,
     );
   });
 
@@ -687,6 +705,35 @@ export async function connectTelegram(
     });
   });
 
+  bot.command('follow', async (ctx) => {
+    if (!shouldAccept(ctx)) return;
+
+    const dashboardBaseUrl = getDashboardUrl();
+    if (!dashboardBaseUrl) {
+      await ctx.reply(
+        'Dashboard is disabled. Set DASHBOARD_ENABLED=true to enable the follow page.',
+      );
+      return;
+    }
+
+    const ownerSession = createSessionForOwner();
+    if (!ownerSession) {
+      await ctx.reply('Could not create session. Check TELEGRAM_OWNER_ID.');
+      return;
+    }
+
+    const followUrl = `${dashboardBaseUrl}/cua/follow?session=${encodeURIComponent(ownerSession.token)}`;
+    const kb = new InlineKeyboard().webApp(
+      'Follow CUA Activity',
+      followUrl,
+    );
+
+    await ctx.reply(
+      'Watch the agent work in real-time. noVNC desktop view + live activity feed.',
+      { reply_markup: kb },
+    );
+  });
+
   bot.command('help', async (ctx) => {
     if (!shouldAccept(ctx)) return;
     const lines = TELEGRAM_SLASH_COMMANDS.map(
@@ -705,6 +752,17 @@ export async function connectTelegram(
       verboseChats.add(chatId);
       await ctx.reply('Verbose mode on');
     }
+  });
+
+  bot.command('stop', async (ctx) => {
+    if (!shouldAccept(ctx)) return;
+    if (!interruptHandler) {
+      await ctx.reply('Interrupt not available.');
+      return;
+    }
+    const chatId = makeTelegramChatId(ctx.chat.id);
+    const result = interruptHandler.interrupt(chatId);
+    await ctx.reply(result.message);
   });
 
   bot.command('update', async (ctx) => {

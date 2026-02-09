@@ -1,0 +1,323 @@
+/* ── CUA Follow Page ──────────────────────────────────────────────────── */
+
+.follow-layout {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ── Desktop Panel (left) ─────────────────────────────────────────────── */
+
+.follow-desktop {
+  flex: 1;
+  min-width: 0;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  align-items: stretch;
+}
+
+.follow-vnc-iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: #000;
+}
+
+.follow-desktop-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  width: 100%;
+  color: var(--muted);
+  text-align: center;
+  padding: 32px;
+}
+
+.follow-desktop-empty h3 {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.follow-desktop-empty p {
+  font-size: 14px;
+  max-width: 360px;
+  line-height: 1.5;
+}
+
+/* ── Activity Panel (right) ───────────────────────────────────────────── */
+
+.follow-activity {
+  width: 400px;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+}
+
+.follow-activity-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  flex-shrink: 0;
+}
+
+.follow-activity-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.follow-activity-title {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.follow-activity-count {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* Status dot */
+.follow-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--danger);
+  flex-shrink: 0;
+}
+
+.follow-status-dot-ok {
+  background: var(--ok);
+  box-shadow: 0 0 6px rgba(34, 197, 94, 0.5);
+}
+
+/* ── Activity Feed ────────────────────────────────────────────────────── */
+
+.follow-feed {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  position: relative;
+}
+
+.follow-feed::-webkit-scrollbar {
+  width: 6px;
+}
+
+.follow-feed::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 3px;
+}
+
+.follow-scroll-btn {
+  position: sticky;
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: block;
+  margin: 8px auto;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  cursor: pointer;
+  opacity: 0.9;
+  transition: opacity 140ms;
+}
+
+.follow-scroll-btn:hover {
+  opacity: 1;
+}
+
+/* ── Activity Entry ───────────────────────────────────────────────────── */
+
+.follow-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  font-size: 13px;
+  line-height: 1.3;
+  animation: fadeIn 150ms ease-out;
+}
+
+.follow-entry:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.follow-entry-time {
+  font-size: 11px;
+  color: var(--muted);
+  flex-shrink: 0;
+  width: 64px;
+}
+
+.follow-entry-phase {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.follow-phase-start {
+  background: var(--accent);
+  animation: pulse-phase 1.5s ease-in-out infinite;
+}
+
+.follow-phase-ok {
+  background: var(--ok);
+}
+
+.follow-phase-error {
+  background: var(--danger);
+}
+
+@keyframes pulse-phase {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.follow-entry-icon {
+  color: var(--muted);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+
+.follow-entry-start .follow-entry-icon {
+  color: var(--accent);
+}
+
+.follow-entry-error .follow-entry-icon {
+  color: var(--danger);
+}
+
+.follow-entry-action {
+  font-weight: 600;
+  color: var(--text);
+  flex-shrink: 0;
+}
+
+.follow-entry-desc {
+  color: var(--muted);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.follow-entry-duration {
+  flex-shrink: 0;
+  font-size: 11px;
+}
+
+.follow-entry-error-text {
+  color: var(--danger);
+  font-size: 11px;
+  flex-shrink: 0;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Message Bar ──────────────────────────────────────────────────────── */
+
+.follow-message-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  flex-shrink: 0;
+}
+
+.follow-message-input {
+  flex: 1;
+  padding: 10px 14px;
+  font-size: 14px;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  outline: none;
+  transition: border-color 140ms;
+}
+
+.follow-message-input:focus {
+  border-color: var(--accent);
+}
+
+.follow-message-input::placeholder {
+  color: var(--muted);
+  opacity: 0.6;
+}
+
+.follow-send-btn {
+  flex-shrink: 0;
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.follow-spin {
+  animation: spin 0.6s linear infinite;
+}
+
+/* ── Error State ──────────────────────────────────────────────────────── */
+
+.follow-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  padding: 24px;
+}
+
+.follow-error-card {
+  padding: 32px;
+  text-align: center;
+  max-width: 400px;
+}
+
+.follow-error-card h2 {
+  font-size: 20px;
+  margin-bottom: 8px;
+}
+
+.follow-error-card p {
+  color: var(--muted);
+  font-size: 14px;
+  margin-bottom: 16px;
+}
+
+/* ── Responsive ───────────────────────────────────────────────────────── */
+
+@media (max-width: 900px) {
+  .follow-layout {
+    flex-direction: column;
+  }
+
+  .follow-desktop {
+    height: 45vh;
+    border-right: none;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  .follow-activity {
+    width: 100%;
+    flex: 1;
+  }
+}

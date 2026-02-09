@@ -1,0 +1,481 @@
+/* ── CUA Takeover – Modern Redesign ──────────────────────────────────── */
+
+body {
+  background:
+    radial-gradient(800px circle at 10% -5%, rgba(56, 189, 248, 0.12) 0%, transparent 60%),
+    radial-gradient(600px circle at 90% 105%, rgba(99, 102, 241, 0.12) 0%, transparent 55%),
+    var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fadeIn 320ms ease-out;
+}
+
+/* ── Container ── */
+
+.takeover-wrap {
+  width: 100%;
+  max-width: 680px;
+  padding: 16px;
+}
+
+/* ── Main Card ── */
+
+.takeover-card {
+  background: rgba(15, 23, 42, 0.7);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 24px;
+  box-shadow:
+    0 0 40px rgba(56, 189, 248, 0.06),
+    0 24px 64px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+
+/* ── Status Bar ── */
+
+.status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 20px;
+  background: rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.status-bar-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent-2);
+  animation: pulse-dot 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.status-dot-ok {
+  background: var(--ok);
+  animation: none;
+}
+
+.status-dot-error {
+  background: var(--danger);
+  animation: none;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(1.15); }
+}
+
+.status-bar-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--accent-2);
+}
+
+.status-bar-label-ok {
+  color: var(--ok);
+}
+
+.status-bar-label-error {
+  color: var(--danger);
+}
+
+.status-bar-id {
+  font-family: "IBM Plex Mono", "Menlo", "Consolas", monospace;
+  font-size: 11px;
+  color: rgba(148, 163, 184, 0.6);
+  letter-spacing: -0.02em;
+}
+
+/* ── Card Body ── */
+
+.card-body {
+  padding: 32px 32px 36px;
+}
+
+/* ── Header ── */
+
+.card-header {
+  margin-bottom: 32px;
+}
+
+.header-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 16px;
+  background: rgba(56, 189, 248, 0.1);
+  color: var(--accent);
+  margin-bottom: 20px;
+}
+
+.header-icon svg {
+  width: 28px;
+  height: 28px;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  fill: none;
+}
+
+.card-title {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: #fff;
+  margin: 0 0 8px;
+}
+
+.card-subtitle {
+  color: rgba(148, 163, 184, 0.85);
+  font-size: 16px;
+  line-height: 1.55;
+  margin: 0;
+  max-width: 440px;
+}
+
+/* ── Info Grid ── */
+
+.info-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 28px;
+}
+
+.info-cell {
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  transition: border-color 160ms ease;
+}
+
+.info-cell:hover {
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.info-cell-wide {
+  grid-column: 1 / -1;
+}
+
+.info-cell-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.info-cell-head svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 1.8;
+  fill: none;
+  flex-shrink: 0;
+}
+
+.info-cell-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: rgba(148, 163, 184, 0.5);
+}
+
+.info-cell-value {
+  font-size: 13px;
+  color: rgba(186, 207, 228, 0.85);
+  word-break: break-all;
+  font-family: "IBM Plex Mono", "Menlo", "Consolas", monospace;
+  user-select: all;
+  line-height: 1.45;
+}
+
+.info-cell-inline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.info-cell-inline .info-cell-head {
+  margin-bottom: 0;
+}
+
+.info-cell-inline .info-cell-value {
+  font-size: 14px;
+  font-weight: 500;
+  color: #fff;
+  font-family: inherit;
+  user-select: auto;
+}
+
+.info-cell-inline .info-cell-value-mono {
+  font-family: "IBM Plex Mono", "Menlo", "Consolas", monospace;
+  font-size: 12px;
+  font-weight: 400;
+  color: rgba(148, 163, 184, 0.7);
+}
+
+/* Icon colors in cells */
+.icon-sky { stroke: var(--accent); }
+.icon-indigo { stroke: #818cf8; }
+.icon-slate { stroke: rgba(148, 163, 184, 0.55); }
+
+/* ── Action Area ── */
+
+.action-area {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.action-buttons {
+  display: flex;
+  gap: 12px;
+}
+
+.btn-return {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px 20px;
+  border-radius: 16px;
+  font-size: 15px;
+  font-weight: 700;
+  color: #0a1628;
+  background: var(--accent);
+  border: none;
+  cursor: pointer;
+  transition: all 160ms ease;
+  box-shadow: 0 8px 24px rgba(56, 189, 248, 0.22);
+  font-family: inherit;
+}
+
+.btn-return:hover {
+  background: #7dd3fc;
+  transform: translateY(-1px);
+  box-shadow: 0 12px 32px rgba(56, 189, 248, 0.3);
+}
+
+.btn-return:active {
+  transform: scale(0.98);
+}
+
+.btn-return:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.btn-return svg {
+  width: 18px;
+  height: 18px;
+  stroke: currentColor;
+  stroke-width: 2;
+  fill: none;
+  transition: transform 160ms ease;
+}
+
+.btn-return:hover svg {
+  transform: translateX(2px);
+}
+
+.btn-return-done {
+  background: var(--ok);
+  box-shadow: 0 8px 24px rgba(34, 197, 94, 0.22);
+}
+
+.btn-return-done:hover {
+  background: #4ade80;
+}
+
+.btn-desktop {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px 20px;
+  border-radius: 16px;
+  font-size: 15px;
+  font-weight: 700;
+  color: #fff;
+  background: rgba(30, 41, 59, 0.8);
+  border: 1px solid rgba(51, 65, 85, 0.8);
+  cursor: pointer;
+  text-decoration: none;
+  transition: all 160ms ease;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.btn-desktop:hover {
+  background: rgba(51, 65, 85, 0.8);
+  border-color: rgba(71, 85, 105, 0.8);
+}
+
+.btn-desktop svg {
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+  stroke-width: 2;
+  fill: none;
+}
+
+/* ── Info Banner ── */
+
+.info-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: rgba(56, 189, 248, 0.05);
+  border: 1px solid rgba(56, 189, 248, 0.15);
+}
+
+.info-banner svg {
+  width: 16px;
+  height: 16px;
+  stroke: var(--accent);
+  stroke-width: 2;
+  fill: none;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.info-banner p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: rgba(125, 211, 252, 0.65);
+}
+
+/* ── Card Footer ── */
+
+.card-footer {
+  padding: 16px 32px;
+  background: rgba(0, 0, 0, 0.2);
+  text-align: center;
+}
+
+.card-footer span {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.25em;
+  color: rgba(71, 85, 105, 0.7);
+}
+
+/* ── Bottom Badges ── */
+
+.bottom-badges {
+  display: flex;
+  justify-content: center;
+  gap: 28px;
+  margin-top: 24px;
+}
+
+.bottom-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: rgba(71, 85, 105, 0.65);
+}
+
+.bottom-badge svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  fill: none;
+}
+
+/* ── Expired State ── */
+
+.expired-card {
+  text-align: center;
+  padding: 48px 32px;
+}
+
+.expired-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 16px;
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--danger);
+  margin-bottom: 20px;
+}
+
+.expired-icon svg {
+  width: 28px;
+  height: 28px;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  fill: none;
+}
+
+.expired-card h1 {
+  font-size: 24px;
+  font-weight: 700;
+  color: #fff;
+  margin: 0 0 10px;
+}
+
+.expired-card p {
+  margin: 0;
+  color: rgba(148, 163, 184, 0.7);
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+.expired-card .warn {
+  color: var(--accent-2);
+  margin-top: 14px;
+  font-size: 13px;
+}
+
+/* ── Responsive ── */
+
+@media (max-width: 600px) {
+  .card-body {
+    padding: 24px 20px 28px;
+  }
+
+  .card-title {
+    font-size: 24px;
+  }
+
+  .card-subtitle {
+    font-size: 14px;
+  }
+
+  .info-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .action-buttons {
+    flex-direction: column;
+  }
+
+  .bottom-badges {
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+  }
+}
