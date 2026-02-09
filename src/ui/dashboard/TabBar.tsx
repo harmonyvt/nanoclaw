@@ -1,4 +1,4 @@
-const TABS = ['logs', 'containers', 'tasks', 'files', 'takeover', 'follow', 'trajectory'] as const;
+const TABS = ['logs', 'containers', 'tasks', 'files', 'takeover', 'trajectory'] as const;
 
 const TAB_LABELS: Record<string, string> = {
   logs: 'Logs',
@@ -6,7 +6,6 @@ const TAB_LABELS: Record<string, string> = {
   tasks: 'Tasks',
   files: 'Files',
   takeover: 'Takeover',
-  follow: 'Follow',
   trajectory: 'Trajectory',
 };
 

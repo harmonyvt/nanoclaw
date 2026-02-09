@@ -7,7 +7,6 @@ import { ContainersPane } from './panes/ContainersPane.js';
 import { TasksPane } from './panes/TasksPane.js';
 import { FilesPane } from './panes/FilesPane.js';
 import { TakeoverPane } from './panes/TakeoverPane.js';
-import { FollowPane } from './panes/FollowPane.js';
 import { TrajectoryPane } from './panes/TrajectoryPane.js';
 
 export function DashboardApp() {
@@ -64,7 +63,6 @@ export function DashboardApp() {
       {activeTab === 'tasks' && <TasksPane />}
       {activeTab === 'files' && <FilesPane />}
       {activeTab === 'takeover' && <TakeoverPane />}
-      {activeTab === 'follow' && <FollowPane />}
       {activeTab === 'trajectory' && <TrajectoryPane />}
     </>
   );

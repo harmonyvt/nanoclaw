@@ -967,13 +967,6 @@ input[type="text"] {
   cursor: pointer;
 }
 
-/* Follow pane layout override (standalone uses height: 100vh) */
-.follow-layout-pane {
-  height: auto;
-  flex: 1;
-  min-height: 0;
-}
-
 /* Dashboard toast override */
 .toast {
   bottom: 80px;

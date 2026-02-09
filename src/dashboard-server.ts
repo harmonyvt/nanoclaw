@@ -10,7 +10,7 @@ import {
   GROUPS_DIR,
   DATA_DIR,
 } from './config.js';
-import { getSandboxHostIp, isSandboxRunning, ensureSandbox, getSandboxUrl, getSandboxVncPassword, resetIdleTimer } from './sandbox-manager.js';
+import { getSandboxHostIp, isSandboxRunning, ensureSandbox, getSandboxUrl, resetIdleTimer } from './sandbox-manager.js';
 import { getTailscaleHttpsUrl } from './tailscale-serve.js';
 import { logger } from './logger.js';
 import {
@@ -42,19 +42,11 @@ import {
   resolveWaitForUserByToken,
 } from './browse-host.js';
 import { serveStaticAsset } from './ui-assets.js';
-import { proxyNoVncHttp, proxyNoVncFollowPage, createNoVncWebSocketHandler, makeNoVncWsData, type NoVncWsData } from './novnc-proxy.js';
+import { proxyNoVncHttp, createNoVncWebSocketHandler, makeNoVncWsData, type NoVncWsData } from './novnc-proxy.js';
 import {
   cuaActivityEmitter,
-  registerFollowSession,
-  unregisterFollowSession,
-  hasActiveFollowSession,
-  getActivityRingBuffer,
   type CuaActivityEvent,
 } from './cua-activity.js';
-import { startFollowSummaryTimer, stopFollowSummaryTimer } from './cua-follow-summary.js';
-import { sendTelegramMessage, sendTelegramMessageWithId, editTelegramMessageText } from './telegram.js';
-import { loadJson } from './utils.js';
-import type { RegisteredGroup } from './types.js';
 import {
   getTrajectorySessions,
   getTrajectorySession,
@@ -64,9 +56,6 @@ import {
 let dashboardServer: ReturnType<typeof Bun.serve> | null = null;
 let sessionCleanupInterval: ReturnType<typeof setInterval> | null = null;
 
-/** Tracks the Telegram message ID for the in-place follow summary per group */
-const followSummaryMsgIds = new Map<string, number>();
-
 const MAX_UPLOAD_SIZE = 50 * 1024 * 1024; // 50MB
 const MAX_DOWNLOAD_SIZE = 100 * 1024 * 1024; // 100MB
 const MAX_PREVIEW_TEXT = 10 * 1024; // 10KB
@@ -74,10 +63,6 @@ const MAX_PREVIEW_IMAGE = 2 * 1024 * 1024; // 2MB
 const PROTECTED_FILES = ['CLAUDE.md', 'SOUL.md'];
 const CUA_SAFE_ROOTS = ['/home/', '/tmp/', '/root/', '/var/', '/opt/'];
 
-// Rate limiting for follow message endpoint
-const MESSAGE_RATE_LIMIT = 10;
-const MESSAGE_RATE_WINDOW_MS = 60_000;
-const messageRateMap = new Map<string, number[]>();
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -1090,24 +1075,6 @@ function renderDashboardPage(): string {
 </html>`;
 }
 
-// ── Follow Page ─────────────────────────────────────────────────────────
-
-function renderFollowPage(): string {
-  return `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>CUA Follow</title>
-  <link rel="stylesheet" href="/assets/follow.css">
-</head>
-<body>
-  <div id="app"></div>
-  <script type="module" src="/assets/follow.js"><\/script>
-</body>
-</html>`;
-}
-
 // ── Trajectory API handlers ──────────────────────────────────────────────
 
 function handleTrajectorySessions(url: URL): Response {
@@ -1192,160 +1159,6 @@ function handleTrajectoryStream(req: Request, url: URL): Response {
   });
 }
 
-function handleFollowSSEStream(req: Request, url: URL, scopedGroup?: string): Response {
-  // If session is scoped to a group, enforce it; otherwise allow query param
-  const groupFolder = scopedGroup || url.searchParams.get('group') || 'main';
-  const sessionId = `follow-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
-  const stream = new ReadableStream({
-    start(controller) {
-      const encoder = new TextEncoder();
-
-      function send(eventType: string, data: unknown) {
-        try {
-          controller.enqueue(
-            encoder.encode(
-              `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`,
-            ),
-          );
-        } catch {
-          // Stream closed
-        }
-      }
-
-      // Register follow session and start summary timer
-      registerFollowSession(groupFolder, sessionId);
-
-      // Resolve chat JID for summary timer
-      const groups = loadJson<Record<string, RegisteredGroup>>(
-        path.join(DATA_DIR, 'registered_groups.json'),
-        {},
-      );
-      const chatJid = Object.entries(groups).find(
-        ([, g]) => g.folder === groupFolder,
-      )?.[0];
-
-      if (chatJid) {
-        startFollowSummaryTimer(groupFolder, async (summary) => {
-          try {
-            const existingId = followSummaryMsgIds.get(groupFolder);
-            if (existingId) {
-              const edited = await editTelegramMessageText(chatJid, existingId, summary);
-              if (edited) return;
-              // Edit failed (message deleted?), send new
-            }
-            const newId = await sendTelegramMessageWithId(chatJid, summary);
-            if (newId) followSummaryMsgIds.set(groupFolder, newId);
-          } catch (err) {
-            logger.warn({ module: 'dashboard', err }, 'Failed to send follow summary');
-          }
-        });
-      }
-
-      // Send catch-up events
-      const catchUp = getActivityRingBuffer(groupFolder);
-      for (const entry of catchUp) {
-        send('activity', entry);
-      }
-
-      // Subscribe to new events
-      const onActivity = (event: CuaActivityEvent) => {
-        if (event.groupFolder === groupFolder) {
-          send('activity', event);
-        }
-      };
-      cuaActivityEmitter.on('activity', onActivity);
-
-      // Heartbeat
-      const heartbeat = setInterval(() => {
-        try {
-          controller.enqueue(encoder.encode(': heartbeat\n\n'));
-        } catch {
-          clearInterval(heartbeat);
-        }
-      }, 15_000);
-
-      // Cleanup on disconnect
-      req.signal.addEventListener('abort', () => {
-        cuaActivityEmitter.off('activity', onActivity);
-        clearInterval(heartbeat);
-        const disconnectedGroup = unregisterFollowSession(sessionId);
-        if (disconnectedGroup && !hasActiveFollowSession(disconnectedGroup)) {
-          stopFollowSummaryTimer(disconnectedGroup);
-          followSummaryMsgIds.delete(disconnectedGroup);
-        }
-        try {
-          controller.close();
-        } catch {
-          // Already closed
-        }
-      });
-    },
-  });
-
-  return new Response(stream, {
-    headers: {
-      'content-type': 'text/event-stream',
-      'cache-control': 'no-cache',
-      connection: 'keep-alive',
-    },
-  });
-}
-
-function handleFollowVncInfo(): Response {
-  return jsonResponse({
-    liveViewUrl: getSandboxUrl(),
-    sandboxRunning: isSandboxRunning(),
-  });
-}
-
-async function handleFollowMessage(req: Request, url: URL, scopedGroup?: string): Promise<Response> {
-  try {
-    // Rate limit per session token
-    const token = extractToken(req, url);
-    if (token) {
-      const now = Date.now();
-      const timestamps = messageRateMap.get(token) || [];
-      const recent = timestamps.filter((t) => now - t < MESSAGE_RATE_WINDOW_MS);
-      if (recent.length >= MESSAGE_RATE_LIMIT) {
-        return jsonResponse({ error: 'rate limit exceeded, try again later' }, 429);
-      }
-      recent.push(now);
-      messageRateMap.set(token, recent);
-    }
-
-    const body = (await req.json()) as { text?: string; groupFolder?: string };
-    const text = body.text?.trim();
-    if (!text) {
-      return jsonResponse({ error: 'text is required' }, 400);
-    }
-
-    // If session is scoped to a group, enforce it; otherwise allow body param
-    const groupFolder = scopedGroup || body.groupFolder || 'main';
-
-    // Resolve chat JID from registered groups
-    const groups = loadJson<Record<string, RegisteredGroup>>(
-      path.join(DATA_DIR, 'registered_groups.json'),
-      {},
-    );
-    const chatJid = Object.entries(groups).find(
-      ([, g]) => g.folder === groupFolder,
-    )?.[0];
-
-    if (!chatJid) {
-      return jsonResponse({ error: 'group not found' }, 404);
-    }
-
-    await sendTelegramMessage(chatJid, text);
-    return jsonResponse({ ok: true });
-  } catch (err) {
-    return jsonResponse(
-      { error: `send failed: ${err instanceof Error ? err.message : String(err)}` },
-      500,
-    );
-  }
-}
-
 // ── Request router ──────────────────────────────────────────────────────
 
 function handleRequest(req: Request, server: import('bun').Server<NoVncWsData>): Response | Promise<Response> | undefined {
@@ -1369,11 +1182,6 @@ function handleRequest(req: Request, server: import('bun').Server<NoVncWsData>):
     return upgraded ? undefined : new Response('WebSocket upgrade failed', { status: 500 });
   }
 
-  // noVNC follow page — injects VNC password server-side so it never reaches the client
-  if (req.method === 'GET' && pathname === '/novnc/follow') {
-    return proxyNoVncFollowPage(getSandboxVncPassword());
-  }
-
   // noVNC HTTP proxy (no auth — within authenticated iframe)
   if (req.method === 'GET' && pathname.startsWith('/novnc/')) {
     return proxyNoVncHttp(pathname);
@@ -1383,10 +1191,6 @@ function handleRequest(req: Request, server: import('bun').Server<NoVncWsData>):
   if (pathname === '/' || pathname === '/app') {
     return htmlResponse(renderDashboardPage());
   }
-  if (pathname === '/cua/follow') {
-    return htmlResponse(renderFollowPage());
-  }
-
   // Auth endpoint
   if (pathname === '/api/auth') {
     return handleAuth(url);
@@ -1397,11 +1201,6 @@ function handleRequest(req: Request, server: import('bun').Server<NoVncWsData>):
   if (!session) {
     return jsonResponse({ error: 'unauthorized' }, 401);
   }
-
-  // CUA Follow API — enforce group scope from session
-  if (pathname === '/api/cua/follow/stream') return handleFollowSSEStream(req, url, session.groupFolder);
-  if (pathname === '/api/cua/follow/vnc-info') return handleFollowVncInfo();
-  if (req.method === 'POST' && pathname === '/api/cua/follow/message') return handleFollowMessage(req, url, session.groupFolder);
 
   // CUA Trajectory API
   if (pathname === '/api/cua/trajectory/sessions') return handleTrajectorySessions(url);
@@ -1512,13 +1311,6 @@ export function startDashboardServer(): void {
 
   sessionCleanupInterval = setInterval(() => {
     cleanExpiredSessions();
-    // Prune stale rate-limit entries
-    const now = Date.now();
-    for (const [key, timestamps] of messageRateMap) {
-      const recent = timestamps.filter((t) => now - t < MESSAGE_RATE_WINDOW_MS);
-      if (recent.length === 0) messageRateMap.delete(key);
-      else messageRateMap.set(key, recent);
-    }
   }, 60 * 60 * 1000);
 
   logger.info(

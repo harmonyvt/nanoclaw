@@ -259,7 +259,6 @@ type SlashCommandSpec = {
     | 'rebuild'
     | 'takeover'
     | 'dashboard'
-    | 'follow'
     | 'verbose'
     | 'thinking'
     | 'stop'
@@ -314,11 +313,6 @@ const TELEGRAM_SLASH_COMMANDS: SlashCommandSpec[] = [
     command: 'dashboard',
     description: 'Open the realtime log dashboard',
     help: 'Open the realtime log dashboard',
-  },
-  {
-    command: 'follow',
-    description: 'Watch the agent work in CUA follow mode',
-    help: 'Open a live view of CUA browser activity',
   },
   {
     command: 'verbose',
@@ -808,38 +802,6 @@ export async function connectTelegram(
     await ctx.reply('Tap the button below to open the log dashboard.', {
       reply_markup: kb,
     });
-  });
-
-  bot.command('follow', async (ctx) => {
-    if (!shouldAccept(ctx)) return;
-
-    const dashboardBaseUrl = getDashboardUrl();
-    if (!dashboardBaseUrl) {
-      await ctx.reply(
-        'Dashboard is disabled. Set DASHBOARD_ENABLED=true to enable the follow page.',
-      );
-      return;
-    }
-
-    // Scope session to the current chat's group folder
-    const chatId = makeTelegramChatId(ctx.chat.id);
-    const group = registeredGroups()[chatId];
-    const ownerSession = createSessionForOwner(group?.folder);
-    if (!ownerSession) {
-      await ctx.reply('Could not create session. Check TELEGRAM_OWNER_ID.');
-      return;
-    }
-
-    const followUrl = `${dashboardBaseUrl}/cua/follow?session=${encodeURIComponent(ownerSession.token)}`;
-    const kb = new InlineKeyboard().webApp(
-      'Follow CUA Activity',
-      followUrl,
-    );
-
-    await ctx.reply(
-      'Watch the agent work in real-time. noVNC desktop view + live activity feed.',
-      { reply_markup: kb },
-    );
   });
 
   bot.command('help', async (ctx) => {

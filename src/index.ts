@@ -108,8 +108,7 @@ import {
   initTailscaleServe,
   stopTailscaleServe,
 } from './tailscale-serve.js';
-import { emitCuaActivity, hasActiveFollowSession } from './cua-activity.js';
-import { queueActionForSummary } from './cua-follow-summary.js';
+import { emitCuaActivity } from './cua-activity.js';
 import { initTrajectoryPersistence } from './cua-trajectory.js';
 
 let lastTimestamp = '';
@@ -1085,8 +1084,8 @@ function startIpcWatcher(): void {
                   params: browseParams,
                 });
 
-                // Update CUA log message in-place (skip during follow mode)
-                if (chatJid && startNote && !hasActiveFollowSession(sourceGroup)) {
+                // Update CUA log message in-place
+                if (chatJid && startNote) {
                   await updateCuaLogMessage(sourceGroup, chatJid, `CUA: ${startNote}`);
                 }
               }
@@ -1120,20 +1119,15 @@ function startIpcWatcher(): void {
               }
 
               if (chatJid && action !== 'wait_for_user') {
-                if (hasActiveFollowSession(sourceGroup)) {
-                  // Queue for periodic summary instead of individual messages
-                  queueActionForSummary(sourceGroup, action, result.status, browseDurationMs);
-                } else {
-                  const statusText =
-                    result.status === 'ok'
-                      ? 'ok'
-                      : `error: ${truncateForTelegram(String(result.error || 'unknown'), 140)}`;
-                  await updateCuaLogMessage(
-                    sourceGroup,
-                    chatJid,
-                    `CUA ${action}: ${statusText} (${browseDurationMs}ms) | ${usage.ok}/${usage.total} actions`,
-                  );
-                }
+                const statusText =
+                  result.status === 'ok'
+                    ? 'ok'
+                    : `error: ${truncateForTelegram(String(result.error || 'unknown'), 140)}`;
+                await updateCuaLogMessage(
+                  sourceGroup,
+                  chatJid,
+                  `CUA ${action}: ${statusText} (${browseDurationMs}ms) | ${usage.ok}/${usage.total} actions`,
+                );
               }
 
               // Write response file (atomic: temp + rename)
@@ -1145,13 +1139,13 @@ function startIpcWatcher(): void {
               // Clean up request file
               fs.unlinkSync(filePath);
 
-              // Update screenshot photo in-place (suppressed during follow mode)
+              // Update screenshot photo in-place
               if (
                 action === 'screenshot' &&
                 result.status === 'ok' &&
                 result.result
               ) {
-                if (chatJid && !hasActiveFollowSession(sourceGroup)) {
+                if (chatJid) {
                   // Translate container path back to host path
                   const containerPath = result.result as string;
                   const hostPath = path.join(
