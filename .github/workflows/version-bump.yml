@@ -1,0 +1,41 @@
+name: Version Bump
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    # Skip if the push is the version bump commit itself
+    if: "!startsWith(github.event.head_commit.message, 'chore: bump version')"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bump version
+        run: |
+          CURRENT=$(node -p "require('./package.json').version")
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          MSG="${{ github.event.head_commit.message }}"
+          if echo "$MSG" | grep -qi '\[major\]'; then
+            NEW="$((MAJOR + 1)).0.0"
+          elif echo "$MSG" | grep -qi '\[minor\]'; then
+            NEW="${MAJOR}.$((MINOR + 1)).0"
+          else
+            NEW="${MAJOR}.${MINOR}.$((PATCH + 1))"
+          fi
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf-8'));
+            pkg.version = '${NEW}';
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+          echo "VERSION=${NEW}" >> "$GITHUB_ENV"
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add package.json
+          git commit -m "chore: bump version to ${VERSION}"
+          git push
