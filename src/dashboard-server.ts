@@ -55,6 +55,11 @@ import { startFollowSummaryTimer, stopFollowSummaryTimer } from './cua-follow-su
 import { sendTelegramMessage } from './telegram.js';
 import { loadJson } from './utils.js';
 import type { RegisteredGroup } from './types.js';
+import {
+  getTrajectorySessions,
+  getTrajectorySession,
+  getActiveSession,
+} from './cua-trajectory.js';
 
 let dashboardServer: ReturnType<typeof Bun.serve> | null = null;
 let sessionCleanupInterval: ReturnType<typeof setInterval> | null = null;
@@ -1100,6 +1105,90 @@ function renderFollowPage(): string {
 </html>`;
 }
 
+// ── Trajectory API handlers ──────────────────────────────────────────────
+
+function handleTrajectorySessions(url: URL): Response {
+  const group = url.searchParams.get('group') || 'main';
+  const limit = parseInt(url.searchParams.get('limit') || '20', 10);
+  const sessions = getTrajectorySessions(group, Math.min(limit, 100));
+  return jsonResponse(sessions);
+}
+
+function handleTrajectorySession(url: URL): Response {
+  const group = url.searchParams.get('group') || 'main';
+  const sessionId = url.searchParams.get('id') || '';
+  if (!sessionId) return jsonResponse({ error: 'missing id parameter' }, 400);
+  const session = getTrajectorySession(group, sessionId);
+  if (!session) return jsonResponse({ error: 'session not found' }, 404);
+  return jsonResponse(session);
+}
+
+function handleTrajectoryStream(req: Request, url: URL): Response {
+  const groupFolder = url.searchParams.get('group') || 'main';
+
+  const stream = new ReadableStream({
+    start(controller) {
+      const encoder = new TextEncoder();
+
+      function send(eventType: string, data: unknown) {
+        try {
+          controller.enqueue(
+            encoder.encode(
+              `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`,
+            ),
+          );
+        } catch {
+          // Stream closed
+        }
+      }
+
+      // Send current active session as catch-up
+      const active = getActiveSession(groupFolder);
+      if (active) {
+        for (const event of active.events) {
+          send('activity', event);
+        }
+      }
+
+      // Subscribe to new events
+      const onActivity = (event: CuaActivityEvent) => {
+        if (event.groupFolder === groupFolder) {
+          send('activity', event);
+        }
+      };
+      cuaActivityEmitter.on('activity', onActivity);
+
+      // Heartbeat
+      const heartbeat = setInterval(() => {
+        try {
+          controller.enqueue(encoder.encode(': heartbeat\n\n'));
+        } catch {
+          clearInterval(heartbeat);
+        }
+      }, 15_000);
+
+      // Cleanup on disconnect
+      req.signal.addEventListener('abort', () => {
+        cuaActivityEmitter.off('activity', onActivity);
+        clearInterval(heartbeat);
+        try {
+          controller.close();
+        } catch {
+          // Already closed
+        }
+      });
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      'content-type': 'text/event-stream',
+      'cache-control': 'no-cache',
+      connection: 'keep-alive',
+    },
+  });
+}
+
 function handleFollowSSEStream(req: Request, url: URL, scopedGroup?: string): Response {
   // If session is scoped to a group, enforce it; otherwise allow query param
   const groupFolder = scopedGroup || url.searchParams.get('group') || 'main';
@@ -1302,6 +1391,11 @@ function handleRequest(req: Request, server: import('bun').Server<NoVncWsData>):
   if (pathname === '/api/cua/follow/stream') return handleFollowSSEStream(req, url, session.groupFolder);
   if (pathname === '/api/cua/follow/vnc-info') return handleFollowVncInfo();
   if (req.method === 'POST' && pathname === '/api/cua/follow/message') return handleFollowMessage(req, url, session.groupFolder);
+
+  // CUA Trajectory API
+  if (pathname === '/api/cua/trajectory/sessions') return handleTrajectorySessions(url);
+  if (pathname === '/api/cua/trajectory/session') return handleTrajectorySession(url);
+  if (pathname === '/api/cua/trajectory/stream') return handleTrajectoryStream(req, url);
 
   // Logs
   if (pathname === '/api/logs/stream') return handleSSEStream(req, url);

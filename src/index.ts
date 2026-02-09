@@ -107,6 +107,7 @@ import {
 } from './tailscale-serve.js';
 import { emitCuaActivity, hasActiveFollowSession } from './cua-activity.js';
 import { queueActionForSummary } from './cua-follow-summary.js';
+import { initTrajectoryPersistence } from './cua-trajectory.js';
 
 let lastTimestamp = '';
 let sessions: Session = {};
@@ -1598,6 +1599,7 @@ async function main(): Promise<void> {
   cleanupOrphanPersistentContainers();
   initDatabase();
   logger.info({ module: 'index' }, 'Database initialized');
+  initTrajectoryPersistence();
   initLogSync();
   pruneOldLogEntries();
   loadState();

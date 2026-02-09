@@ -1,4 +1,4 @@
-const TABS = ['logs', 'containers', 'tasks', 'files', 'takeover', 'follow'] as const;
+const TABS = ['logs', 'containers', 'tasks', 'files', 'takeover', 'follow', 'trajectory'] as const;
 
 const TAB_LABELS: Record<string, string> = {
   logs: 'Logs',
@@ -7,6 +7,7 @@ const TAB_LABELS: Record<string, string> = {
   files: 'Files',
   takeover: 'Takeover',
   follow: 'Follow',
+  trajectory: 'Trajectory',
 };
 
 interface TabBarProps {
