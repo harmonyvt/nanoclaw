@@ -13,7 +13,6 @@ mkdirSync(OUT_DIR, { recursive: true });
 const entryPoints = [
   { name: 'takeover', path: join(ROOT, 'src/ui/takeover/takeover.tsx') },
   { name: 'dashboard', path: join(ROOT, 'src/ui/dashboard/dashboard.tsx') },
-  { name: 'follow', path: join(ROOT, 'src/ui/follow/follow.tsx') },
 ];
 
 // Check entry points exist
@@ -74,15 +73,6 @@ const cssTargets: CssTarget[] = [
       join(SHARED_DIR, 'theme.css'),
       join(SHARED_DIR, 'components.css'),
       join(ROOT, 'src/ui/dashboard/dashboard.css'),
-      join(ROOT, 'src/ui/follow/follow.css'),
-    ],
-  },
-  {
-    name: 'follow',
-    files: [
-      join(SHARED_DIR, 'theme.css'),
-      join(SHARED_DIR, 'components.css'),
-      join(ROOT, 'src/ui/follow/follow.css'),
     ],
   },
 ];
