@@ -83,6 +83,8 @@ if [[ "$BEHIND" == "0" ]]; then
   exit 0
 fi
 
+OLD_HEAD="$(git rev-parse HEAD)"
+
 log_step "updating to ${REMOTE_REF} (${BEHIND} commit(s) behind)"
 git reset --hard "${REMOTE_REF}"
 
@@ -94,6 +96,32 @@ fi
 
 log_step "building"
 "$BUN_PATH" run build
+
+# Rebuild the agent container if any container files changed
+CONTAINER_CHANGED="$(git diff --name-only "${OLD_HEAD}..HEAD" -- container/)"
+if [[ -n "$CONTAINER_CHANGED" ]]; then
+  if command -v docker >/dev/null 2>&1; then
+    log_step "container files changed; rebuilding agent image"
+    bash "${ROOT_DIR}/container/build.sh"
+  else
+    log_step "container files changed but docker not found; skipping image rebuild"
+  fi
+else
+  log_step "no container changes; skipping image rebuild"
+fi
+
+# Write a marker so the new process can verify the update on startup
+NEW_HEAD="$(git rev-parse HEAD)"
+MARKER_FILE="${ROOT_DIR}/data/self-update-pending.json"
+mkdir -p "${ROOT_DIR}/data"
+if [[ -n "$CONTAINER_CHANGED" ]]; then
+  REBUILT_FLAG="true"
+else
+  REBUILT_FLAG="false"
+fi
+cat > "$MARKER_FILE" <<MARKER_EOF
+{"expectedHead":"${NEW_HEAD}","chatId":"${SELF_UPDATE_CHAT_ID}","timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)","containerRebuilt":${REBUILT_FLAG}}
+MARKER_EOF
 
 OS="$(uname -s)"
 if [[ "$OS" == "Darwin" ]]; then
