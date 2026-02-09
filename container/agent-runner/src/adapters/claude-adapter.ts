@@ -177,6 +177,26 @@ function createPreCompactHook(assistantName?: string): HookCallback {
   };
 }
 
+// ─── Thinking Stream Types & Constants ───────────────────────────────────────
+
+/** Shape of a streaming event from the Claude SDK (includePartialMessages) */
+interface SDKStreamEvent {
+  type: 'stream_event';
+  event?: {
+    type: string;
+    delta?: {
+      type: string;
+      thinking?: string;
+    };
+  };
+}
+
+/** Min interval between yielding thinking snapshots (ms) */
+const THINKING_YIELD_INTERVAL = 3000;
+
+/** Max chars of thinking content to include in a snapshot */
+const THINKING_SNAPSHOT_LENGTH = 200;
+
 // ─── Adapter ─────────────────────────────────────────────────────────────────
 
 export class ClaudeAdapter implements ProviderAdapter {
@@ -184,12 +204,20 @@ export class ClaudeAdapter implements ProviderAdapter {
     const ipcMcp = createIpcMcp(input.ipcContext);
     const stderrBuffer: string[] = [];
 
+    // Extended thinking state
+    let thinkingBuffer = '';
+    let lastThinkingYield = 0;
+
+    const maxThinkingTokens = parseInt(process.env.MAX_THINKING_TOKENS || '10000', 10);
+
     for await (const message of query({
       prompt: input.prompt,
       options: {
         cwd: '/workspace/group',
         resume: input.sessionId,
         model: input.model,
+        maxThinkingTokens: maxThinkingTokens > 0 ? maxThinkingTokens : undefined,
+        includePartialMessages: true,
         allowedTools: [
           'Bash',
           'Read', 'Write', 'Edit', 'Glob', 'Grep',
@@ -214,6 +242,35 @@ export class ClaudeAdapter implements ProviderAdapter {
         },
       },
     })) {
+      // Streaming thinking events (from includePartialMessages)
+      if (message.type === 'stream_event') {
+        const { event } = message as SDKStreamEvent;
+        if (event) {
+          // Accumulate thinking deltas
+          if (event.type === 'content_block_delta' && event.delta?.type === 'thinking_delta') {
+            thinkingBuffer += event.delta.thinking || '';
+            const now = Date.now();
+            if (now - lastThinkingYield >= THINKING_YIELD_INTERVAL && thinkingBuffer.length > 0) {
+              const snippet = thinkingBuffer.length > THINKING_SNAPSHOT_LENGTH
+                ? '...' + thinkingBuffer.slice(-THINKING_SNAPSHOT_LENGTH)
+                : thinkingBuffer;
+              yield { type: 'thinking', content: snippet };
+              lastThinkingYield = now;
+            }
+          }
+          // Flush thinking buffer when a content block ends
+          if (event.type === 'content_block_stop' && thinkingBuffer.length > 0) {
+            const snippet = thinkingBuffer.length > THINKING_SNAPSHOT_LENGTH
+              ? '...' + thinkingBuffer.slice(-THINKING_SNAPSHOT_LENGTH)
+              : thinkingBuffer;
+            yield { type: 'thinking', content: snippet };
+            thinkingBuffer = '';
+            lastThinkingYield = Date.now();
+          }
+        }
+        continue; // Don't process stream_event through existing handlers
+      }
+
       // Session init
       if (message.type === 'system' && message.subtype === 'init') {
         yield { type: 'session_init', sessionId: message.session_id };

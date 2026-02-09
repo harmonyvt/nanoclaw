@@ -42,9 +42,13 @@ import { runTaskNow, startSchedulerLoop } from './task-scheduler.js';
 import {
   connectTelegram,
   isVerbose,
+  isThinkingEnabled,
   sendTelegramDocument,
   sendTelegramMessage,
   sendTelegramPhoto,
+  sendTelegramStatusMessage,
+  editTelegramStatusMessage,
+  deleteTelegramMessage,
   sendTelegramVoice,
   setTelegramTyping,
   stopTelegram,
@@ -115,6 +119,53 @@ type CuaUsageStats = {
   recent: string[];
 };
 const cuaUsageByGroup: Map<string, CuaUsageStats> = new Map();
+
+// ─── Thinking Status Message Tracking ────────────────────────────────────────
+
+interface ActiveStatusMessage {
+  chatJid: string;
+  messageId: number;
+  currentText: string;
+  lastEditTime: number;
+}
+
+/** Active italic status messages keyed by group folder */
+const activeStatusMessages = new Map<string, ActiveStatusMessage>();
+
+/** Minimum interval between Telegram message edits (ms) */
+const STATUS_EDIT_INTERVAL_MS = 2500;
+
+/** Tool names that shouldn't appear as status (agent sending its reply) */
+const HIDDEN_TOOLS = new Set(['send_message', 'send_file', 'send_voice']);
+
+const TOOL_DISPLAY_NAMES: Record<string, string> = {
+  // Claude SDK built-in tools
+  Bash: 'running command', Read: 'reading file', Write: 'writing file',
+  Edit: 'editing file', Glob: 'searching files', Grep: 'searching code',
+  WebSearch: 'searching the web', WebFetch: 'fetching page',
+  // Browser tools
+  browse_navigate: 'browsing', browse_snapshot: 'reading page',
+  browse_click: 'clicking', browse_click_xy: 'clicking',
+  browse_fill: 'filling form', browse_type_at_xy: 'typing',
+  browse_perform: 'performing actions', browse_screenshot: 'taking screenshot',
+  browse_wait_for_user: 'waiting for you', browse_go_back: 'going back',
+  browse_close: 'closing browser', browse_extract_file: 'extracting file',
+  browse_upload_file: 'uploading file', browse_evaluate: 'running script',
+  // Firecrawl
+  firecrawl_scrape: 'scraping page', firecrawl_crawl: 'crawling site',
+  firecrawl_map: 'mapping URLs',
+  // Memory
+  memory_save: 'saving to memory', memory_search: 'searching memory',
+  // Tasks
+  schedule_task: 'scheduling task', list_tasks: 'checking tasks',
+  pause_task: 'pausing task', resume_task: 'resuming task',
+  cancel_task: 'cancelling task', register_group: 'registering group',
+};
+
+function humanizeToolName(rawName: string): string {
+  const name = rawName.replace(/^mcp__nanoclaw__/, '');
+  return TOOL_DISPLAY_NAMES[name] || name.replace(/_/g, ' ');
+}
 
 async function setTyping(jid: string, isTyping: boolean): Promise<void> {
   if (isTyping) await setTelegramTyping(jid);
@@ -351,8 +402,30 @@ async function processMessage(msg: NewMessage): Promise<void> {
   );
 
   await setTyping(msg.chat_jid, true);
+
+  // Send italic thinking status message if enabled for this chat
+  if (isThinkingEnabled(msg.chat_jid)) {
+    const statusMsgId = await sendTelegramStatusMessage(msg.chat_jid, 'thinking...');
+    if (statusMsgId) {
+      activeStatusMessages.set(group.folder, {
+        chatJid: msg.chat_jid,
+        messageId: statusMsgId,
+        currentText: 'thinking...',
+        lastEditTime: Date.now(),
+      });
+    }
+  }
+
   const response = await runAgent(group, prompt, msg.chat_jid);
+
   await setTyping(msg.chat_jid, false);
+
+  // Clean up the thinking status message
+  const statusEntry = activeStatusMessages.get(group.folder);
+  if (statusEntry) {
+    activeStatusMessages.delete(group.folder);
+    await deleteTelegramMessage(statusEntry.chatJid, statusEntry.messageId);
+  }
 
   if (response) {
     lastAgentTimestamp[msg.chat_jid] = msg.timestamp;
@@ -1048,7 +1121,7 @@ function startIpcWatcher(): void {
         );
       }
 
-      // Process status events from this group's IPC directory (transparency/verbose mode)
+      // Process status events from this group's IPC directory
       const statusDir = path.join(ipcBaseDir, sourceGroup, 'status');
       try {
         if (fs.existsSync(statusDir)) {
@@ -1058,74 +1131,88 @@ function startIpcWatcher(): void {
             .sort();
 
           if (statusFiles.length > 0) {
-            // Find the chat JID for this group
+            // Always collect all events and clean up files
+            const events: Array<Record<string, unknown>> = [];
+            for (const file of statusFiles) {
+              const filePath = path.join(statusDir, file);
+              try {
+                events.push(JSON.parse(fs.readFileSync(filePath, 'utf-8')));
+              } catch {}
+              try {
+                fs.unlinkSync(filePath);
+              } catch {}
+            }
+
+            // Always log adapter_stderr events to Pino
+            for (const evt of events) {
+              if (evt.type === 'adapter_stderr') {
+                logger.warn(
+                  { module: 'claude-cli', group_folder: sourceGroup },
+                  `[stderr] ${evt.message}`,
+                );
+              }
+            }
+
+            // Update the editable thinking status message (always-on when active)
+            const statusEntry = activeStatusMessages.get(sourceGroup);
+            if (statusEntry && events.length > 0) {
+              // Priority: thinking content > tool name
+              const lastThinking = [...events].reverse().find(e => e.type === 'thinking');
+              const lastToolStart = [...events].reverse().find(e => e.type === 'tool_start');
+
+              let newText: string | undefined;
+              if (lastThinking) {
+                const content = String(lastThinking.content).slice(0, 150);
+                newText = content;
+              } else if (lastToolStart) {
+                const toolName = String(lastToolStart.tool_name || '').replace(/^mcp__nanoclaw__/, '');
+                if (!HIDDEN_TOOLS.has(toolName)) {
+                  newText = humanizeToolName(String(lastToolStart.tool_name)) + '...';
+                }
+              }
+
+              if (newText && newText !== statusEntry.currentText) {
+                const now = Date.now();
+                if (now - statusEntry.lastEditTime >= STATUS_EDIT_INTERVAL_MS) {
+                  const edited = await editTelegramStatusMessage(
+                    statusEntry.chatJid,
+                    statusEntry.messageId,
+                    newText,
+                  );
+                  if (edited) {
+                    statusEntry.currentText = newText;
+                    statusEntry.lastEditTime = now;
+                  }
+                }
+              }
+            }
+
+            // Verbose mode: still send full detail messages
             const chatJid = Object.entries(registeredGroups).find(
               ([, g]) => g.folder === sourceGroup,
             )?.[0];
 
-            if (chatJid && isVerbose(chatJid)) {
-              // Rate limit: collect all events, send at most 1 summary per poll cycle
-              const events: Array<Record<string, unknown>> = [];
-              for (const file of statusFiles) {
-                const filePath = path.join(statusDir, file);
-                try {
-                  events.push(JSON.parse(fs.readFileSync(filePath, 'utf-8')));
-                } catch {}
-                try {
-                  fs.unlinkSync(filePath);
-                } catch {}
-              }
-
-              if (events.length > 0) {
-                // Log adapter_stderr events to Pino (visible in dashboard)
-                for (const evt of events) {
-                  if (evt.type === 'adapter_stderr') {
-                    logger.warn(
-                      { module: 'claude-cli', group_folder: sourceGroup },
-                      `[stderr] ${evt.message}`,
-                    );
-                  }
-                }
-
-                // Format status summary
-                const lines: string[] = [];
-                for (const evt of events) {
-                  if (evt.type === 'tool_start') {
-                    const preview = evt.preview
-                      ? String(evt.preview).slice(0, 100)
-                      : '';
-                    lines.push(
-                      `> ${evt.tool_name}${preview ? ': ' + preview : ''}`,
-                    );
-                  } else if (evt.type === 'tool_progress') {
-                    lines.push(`> ${evt.tool_name} (${evt.elapsed_seconds}s)`);
-                  }
-                }
-                if (lines.length > 0) {
-                  const statusMsg = lines.slice(0, 5).join('\n'); // Max 5 lines
-                  try {
-                    await sendTelegramMessage(chatJid, statusMsg);
-                  } catch (err) {
-                    logger.debug({ module: 'index', err }, 'Failed to send status message');
-                  }
+            if (chatJid && isVerbose(chatJid) && events.length > 0) {
+              const lines: string[] = [];
+              for (const evt of events) {
+                if (evt.type === 'tool_start') {
+                  const preview = evt.preview
+                    ? String(evt.preview).slice(0, 100)
+                    : '';
+                  lines.push(
+                    `> ${evt.tool_name}${preview ? ': ' + preview : ''}`,
+                  );
+                } else if (evt.type === 'tool_progress') {
+                  lines.push(`> ${evt.tool_name} (${evt.elapsed_seconds}s)`);
                 }
               }
-            } else {
-              // Not verbose - still log stderr events, then clean up
-              for (const file of statusFiles) {
-                const filePath = path.join(statusDir, file);
+              if (lines.length > 0) {
+                const statusMsg = lines.slice(0, 5).join('\n');
                 try {
-                  const evt = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-                  if (evt.type === 'adapter_stderr') {
-                    logger.warn(
-                      { module: 'claude-cli', group_folder: sourceGroup },
-                      `[stderr] ${evt.message}`,
-                    );
-                  }
-                } catch {}
-                try {
-                  fs.unlinkSync(filePath);
-                } catch {}
+                  await sendTelegramMessage(chatJid, statusMsg);
+                } catch (err) {
+                  logger.debug({ module: 'index', err }, 'Failed to send verbose status message');
+                }
               }
             }
           }

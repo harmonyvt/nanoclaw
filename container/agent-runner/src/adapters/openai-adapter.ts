@@ -10,8 +10,14 @@
  */
 
 import OpenAI from 'openai';
+import type { ChatCompletionMessage } from 'openai/resources/chat/completions';
 import fs from 'fs';
 import type { ProviderAdapter, AdapterInput, AgentEvent } from '../types.js';
+
+/** Extends the SDK message type for o-series reasoning content (not yet in official types) */
+interface ChatCompletionMessageWithReasoning extends ChatCompletionMessage {
+  reasoning_content?: string;
+}
 import { buildOpenAITools, executeNanoTool } from './openai-tools.js';
 import {
   loadHistory,
@@ -139,6 +145,13 @@ export class OpenAIAdapter implements ProviderAdapter {
 
       const assistantMessage = choice.message;
       messages.push(assistantMessage);
+
+      // Capture reasoning content from o-series models (o1, o3, etc.)
+      const { reasoning_content: reasoning } = assistantMessage as ChatCompletionMessageWithReasoning;
+      if (reasoning) {
+        const snippet = reasoning.length > 200 ? '...' + reasoning.slice(-200) : reasoning;
+        yield { type: 'thinking', content: snippet };
+      }
 
       // No tool calls = final response
       if (!assistantMessage.tool_calls || assistantMessage.tool_calls.length === 0) {

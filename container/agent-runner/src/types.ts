@@ -38,6 +38,7 @@ export type AgentEvent =
   | { type: 'result'; result: string }
   | { type: 'tool_start'; toolName: string; preview: string }
   | { type: 'tool_progress'; toolName: string; elapsedSeconds?: number }
+  | { type: 'thinking'; content: string }
   | { type: 'adapter_stderr'; message: string };
 
 /** Input passed to a provider adapter's run() method */
