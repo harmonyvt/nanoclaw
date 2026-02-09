@@ -48,7 +48,8 @@ Telegram <-> Host (Bun) <-> SQLite
 | `container/build.sh`                                  | Build script for agent image (`nanoclaw-agent:latest`)              |
 | `container/agent-runner/src/index.ts`                 | Reads JSON from stdin, dispatches to adapter, writes result to stdout |
 | `container/agent-runner/src/types.ts`                 | Shared adapter interfaces (`ProviderAdapter`, `AdapterInput`, etc.) |
-| `container/agent-runner/src/tool-registry.ts`         | Provider-agnostic tool definitions (22 tools with Zod schemas)      |
+| `container/agent-runner/src/tool-registry.ts`         | Provider-agnostic tool definitions (27 tools with Zod schemas)      |
+| `container/agent-runner/src/composio.ts`              | Composio client singleton and user ID scoping                       |
 | `container/agent-runner/src/ipc-mcp.ts`               | Thin Claude SDK wrapper that maps tool-registry into MCP server     |
 | `container/agent-runner/src/adapters/index.ts`        | `createAdapter()` factory: dispatches to Claude or OpenAI           |
 | `container/agent-runner/src/adapters/claude-adapter.ts`| Claude Agent SDK `query()` with PreCompact hooks                   |
@@ -222,6 +223,16 @@ Supported actions: `click`, `double_click`, `right_click`, `key`, `type`, `scrol
 
 Requires `SUPERMEMORY_API_KEY`. When enabled, memories are also automatically retrieved before each agent invocation and stored after each response.
 
+### Composio (500+ Third-Party Integrations)
+
+- `composio_list_tools` -- Search/discover available tools by toolkit or keyword
+- `composio_get_tool` -- Get tool details and input parameter schema
+- `composio_execute` -- Execute a Composio tool with arguments
+- `composio_list_connections` -- List connected accounts (check what's authenticated)
+- `composio_get_connect_url` -- Get an auth URL to connect a new service
+
+Requires `COMPOSIO_API_KEY`. Provides dynamic access to Google Calendar, Gmail, Slack, GitHub, Notion, Linear, Jira, and hundreds more services through the Composio platform. Connected accounts are scoped per group. The agent discovers, inspects, and executes tools at runtime.
+
 ### Built-in Claude Tools (Anthropic provider only)
 
 - `Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, `WebSearch`, `WebFetch`
@@ -272,6 +283,7 @@ Requires `SUPERMEMORY_API_KEY`. When enabled, memories are also automatically re
 | Variable                    | Default                  | Purpose                                         |
 | --------------------------- | ------------------------ | ------------------------------------------------ |
 | `OPENAI_API_KEY`            | --                       | Whisper transcription + OpenAI provider API key  |
+| `COMPOSIO_API_KEY`          | --                       | Composio 500+ third-party integrations   |
 | `FIRECRAWL_API_KEY`         | --                       | Firecrawl web scraping                  |
 | `SUPERMEMORY_API_KEY`       | --                       | Supermemory long-term memory (preferred) |
 | `SUPERMEMORY_OPENCLAW_API_KEY` | --                    | Supermemory key alias (accepted fallback) |

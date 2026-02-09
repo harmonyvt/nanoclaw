@@ -374,6 +374,7 @@ function resolveCredentials(): CredentialResult {
     'SUPERMEMORY_API_KEY',
     'SUPERMEMORY_OPENCLAW_API_KEY',
     'SUPERMEMORY_CC_API_KEY',
+    'COMPOSIO_API_KEY',
   ];
   const extraLines: string[] = [];
   if (fs.existsSync(envFile)) {
