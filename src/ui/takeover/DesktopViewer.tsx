@@ -8,7 +8,7 @@ function buildDirectNoVncUrl(
   vncPassword: string,
 ): string | null {
   try {
-    const noVncUrl = new URL('/vnc_lite.html', liveViewUrl);
+    const noVncUrl = new URL('/vnc.html', liveViewUrl);
     noVncUrl.searchParams.set('autoconnect', 'true');
     noVncUrl.searchParams.set('resize', 'scale');
     noVncUrl.searchParams.set('scale', 'true');
