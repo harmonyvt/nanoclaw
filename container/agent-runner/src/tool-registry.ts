@@ -1007,12 +1007,19 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
       x: z.number().int().describe('X coordinate of the input field in pixels'),
       y: z.number().int().describe('Y coordinate of the input field in pixels'),
       value: z.string().describe('The text to type into the field'),
+      clear_first: z
+        .boolean()
+        .optional()
+        .describe(
+          'If true, selects all existing content (Ctrl+A) after clicking before typing, replacing instead of appending. Useful for overwriting cell values in spreadsheets.',
+        ),
     }),
     handler: async (args): Promise<ToolResult> => {
       const res = await writeBrowseRequest('type_at_xy', {
         x: args.x as number,
         y: args.y as number,
         value: args.value as string,
+        clear_first: args.clear_first as boolean | undefined,
       });
       if (res.status === 'error') {
         return {
@@ -1021,6 +1028,98 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
         };
       }
       return { content: `Type result: ${res.result}` };
+    },
+  },
+
+  {
+    name: 'browse_perform',
+    description:
+      'Execute one or more browser/desktop actions as a sequence. Supports click, double_click, right_click, key press, type text, scroll, drag, hover, and wait. Use this for keyboard shortcuts (ctrl+a, f2, enter, escape, tab, delete), double-clicking, and composing multi-step interactions like editing spreadsheet cells. Example: to edit a cell, use steps: [{action:"double_click",x:200,y:300},{action:"key",key:"ctrl+a"},{action:"type",text:"new value"},{action:"key",key:"enter"}]',
+    schema: z.object({
+      steps: z
+        .array(
+          z.object({
+            action: z
+              .enum([
+                'click',
+                'double_click',
+                'right_click',
+                'key',
+                'type',
+                'scroll',
+                'drag',
+                'hover',
+                'wait',
+              ])
+              .describe('The action to perform'),
+            x: z
+              .number()
+              .optional()
+              .describe(
+                'X coordinate (for click/double_click/right_click/scroll/hover)',
+              ),
+            y: z
+              .number()
+              .optional()
+              .describe(
+                'Y coordinate (for click/double_click/right_click/scroll/hover)',
+              ),
+            key: z
+              .string()
+              .optional()
+              .describe(
+                'Key or shortcut to press (for key action, e.g. "enter", "escape", "tab", "f2", "ctrl+a", "ctrl+c", "ctrl+v", "shift+enter", "delete", "backspace")',
+              ),
+            text: z
+              .string()
+              .optional()
+              .describe('Text to type (for type action)'),
+            direction: z
+              .enum(['up', 'down', 'left', 'right'])
+              .optional()
+              .describe('Scroll direction (for scroll action)'),
+            amount: z
+              .number()
+              .optional()
+              .describe('Scroll clicks, default 3 (for scroll action)'),
+            from_x: z
+              .number()
+              .optional()
+              .describe('Drag start X (for drag action)'),
+            from_y: z
+              .number()
+              .optional()
+              .describe('Drag start Y (for drag action)'),
+            to_x: z
+              .number()
+              .optional()
+              .describe('Drag end X (for drag action)'),
+            to_y: z
+              .number()
+              .optional()
+              .describe('Drag end Y (for drag action)'),
+            ms: z
+              .number()
+              .optional()
+              .describe('Wait duration in ms, max 5000 (for wait action)'),
+          }),
+        )
+        .min(1)
+        .describe('Ordered list of actions to execute sequentially'),
+    }),
+    handler: async (args): Promise<ToolResult> => {
+      const res = await writeBrowseRequest(
+        'perform',
+        { steps: args.steps },
+        120000,
+      );
+      if (res.status === 'error') {
+        return {
+          content: `Perform failed: ${res.error}`,
+          isError: true,
+        };
+      }
+      return { content: `Perform result: ${res.result}` };
     },
   },
 

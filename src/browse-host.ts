@@ -466,14 +466,16 @@ async function stabilizeBrowserForScreenshot(
   const focusedWindow = await focusBrowserWindow();
   if (focusedWindow) {
     await sleep(250);
+  } else {
+    // Only use alt+tab as last resort when API-based window focus failed.
+    // Sending alt+tab unconditionally causes window flickering and disrupts
+    // active editing (e.g. spreadsheet cells, form fields).
+    const switched = await tryCuaCommandWithFallback([
+      { command: 'hotkey', args: { keys: 'alt+tab' } },
+      { command: 'press_key', args: { key: 'alt+tab' } },
+    ]);
+    if (switched) await sleep(300);
   }
-
-  // Quick focus nudge in case desktop grabbed focus.
-  const switched = await tryCuaCommandWithFallback([
-    { command: 'hotkey', args: { keys: 'alt+tab' } },
-    { command: 'press_key', args: { key: 'alt+tab' } },
-  ]);
-  if (switched) await sleep(300);
 
   let snapshot: unknown = null;
   try {
@@ -1770,6 +1772,15 @@ async function processCuaRequest(
       }
       const beforeSnapshot = await getAccessibilitySnapshotSafe();
       await runCuaCommand('left_click', { x, y });
+      if (params.clear_first) {
+        // Select all existing content before typing, so the new value
+        // replaces instead of appending (useful for spreadsheet cells, etc.)
+        await runCuaCommandWithFallback([
+          { command: 'press_key', args: { key: 'ctrl+a' } },
+          { command: 'hotkey', args: { keys: 'ctrl+a' } },
+        ]);
+        await sleep(100);
+      }
       await runCuaCommandWithFallback([
         { command: 'type', args: { text: value } },
         { command: 'type_text', args: { text: value } },
@@ -1908,6 +1919,160 @@ async function processCuaRequest(
         { command: 'hotkey', args: { keys: 'ctrl+w' } },
       ]);
       return { status: 'ok', result: 'closed' };
+
+    case 'perform': {
+      const steps = params.steps as
+        | Array<Record<string, unknown>>
+        | undefined;
+      if (!Array.isArray(steps) || steps.length === 0) {
+        return {
+          status: 'error',
+          error: 'perform requires a non-empty steps array',
+        };
+      }
+      if (steps.length > 50) {
+        return {
+          status: 'error',
+          error: 'perform supports a maximum of 50 steps per call',
+        };
+      }
+
+      const blockedKeys = ['ctrl+alt+delete', 'ctrl+alt+backspace'];
+      const results: string[] = [];
+      const beforeSnapshot = await getAccessibilitySnapshotSafe();
+
+      for (let i = 0; i < steps.length; i++) {
+        const step = steps[i];
+        const stepAction = String(step.action || '');
+        try {
+          switch (stepAction) {
+            case 'click':
+              await runCuaCommand('left_click', {
+                x: Number(step.x),
+                y: Number(step.y),
+              });
+              results.push(`click(${step.x},${step.y})`);
+              break;
+            case 'double_click':
+              await runCuaCommand('double_click', {
+                x: Number(step.x),
+                y: Number(step.y),
+              });
+              results.push(`double_click(${step.x},${step.y})`);
+              break;
+            case 'right_click':
+              await runCuaCommand('right_click', {
+                x: Number(step.x),
+                y: Number(step.y),
+              });
+              results.push(`right_click(${step.x},${step.y})`);
+              break;
+            case 'key': {
+              const key = String(step.key || '')
+                .trim()
+                .toLowerCase();
+              if (!key) {
+                results.push('key() SKIPPED: empty key');
+                break;
+              }
+              if (blockedKeys.includes(key)) {
+                results.push(`key(${key}) BLOCKED`);
+                break;
+              }
+              await runCuaCommandWithFallback([
+                { command: 'press_key', args: { key } },
+                { command: 'hotkey', args: { keys: key } },
+              ]);
+              results.push(`key(${key})`);
+              break;
+            }
+            case 'type': {
+              const text = String(step.text || '');
+              await runCuaCommandWithFallback([
+                { command: 'type', args: { text } },
+                { command: 'type_text', args: { text } },
+              ]);
+              results.push(
+                `type("${text.length > 30 ? text.slice(0, 30) + '…' : text}")`,
+              );
+              break;
+            }
+            case 'scroll': {
+              const scrollAmount = Number(step.amount || 3);
+              const dirMap: Record<string, [number, number]> = {
+                up: [0, -scrollAmount * 100],
+                down: [0, scrollAmount * 100],
+                left: [-scrollAmount * 100, 0],
+                right: [scrollAmount * 100, 0],
+              };
+              const dir = String(step.direction || 'down');
+              const [dx, dy] = dirMap[dir] || [0, scrollAmount * 100];
+              await runCuaCommandWithFallback([
+                {
+                  command: 'scroll',
+                  args: { delta_x: dx, delta_y: dy },
+                },
+                {
+                  command: 'mouse_wheel',
+                  args: { delta_x: dx, delta_y: dy },
+                },
+              ]);
+              results.push(`scroll(${dir},${scrollAmount})`);
+              break;
+            }
+            case 'drag':
+              await runCuaCommand('drag_to', {
+                x: Number(step.to_x),
+                y: Number(step.to_y),
+                start_x: Number(step.from_x),
+                start_y: Number(step.from_y),
+              });
+              results.push(
+                `drag(${step.from_x},${step.from_y}->${step.to_x},${step.to_y})`,
+              );
+              break;
+            case 'hover':
+              await runCuaCommand('move_cursor', {
+                x: Number(step.x),
+                y: Number(step.y),
+              });
+              results.push(`hover(${step.x},${step.y})`);
+              break;
+            case 'wait': {
+              const ms = Math.min(Math.max(Number(step.ms || 250), 0), 5000);
+              await sleep(ms);
+              results.push(`wait(${ms}ms)`);
+              break;
+            }
+            default:
+              results.push(`unknown(${stepAction})`);
+          }
+          // Small delay between steps for UI to settle (skip after explicit waits)
+          if (stepAction !== 'wait' && i < steps.length - 1) {
+            await sleep(100);
+          }
+        } catch (err) {
+          const msg =
+            err instanceof Error ? err.message : String(err);
+          results.push(`${stepAction} FAILED: ${msg}`);
+          // Continue executing remaining steps so partial sequences still work
+        }
+      }
+
+      await sleep(250);
+      const afterSnapshot = await getAccessibilitySnapshotSafe();
+      const changed = didSnapshotChange(beforeSnapshot, afterSnapshot);
+      const verify =
+        changed === true
+          ? 'verified (accessibility tree changed)'
+          : changed === false
+            ? 'not confirmed (no tree change detected)'
+            : 'not confirmed (snapshot unavailable)';
+      return {
+        status: 'ok',
+        result: `performed ${steps.length} steps: ${results.join(' → ')}${verificationSuffix(verify)}`,
+      };
+    }
 
     case 'extract_file': {
       const filePath = String(params.path || '').trim();
