@@ -1803,12 +1803,6 @@ async function processCuaRequest(
           error: 'perform requires a non-empty steps array',
         };
       }
-      if (steps.length > 50) {
-        return {
-          status: 'error',
-          error: 'perform supports a maximum of 50 steps per call',
-        };
-      }
 
       const blockedKeys = ['ctrl+alt+delete', 'ctrl+alt+backspace'];
       const results: string[] = [];
