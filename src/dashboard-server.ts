@@ -52,7 +52,7 @@ import {
   type CuaActivityEvent,
 } from './cua-activity.js';
 import { startFollowSummaryTimer, stopFollowSummaryTimer } from './cua-follow-summary.js';
-import { sendTelegramMessage } from './telegram.js';
+import { sendTelegramMessage, sendTelegramMessageWithId, editTelegramMessageText } from './telegram.js';
 import { loadJson } from './utils.js';
 import type { RegisteredGroup } from './types.js';
 import {
@@ -63,6 +63,9 @@ import {
 
 let dashboardServer: ReturnType<typeof Bun.serve> | null = null;
 let sessionCleanupInterval: ReturnType<typeof setInterval> | null = null;
+
+/** Tracks the Telegram message ID for the in-place follow summary per group */
+const followSummaryMsgIds = new Map<string, number>();
 
 const MAX_UPLOAD_SIZE = 50 * 1024 * 1024; // 50MB
 const MAX_DOWNLOAD_SIZE = 100 * 1024 * 1024; // 100MB
@@ -1225,7 +1228,14 @@ function handleFollowSSEStream(req: Request, url: URL, scopedGroup?: string): Re
       if (chatJid) {
         startFollowSummaryTimer(groupFolder, async (summary) => {
           try {
-            await sendTelegramMessage(chatJid, summary);
+            const existingId = followSummaryMsgIds.get(groupFolder);
+            if (existingId) {
+              const edited = await editTelegramMessageText(chatJid, existingId, summary);
+              if (edited) return;
+              // Edit failed (message deleted?), send new
+            }
+            const newId = await sendTelegramMessageWithId(chatJid, summary);
+            if (newId) followSummaryMsgIds.set(groupFolder, newId);
           } catch (err) {
             logger.warn({ module: 'dashboard', err }, 'Failed to send follow summary');
           }
@@ -1262,6 +1272,7 @@ function handleFollowSSEStream(req: Request, url: URL, scopedGroup?: string): Re
         const disconnectedGroup = unregisterFollowSession(sessionId);
         if (disconnectedGroup && !hasActiveFollowSession(disconnectedGroup)) {
           stopFollowSummaryTimer(disconnectedGroup);
+          followSummaryMsgIds.delete(disconnectedGroup);
         }
         try {
           controller.close();
