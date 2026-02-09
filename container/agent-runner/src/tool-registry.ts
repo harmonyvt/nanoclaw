@@ -1153,24 +1153,23 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
   {
     name: 'browse_scroll',
     description:
-      'Scroll the current page by delta values. Positive dy scrolls down; negative dy scrolls up.',
+      'Scroll the current page. Specify direction and number of scroll clicks (each click is roughly one mouse wheel notch). Default is 3 clicks.',
     schema: z.object({
-      dy: z
-        .number()
-        .int()
-        .describe('Vertical scroll delta. Positive=down, negative=up'),
-      dx: z
+      direction: z
+        .enum(['up', 'down', 'left', 'right'])
+        .describe('Scroll direction'),
+      clicks: z
         .number()
         .int()
         .optional()
         .describe(
-          'Optional horizontal scroll delta. Positive=right, negative=left',
+          'Number of scroll wheel clicks (default 3). Use larger values like 10 to scroll further.',
         ),
     }),
     handler: async (args): Promise<ToolResult> => {
       const res = await writeBrowseRequest('scroll', {
-        deltaY: args.dy as number,
-        deltaX: (args.dx as number | undefined) ?? 0,
+        direction: args.direction as string,
+        clicks: (args.clicks as number | undefined) ?? 3,
       });
       if (res.status === 'error') {
         return {

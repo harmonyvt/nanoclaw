@@ -1706,16 +1706,24 @@ async function processCuaRequest(
       };
     }
     case 'scroll': {
-      const deltaY = Number(params.deltaY ?? params.dy ?? 500);
-      const deltaX = Number(params.deltaX ?? params.dx ?? 0);
+      const direction = String(params.direction || 'down');
+      const clicks = Math.max(1, Math.round(Number(params.clicks || 3)));
       const beforeSnapshot = await getAccessibilitySnapshotSafe();
+
+      // Use dedicated directional scroll commands which work in discrete
+      // "wheel click" units — much more reliable than raw pixel deltas.
+      const dirCommand: Record<string, string> = {
+        up: 'scroll_up',
+        down: 'scroll_down',
+        left: 'scroll_left',
+        right: 'scroll_right',
+      };
+      const cmd = dirCommand[direction] || 'scroll_down';
       await runCuaCommandWithFallback([
-        { command: 'scroll', args: { delta_x: deltaX, delta_y: deltaY } },
-        { command: 'scroll', args: { x: deltaX, y: deltaY } },
-        { command: 'mouse_wheel', args: { delta_x: deltaX, delta_y: deltaY } },
-        { command: 'mouse_wheel', args: { x: deltaX, y: deltaY } },
-        { command: 'wheel', args: { deltaY, deltaX } },
+        { command: cmd, args: { clicks } },
+        { command: 'scroll_direction', args: { direction, clicks } },
       ]);
+
       await sleep(250);
       const afterSnapshot = await getAccessibilitySnapshotSafe();
       const changed = didSnapshotChange(beforeSnapshot, afterSnapshot);
@@ -1727,7 +1735,7 @@ async function processCuaRequest(
             : 'not confirmed (snapshot unavailable)';
       return {
         status: 'ok',
-        result: `scrolled dx=${deltaX}, dy=${deltaY}${verificationSuffix(verify)}`,
+        result: `scrolled ${direction} ${clicks} clicks${verificationSuffix(verify)}`,
       };
     }
     case 'screenshot': {
@@ -1863,26 +1871,30 @@ async function processCuaRequest(
               break;
             }
             case 'scroll': {
-              const scrollAmount = Number(step.amount || 3);
-              const dirMap: Record<string, [number, number]> = {
-                up: [0, -scrollAmount * 100],
-                down: [0, scrollAmount * 100],
-                left: [-scrollAmount * 100, 0],
-                right: [scrollAmount * 100, 0],
-              };
+              const scrollClicks = Math.max(
+                1,
+                Math.round(Number(step.amount || 3)),
+              );
               const dir = String(step.direction || 'down');
-              const [dx, dy] = dirMap[dir] || [0, scrollAmount * 100];
+              const scrollDirCommand: Record<string, string> = {
+                up: 'scroll_up',
+                down: 'scroll_down',
+                left: 'scroll_left',
+                right: 'scroll_right',
+              };
+              const scrollCmd =
+                scrollDirCommand[dir] || 'scroll_down';
               await runCuaCommandWithFallback([
                 {
-                  command: 'scroll',
-                  args: { delta_x: dx, delta_y: dy },
+                  command: scrollCmd,
+                  args: { clicks: scrollClicks },
                 },
                 {
-                  command: 'mouse_wheel',
-                  args: { delta_x: dx, delta_y: dy },
+                  command: 'scroll_direction',
+                  args: { direction: dir, clicks: scrollClicks },
                 },
               ]);
-              results.push(`scroll(${dir},${scrollAmount})`);
+              results.push(`scroll(${dir},${scrollClicks})`);
               break;
             }
             case 'drag':
