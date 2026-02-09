@@ -1,4 +1,4 @@
-import { CUA_TAKEOVER_WEB_ENABLED, CUA_TAKEOVER_WEB_PORT } from './config.js';
+import { CUA_TAKEOVER_WEB_ENABLED, CUA_TAKEOVER_WEB_PORT, CUA_SANDBOX_NOVNC_PORT } from './config.js';
 import {
   getSandboxHostIp,
   getSandboxUrl,
