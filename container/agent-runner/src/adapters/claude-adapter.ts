@@ -177,7 +177,19 @@ function createPreCompactHook(assistantName?: string): HookCallback {
   };
 }
 
-// ─── Thinking Stream Constants ───────────────────────────────────────────────
+// ─── Thinking Stream Types & Constants ───────────────────────────────────────
+
+/** Shape of a streaming event from the Claude SDK (includePartialMessages) */
+interface SDKStreamEvent {
+  type: 'stream_event';
+  event?: {
+    type: string;
+    delta?: {
+      type: string;
+      thinking?: string;
+    };
+  };
+}
 
 /** Min interval between yielding thinking snapshots (ms) */
 const THINKING_YIELD_INTERVAL = 3000;
@@ -232,14 +244,11 @@ export class ClaudeAdapter implements ProviderAdapter {
     })) {
       // Streaming thinking events (from includePartialMessages)
       if (message.type === 'stream_event') {
-        const event = (message as { event?: Record<string, unknown> }).event;
+        const { event } = message as SDKStreamEvent;
         if (event) {
           // Accumulate thinking deltas
-          if (
-            event.type === 'content_block_delta' &&
-            (event.delta as Record<string, unknown>)?.type === 'thinking_delta'
-          ) {
-            thinkingBuffer += (event.delta as { thinking?: string }).thinking || '';
+          if (event.type === 'content_block_delta' && event.delta?.type === 'thinking_delta') {
+            thinkingBuffer += event.delta.thinking || '';
             const now = Date.now();
             if (now - lastThinkingYield >= THINKING_YIELD_INTERVAL && thinkingBuffer.length > 0) {
               const snippet = thinkingBuffer.length > THINKING_SNAPSHOT_LENGTH
