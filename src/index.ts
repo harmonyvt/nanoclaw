@@ -615,7 +615,7 @@ async function runAgent(
     }
   }
 
-  return null;
+  return null; // unreachable: loop always returns, but required by TypeScript
 }
 
 async function sendMessage(jid: string, text: string): Promise<void> {
