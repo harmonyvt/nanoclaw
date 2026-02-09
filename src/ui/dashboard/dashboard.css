@@ -4,6 +4,15 @@
 body {
   display: flex;
   flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+#app {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 /* Header */
@@ -166,6 +175,7 @@ input[type="text"] {
   flex: 1;
   flex-direction: column;
   min-height: 0;
+  overflow: auto;
 }
 
 .pane.active {
@@ -1016,4 +1026,134 @@ input[type="text"] {
   background: none;
   border: none;
   padding: 0;
+}
+
+/* ── Takeover pane ────────────────────────────────────────────────────── */
+
+.takeover-empty {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--muted);
+}
+
+.takeover-empty h3 {
+  margin: 0 0 10px;
+  font-size: 18px;
+  color: var(--text);
+}
+
+.takeover-empty p {
+  margin: 0;
+  line-height: 1.5;
+  font-size: 14px;
+}
+
+.takeover-empty code {
+  background: rgba(255, 255, 255, 0.06);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.takeover-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.takeover-shell {
+  display: grid;
+  grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
+  grid-template-rows: 1fr;
+  gap: 12px;
+  padding: 12px;
+  flex: 1;
+  min-height: 0;
+}
+
+.takeover-pane .meta {
+  padding: 14px;
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+
+.takeover-pane .meta-item {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 10px;
+}
+
+.takeover-pane .meta-label {
+  font-family: "IBM Plex Mono", "Menlo", "Consolas", monospace;
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.takeover-pane .meta-value {
+  margin-top: 5px;
+  word-break: break-word;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.takeover-pane .controls {
+  display: grid;
+  gap: 8px;
+}
+
+.takeover-workspace {
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.takeover-workspace-bar {
+  height: 38px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.takeover-pane .workspace-frame {
+  border: 0;
+  width: 100%;
+  min-height: 0;
+  flex: 1;
+  display: block;
+  background: var(--panel-2);
+}
+
+.takeover-pane .fallback {
+  padding: 14px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.takeover-pane .open-desktop-btn {
+  display: inline-flex;
+  margin-top: 12px;
+}
+
+.takeover-pane .status-ok { color: var(--ok); }
+.takeover-pane .status-error { color: var(--danger); }
+.takeover-pane .status-muted { color: var(--muted); }
+
+@media (max-width: 900px) {
+  .takeover-shell {
+    grid-template-columns: 1fr;
+  }
+  .takeover-workspace {
+    min-height: 50vh;
+  }
 }

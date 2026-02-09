@@ -7,6 +7,7 @@ export interface TakeoverData {
   message?: string;
   createdAt?: string;
   liveViewUrl?: string | null;
+  vncPassword?: string | null;
   takeoverUrl?: string | null;
 }
 

@@ -9,7 +9,7 @@ import {
   DASHBOARD_URL,
   GROUPS_DIR,
 } from './config.js';
-import { getSandboxHostIp, isSandboxRunning, ensureSandbox } from './sandbox-manager.js';
+import { getSandboxHostIp, isSandboxRunning, ensureSandbox, getSandboxUrl, resetIdleTimer } from './sandbox-manager.js';
 import { getTailscaleHttpsUrl } from './tailscale-serve.js';
 import { logger } from './logger.js';
 import {
@@ -33,8 +33,15 @@ import {
   getTaskRunLogs,
   getAllTaskRunLogs,
 } from './db.js';
-import { runCuaCommand, shellSingleQuote } from './browse-host.js';
+import {
+  runCuaCommand,
+  shellSingleQuote,
+  getAllWaitingRequests,
+  getWaitForUserRequestByToken,
+  resolveWaitForUserByToken,
+} from './browse-host.js';
 import { serveStaticAsset } from './ui-assets.js';
+import { proxyNoVncHttp, createNoVncWebSocketHandler, makeNoVncWsData, type NoVncWsData } from './novnc-proxy.js';
 
 let dashboardServer: ReturnType<typeof Bun.serve> | null = null;
 let sessionCleanupInterval: ReturnType<typeof setInterval> | null = null;
@@ -965,6 +972,78 @@ async function handleFileTransfer(req: Request): Promise<Response> {
   }
 }
 
+// ── Takeover API handlers ────────────────────────────────────────────────
+
+function handleTakeoverList(): Response {
+  const requests = getAllWaitingRequests().map((r) => ({
+    requestId: r.requestId,
+    groupFolder: r.groupFolder,
+    token: r.token,
+    createdAt: r.createdAt,
+    message: r.message,
+    vncPassword: r.vncPassword,
+    liveViewUrl: getSandboxUrl(),
+  }));
+  return jsonResponse(requests);
+}
+
+function extractTakeoverToken(pathname: string): string | null {
+  const prefix = '/api/cua/takeover/';
+  if (!pathname.startsWith(prefix)) return null;
+  const remainder = pathname.slice(prefix.length);
+  if (!remainder || remainder.includes('/')) return null;
+  try {
+    return decodeURIComponent(remainder);
+  } catch {
+    return null;
+  }
+}
+
+function extractContinueToken(pathname: string): string | null {
+  const suffix = '/continue';
+  const prefix = '/api/cua/takeover/';
+  if (!pathname.startsWith(prefix) || !pathname.endsWith(suffix)) return null;
+  const tokenPath = pathname.slice(prefix.length, -suffix.length);
+  if (!tokenPath || tokenPath.includes('/')) return null;
+  try {
+    return decodeURIComponent(tokenPath);
+  } catch {
+    return null;
+  }
+}
+
+function handleTakeoverStatus(token: string): Response {
+  const pending = getWaitForUserRequestByToken(token);
+  if (!pending) {
+    return jsonResponse({
+      status: 'not_found',
+      liveViewUrl: getSandboxUrl(),
+      vncPassword: null,
+    }, 404);
+  }
+  resetIdleTimer();
+  return jsonResponse({
+    status: 'pending',
+    requestId: pending.requestId,
+    groupFolder: pending.groupFolder,
+    message: pending.message,
+    createdAt: pending.createdAt,
+    liveViewUrl: getSandboxUrl(),
+    vncPassword: pending.vncPassword,
+  });
+}
+
+function handleTakeoverContinue(token: string): Response {
+  const resolved = resolveWaitForUserByToken(token);
+  if (!resolved) {
+    return jsonResponse(
+      { status: 'error', error: 'takeover session not found or already completed' },
+      404,
+    );
+  }
+  return jsonResponse({ status: 'ok', result: 'control returned to agent' });
+}
+
 // ── Dashboard HTML ──────────────────────────────────────────────────────
 
 function renderDashboardPage(): string {
@@ -986,7 +1065,7 @@ function renderDashboardPage(): string {
 
 // ── Request router ──────────────────────────────────────────────────────
 
-function handleRequest(req: Request): Response | Promise<Response> {
+function handleRequest(req: Request, server: import('bun').Server<NoVncWsData>): Response | Promise<Response> | undefined {
   const url = new URL(req.url);
   const { pathname } = url;
 
@@ -999,6 +1078,17 @@ function handleRequest(req: Request): Response | Promise<Response> {
   // Health check (no auth)
   if (pathname === '/healthz') {
     return jsonResponse({ ok: true, service: 'dashboard', authRequired: true });
+  }
+
+  // noVNC WebSocket proxy (no auth — within authenticated iframe)
+  if (pathname === '/novnc/websockify' || pathname === '/websockify') {
+    const upgraded = server.upgrade(req, { data: makeNoVncWsData() });
+    return upgraded ? undefined : new Response('WebSocket upgrade failed', { status: 500 });
+  }
+
+  // noVNC HTTP proxy (no auth — within authenticated iframe)
+  if (req.method === 'GET' && pathname.startsWith('/novnc/')) {
+    return proxyNoVncHttp(pathname);
   }
 
   // HTML page (no auth — JS handles it)
@@ -1062,6 +1152,19 @@ function handleRequest(req: Request): Response | Promise<Response> {
     if (pathname === '/api/files/cua/delete') return handleCuaFileDelete(req);
   }
 
+  // Takeover API
+  if (pathname === '/api/cua/takeover/list') return handleTakeoverList();
+
+  if (req.method === 'POST') {
+    const continueToken = extractContinueToken(pathname);
+    if (continueToken) return handleTakeoverContinue(continueToken);
+  }
+
+  if (req.method === 'GET') {
+    const takeoverToken = extractTakeoverToken(pathname);
+    if (takeoverToken) return handleTakeoverStatus(takeoverToken);
+  }
+
   return new Response('Not Found', { status: 404 });
 }
 
@@ -1103,6 +1206,7 @@ export function startDashboardServer(): void {
     port: DASHBOARD_PORT,
     ...tlsOptions,
     fetch: handleRequest,
+    websocket: createNoVncWebSocketHandler(),
   });
 
   sessionCleanupInterval = setInterval(cleanExpiredSessions, 60 * 60 * 1000);

@@ -6,6 +6,7 @@ import { LogsPane } from './panes/LogsPane.js';
 import { ContainersPane } from './panes/ContainersPane.js';
 import { TasksPane } from './panes/TasksPane.js';
 import { FilesPane } from './panes/FilesPane.js';
+import { TakeoverPane } from './panes/TakeoverPane.js';
 
 export function DashboardApp() {
   const { authenticated, loading } = useAuth();
@@ -60,6 +61,7 @@ export function DashboardApp() {
       {activeTab === 'containers' && <ContainersPane />}
       {activeTab === 'tasks' && <TasksPane />}
       {activeTab === 'files' && <FilesPane />}
+      {activeTab === 'takeover' && <TakeoverPane />}
     </>
   );
 }

@@ -2234,6 +2234,10 @@ export function resolveWaitForUser(
   return false;
 }
 
+export function getAllWaitingRequests(): PendingWaitForUserView[] {
+  return [...waitingForUser.values()].map(toPendingView);
+}
+
 export function hasWaitingRequests(groupFolder?: string): boolean {
   if (!groupFolder) return waitingForUser.size > 0;
   for (const pending of waitingForUser.values()) {

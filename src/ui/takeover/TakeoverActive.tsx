@@ -8,6 +8,7 @@ interface Props {
 
 export function TakeoverActive({ data }: Props) {
   const liveAvailable = !!data.liveViewUrl;
+  const launchReady = !!data.liveViewUrl && !!data.vncPassword;
 
   return (
     <>
@@ -31,9 +32,12 @@ export function TakeoverActive({ data }: Props) {
         <main class="panel workspace">
           <div class="workspace-bar">
             <span>Live CUA Desktop</span>
-            <span>{liveAvailable ? 'active' : 'unavailable'}</span>
+            <span>{launchReady ? 'ready' : liveAvailable ? 'preparing' : 'unavailable'}</span>
           </div>
-          <DesktopViewer available={liveAvailable} />
+          <DesktopViewer
+            liveViewUrl={data.liveViewUrl}
+            vncPassword={data.vncPassword}
+          />
         </main>
       </section>
     </>
