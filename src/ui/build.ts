@@ -74,6 +74,7 @@ const cssTargets: CssTarget[] = [
       join(SHARED_DIR, 'theme.css'),
       join(SHARED_DIR, 'components.css'),
       join(ROOT, 'src/ui/dashboard/dashboard.css'),
+      join(ROOT, 'src/ui/follow/follow.css'),
     ],
   },
   {
