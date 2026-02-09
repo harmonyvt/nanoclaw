@@ -212,6 +212,7 @@ const APP_VERSION: string = JSON.parse(
 ).version;
 const SELF_UPDATE_SCRIPT = path.join(PROJECT_ROOT, 'scripts', 'self-update.sh');
 const SELF_UPDATE_LOG = path.join(PROJECT_ROOT, 'logs', 'self-update.log');
+const SELF_UPDATE_MARKER = path.join(PROJECT_ROOT, 'data', 'self-update-pending.json');
 const SELF_UPDATE_CONFIRM_WINDOW_MS = 5 * 60 * 1000;
 const SELF_UPDATE_ENABLED = process.env.SELF_UPDATE_ENABLED !== 'false';
 const SELF_UPDATE_BRANCH = process.env.SELF_UPDATE_BRANCH || 'main';
@@ -222,6 +223,7 @@ type PendingUpdate = {
   behind: number;
   localHead: string;
   remoteHead: string;
+  containerChanged: boolean;
   expiresAt: number;
 };
 const pendingUpdatesByChat = new Map<string, PendingUpdate>();
@@ -369,6 +371,7 @@ async function checkForServiceUpdate(): Promise<{
   localHead: string;
   remoteHead: string;
   localChangeCount: number;
+  containerChanged: boolean;
 }> {
   await runGit(['fetch', '--quiet', SELF_UPDATE_REMOTE, SELF_UPDATE_BRANCH]);
   const remoteRef = `${SELF_UPDATE_REMOTE}/${SELF_UPDATE_BRANCH}`;
@@ -386,7 +389,57 @@ async function checkForServiceUpdate(): Promise<{
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => line.length > 0).length;
-  return { behind, localHead, remoteHead, localChangeCount };
+
+  // Check if any container/ files changed between local HEAD and remote
+  let containerChanged = false;
+  if (behind > 0) {
+    const containerDiff = await runGit([
+      'diff', '--name-only', `HEAD..${remoteRef}`, '--', 'container/',
+    ]);
+    containerChanged = containerDiff.length > 0;
+  }
+
+  return { behind, localHead, remoteHead, localChangeCount, containerChanged };
+}
+
+/**
+ * Check for a self-update marker file left by the update script.
+ * If found, verify HEAD matches the expected commit and report back.
+ */
+async function verifySelfUpdate(): Promise<void> {
+  if (!fs.existsSync(SELF_UPDATE_MARKER)) return;
+
+  let marker: { expectedHead: string; chatId: string; timestamp: string; containerRebuilt: boolean };
+  try {
+    marker = JSON.parse(fs.readFileSync(SELF_UPDATE_MARKER, 'utf-8'));
+  } catch {
+    fs.unlinkSync(SELF_UPDATE_MARKER);
+    return;
+  } finally {
+    // Always clean up the marker so we don't re-report on every restart
+    try { fs.unlinkSync(SELF_UPDATE_MARKER); } catch { /* ignore */ }
+  }
+
+  if (!marker.chatId || !marker.expectedHead) return;
+
+  try {
+    const currentHead = await runGit(['rev-parse', 'HEAD']);
+    const matched = currentHead === marker.expectedHead;
+    const lines = matched
+      ? [
+          `Self-update verified: now running ${currentHead.slice(0, 8)} (v${APP_VERSION}).`,
+          marker.containerRebuilt ? 'Agent container was rebuilt.' : '',
+        ].filter(Boolean)
+      : [
+          `Self-update may have partially failed.`,
+          `Expected: ${marker.expectedHead.slice(0, 8)}`,
+          `Actual: ${currentHead.slice(0, 8)}`,
+          `Check ${SELF_UPDATE_LOG} for details.`,
+        ];
+    await sendTelegramMessage(marker.chatId, lines.join('\n'));
+  } catch (err) {
+    logger.error({ module: 'telegram', err }, 'Failed to verify self-update');
+  }
 }
 
 function startSelfUpdateProcess(chatId: number): void {
@@ -430,12 +483,14 @@ function startSelfUpdateProcess(chatId: number): void {
     }
 
     // When systemd restarts the service, it kills the entire cgroup including
-    // this script. The script exits with code=null and signal=SIGTERM. This is
-    // expected behavior -- the update succeeded if the restart step was reached.
-    if (code === null && (signal === 'SIGTERM' || signal === 'SIGKILL')) {
+    // this script. The script exits with code=null. The signal is usually
+    // SIGTERM but can also be null if the process is killed abruptly. Either
+    // way, a null exit code during self-update means the restart step was
+    // reached and the update succeeded.
+    if (code === null) {
       logger.info(
         { module: 'telegram', signal },
-        'Self-update script killed by signal during service restart (expected)',
+        'Self-update script killed during service restart (expected)',
       );
       return;
     }
@@ -820,7 +875,7 @@ export async function connectTelegram(
     }
 
     try {
-      const { behind, localHead, remoteHead, localChangeCount } =
+      const { behind, localHead, remoteHead, localChangeCount, containerChanged } =
         await checkForServiceUpdate();
       if (behind <= 0) {
         pendingUpdatesByChat.delete(chatId);
@@ -834,6 +889,7 @@ export async function connectTelegram(
         behind,
         localHead,
         remoteHead,
+        containerChanged,
         expiresAt: Date.now() + SELF_UPDATE_CONFIRM_WINDOW_MS,
       });
 
@@ -843,6 +899,9 @@ export async function connectTelegram(
         localChangeCount > 0
           ? `Local changes detected: ${localChangeCount} file(s). Update will reset the working tree to HEAD first.`
           : 'Local changes detected: none.',
+        containerChanged
+          ? 'Agent container changes detected: image will be rebuilt.'
+          : 'Agent container: no changes.',
         `Current: ${localHead.slice(0, 8)}`,
         `Latest: ${remoteHead.slice(0, 8)}`,
         'Reply /update confirm within 5 minutes to apply it.',
@@ -1299,6 +1358,9 @@ export async function connectTelegram(
           logger.error({ module: 'telegram', err }, 'Failed to send startup message to owner');
         }
       }
+
+      // After a self-update restart, verify and report back
+      await verifySelfUpdate();
     },
   });
 }
