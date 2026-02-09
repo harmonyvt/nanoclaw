@@ -71,6 +71,10 @@ export function getTailscaleHttpsUrl(localPort: number): string | null {
   return `https://${cachedFqdn}:${mapping.httpsPort}`;
 }
 
+export function getTailscaleCachedFqdn(): string | null {
+  return cachedFqdn;
+}
+
 export function isTailscaleServeActive(): boolean {
   return activeMappings.length > 0;
 }
