@@ -18,6 +18,7 @@ import {
   SANDBOX_TAILSCALE_ENABLED,
 } from './config.js';
 import { logger } from './logger.js';
+import { getTailscaleCachedFqdn } from './tailscale-serve.js';
 
 let lastBrowseActivity = 0;
 let idleWatcherInterval: ReturnType<typeof setInterval> | null = null;
@@ -223,8 +224,9 @@ export async function ensureSandbox(): Promise<SandboxConnection> {
 
 export function getSandboxUrl(): string | null {
   if (!isSandboxRunning()) return null;
-  const ip = getSandboxHostIp();
-  return `http://${ip}:${CUA_SANDBOX_NOVNC_PORT}`;
+  const fqdn = SANDBOX_TAILSCALE_ENABLED ? getTailscaleCachedFqdn() : null;
+  const host = fqdn || getSandboxHostIp();
+  return `http://${host}:${CUA_SANDBOX_NOVNC_PORT}`;
 }
 
 export function getSandboxHostIp(): string {
