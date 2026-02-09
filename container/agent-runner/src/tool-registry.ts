@@ -979,7 +979,7 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
   {
     name: 'browse_click_xy',
     description:
-      'Click at exact pixel coordinates on the screen. Use this when browse_click fails to find an element, or when you know the coordinates from a screenshot analysis or visual inspection.',
+      'Click at exact SCREEN pixel coordinates. Use this when browse_click fails, or after browse_screenshot gives center coordinates/conversion guidance. If you estimate coordinates from image pixels, convert to screen pixels first using the formula in the screenshot summary.',
     schema: z.object({
       x: z.number().int().describe('X coordinate in pixels from left edge of screen'),
       y: z.number().int().describe('Y coordinate in pixels from top edge of screen'),
@@ -1002,7 +1002,7 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
   {
     name: 'browse_type_at_xy',
     description:
-      'Click at exact pixel coordinates then type text. Use when browse_fill fails to find the input field. Clicks the coordinates first, then types the value.',
+      'Click at exact SCREEN pixel coordinates then type text. Use when browse_fill fails to find the input field. Clicks the coordinates first, then types the value.',
     schema: z.object({
       x: z.number().int().describe('X coordinate of the input field in pixels'),
       y: z.number().int().describe('Y coordinate of the input field in pixels'),
@@ -1086,7 +1086,7 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
   {
     name: 'browse_screenshot',
     description:
-      'Take a screenshot of the current browser page. Returns the saved image path plus labeled UI elements mapped to grid cells. If the text summary is insufficient or elements are missing, use the Read tool on the screenshot file path to visually inspect the image.',
+      'Take a screenshot of the current browser page. Returns the saved image path plus labeled UI elements and SCREEN center coordinates. The summary also includes CUA-style screenshot->screen coordinate conversion when dimensions differ. If needed, inspect the image path with Read and convert visual coordinates before browse_click_xy.',
     schema: z.object({}),
     handler: async (): Promise<ToolResult> => {
       const res = await writeBrowseRequest('screenshot', {});

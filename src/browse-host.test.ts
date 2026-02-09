@@ -201,6 +201,31 @@ describe('buildScreenshotAnalysis', () => {
     expect(analysis.elements[0]?.grid.key).toBe('G5');
   });
 
+  test('maps screenshot centers to screen coordinates when dimensions differ', () => {
+    const snapshot = {
+      tree: {
+        role: 'window',
+        children: [
+          {
+            role: 'button',
+            title: 'Continue',
+            bounds: { x: 0.5, y: 0.25, width: 0.2, height: 0.2 },
+          },
+        ],
+      },
+    };
+
+    const analysis = buildScreenshotAnalysis(
+      snapshot,
+      { width: 500, height: 400 },
+      { rows: 8, cols: 10, screenWidth: 1000, screenHeight: 800 },
+    );
+
+    expect(analysis.screen).toEqual({ width: 1000, height: 800 });
+    expect(analysis.elements[0]?.center).toEqual({ x: 600, y: 280 });
+    expect(analysis.elements[0]?.grid.key).toBe('G3');
+  });
+
   test('truncates large element lists', () => {
     const children = Array.from({ length: 6 }, (_, index) => ({
       role: 'button',

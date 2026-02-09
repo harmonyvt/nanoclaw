@@ -1,6 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 import { randomBytes } from 'crypto';
+import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 import { GROUPS_DIR, DATA_DIR } from './config.js';
 import { CuaClient } from './cua-client.js';
 import { logger } from './logger.js';
@@ -56,6 +58,7 @@ export type ScreenshotAnalysisElement = {
 export type ScreenshotAnalysis = {
   capturedAt: string;
   grid: ScreenshotGrid;
+  screen: { width: number; height: number };
   elementCount: number;
   truncated: boolean;
   elements: ScreenshotAnalysisElement[];
@@ -442,13 +445,6 @@ async function stabilizeBrowserForScreenshot(
     await sleep(250);
   }
 
-  // Quick focus nudge in case desktop grabbed focus.
-  const switched = await tryCuaCommandWithFallback([
-    { command: 'hotkey', args: { keys: 'alt+tab' } },
-    { command: 'press_key', args: { key: 'alt+tab' } },
-  ]);
-  if (switched) await sleep(300);
-
   let snapshot: unknown = null;
   try {
     snapshot = await runCuaCommand('get_accessibility_tree');
@@ -588,33 +584,106 @@ type LocatedElement = {
 
 // ─── Vision Fallback for Element Finding ────────────────────────────────────
 
-const VISION_MODEL = 'claude-sonnet-4-5-20250929';
+type VisionProviderName = 'anthropic' | 'openai';
+type VisionProvider = {
+  name: VisionProviderName;
+  apiKey: string;
+  model: string;
+};
+
+type VisionCoordinateResult = {
+  x: number | null;
+  y: number | null;
+};
+
+const VISION_ANTHROPIC_MODEL =
+  process.env.CUA_VISION_ANTHROPIC_MODEL || 'claude-sonnet-4-5-20250929';
+const VISION_OPENAI_MODEL =
+  process.env.CUA_VISION_OPENAI_MODEL || 'gpt-4o';
 const VISION_RATE_LIMIT_WINDOW_MS = 10_000;
 const VISION_RATE_LIMIT_MAX = 3;
 const VISION_SCREENSHOT_CACHE_MS = 2_000;
 
 const visionCallTimestamps: number[] = [];
 let cachedVisionScreenshot: { base64: string; timestamp: number } | null = null;
+const anthropicVisionClients = new Map<string, Anthropic>();
+const openaiVisionClients = new Map<string, OpenAI>();
+let fallbackEnvCache: Record<string, string> | null = null;
+let fallbackEnvLoaded = false;
 
-function resolveApiKeyForVision(): string | null {
-  // Check process.env first
-  if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY;
+function loadFallbackEnv(): Record<string, string> {
+  if (fallbackEnvLoaded) return fallbackEnvCache || {};
+  fallbackEnvLoaded = true;
 
-  // Fallback: read from data/env/env file (written by container-runner credential resolution)
   try {
     const envFilePath = path.join(DATA_DIR, 'env', 'env');
-    if (fs.existsSync(envFilePath)) {
-      const content = fs.readFileSync(envFilePath, 'utf-8');
-      for (const line of content.split('\n')) {
-        const match = line.match(/^ANTHROPIC_API_KEY=(.+)$/);
-        if (match) return match[1].trim();
-      }
+    if (!fs.existsSync(envFilePath)) {
+      fallbackEnvCache = {};
+      return {};
     }
-  } catch {
-    // ignore
-  }
 
-  return null;
+    const content = fs.readFileSync(envFilePath, 'utf-8');
+    const parsed: Record<string, string> = {};
+    for (const line of content.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const idx = trimmed.indexOf('=');
+      if (idx <= 0) continue;
+      const key = trimmed.slice(0, idx).trim();
+      const value = trimmed.slice(idx + 1).trim();
+      if (!key || !value) continue;
+      parsed[key] = value;
+    }
+    fallbackEnvCache = parsed;
+    return parsed;
+  } catch {
+    fallbackEnvCache = {};
+    return {};
+  }
+}
+
+function getVisionApiKey(name: 'ANTHROPIC_API_KEY' | 'OPENAI_API_KEY'): string | null {
+  const fromEnv = process.env[name];
+  if (fromEnv && fromEnv.trim()) return fromEnv.trim();
+  const fromFile = loadFallbackEnv()[name];
+  return fromFile && fromFile.trim() ? fromFile.trim() : null;
+}
+
+function resolveVisionProviders(): VisionProvider[] {
+  const providers: VisionProvider[] = [];
+  const anthropicKey = getVisionApiKey('ANTHROPIC_API_KEY');
+  if (anthropicKey) {
+    providers.push({
+      name: 'anthropic',
+      apiKey: anthropicKey,
+      model: VISION_ANTHROPIC_MODEL,
+    });
+  }
+  const openaiKey = getVisionApiKey('OPENAI_API_KEY');
+  if (openaiKey) {
+    providers.push({
+      name: 'openai',
+      apiKey: openaiKey,
+      model: VISION_OPENAI_MODEL,
+    });
+  }
+  return providers;
+}
+
+function getAnthropicVisionClient(apiKey: string): Anthropic {
+  const cached = anthropicVisionClients.get(apiKey);
+  if (cached) return cached;
+  const client = new Anthropic({ apiKey });
+  anthropicVisionClients.set(apiKey, client);
+  return client;
+}
+
+function getOpenAIVisionClient(apiKey: string): OpenAI {
+  const cached = openaiVisionClients.get(apiKey);
+  if (cached) return cached;
+  const client = new OpenAI({ apiKey });
+  openaiVisionClients.set(apiKey, client);
+  return client;
 }
 
 function isVisionRateLimited(): boolean {
@@ -626,12 +695,130 @@ function isVisionRateLimited(): boolean {
   return visionCallTimestamps.length >= VISION_RATE_LIMIT_MAX;
 }
 
+function toScreenCoordinates(
+  x: number,
+  y: number,
+  screenshotSize: { width: number; height: number },
+  screenSize: { width: number; height: number },
+): { x: number; y: number } {
+  const widthScale = screenSize.width / Math.max(1, screenshotSize.width);
+  const heightScale = screenSize.height / Math.max(1, screenshotSize.height);
+  return { x: x * widthScale, y: y * heightScale };
+}
+
+function buildVisionCoordinatePrompt(
+  description: string,
+  screenshotSize: { width: number; height: number },
+  screenSize: { width: number; height: number },
+): string {
+  return `You are identifying UI elements in a screenshot.
+Target element description: "${description}".
+
+Screenshot size: ${screenshotSize.width}x${screenshotSize.height} pixels.
+Screen size: ${screenSize.width}x${screenSize.height} pixels.
+
+Return ONLY JSON: {"x": number|null, "y": number|null}
+- x/y MUST be screenshot-space pixel coordinates (not normalized).
+- If not found, return {"x": null, "y": null}.
+- No markdown, no prose, no extra keys.`;
+}
+
+function parseVisionCoordinates(rawText: string): VisionCoordinateResult | null {
+  const jsonMatch = rawText.match(/\{[\s\S]*?\}/);
+  if (!jsonMatch) return null;
+  try {
+    const parsed = JSON.parse(jsonMatch[0]) as { x?: unknown; y?: unknown };
+    const x = toFiniteNumber(parsed.x);
+    const y = toFiniteNumber(parsed.y);
+    const hasNullX = parsed.x === null;
+    const hasNullY = parsed.y === null;
+    if ((typeof x === 'number' || hasNullX) && (typeof y === 'number' || hasNullY)) {
+      return { x: x ?? null, y: y ?? null };
+    }
+  } catch {
+    // ignore parse errors
+  }
+  return null;
+}
+
+async function requestVisionCoordinates(
+  provider: VisionProvider,
+  prompt: string,
+  screenshotBase64: string,
+): Promise<VisionCoordinateResult | null> {
+  try {
+    if (provider.name === 'anthropic') {
+      const client = getAnthropicVisionClient(provider.apiKey);
+      const response = await client.messages.create({
+        model: provider.model,
+        max_tokens: 256,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'image',
+                source: {
+                  type: 'base64',
+                  media_type: 'image/png',
+                  data: screenshotBase64,
+                },
+              },
+              { type: 'text', text: prompt },
+            ],
+          },
+        ],
+      });
+      const textBlock = response.content.find((block) => block.type === 'text');
+      const text =
+        textBlock && textBlock.type === 'text' ? textBlock.text : null;
+      return text ? parseVisionCoordinates(text) : null;
+    }
+
+    const client = getOpenAIVisionClient(provider.apiKey);
+    const response = await client.chat.completions.create({
+      model: provider.model,
+      temperature: 0,
+      max_tokens: 200,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: prompt },
+            {
+              type: 'image_url',
+              image_url: { url: `data:image/png;base64,${screenshotBase64}` },
+            },
+          ],
+        },
+      ],
+    });
+
+    const content = response.choices[0]?.message?.content;
+    if (typeof content !== 'string' || !content.trim()) {
+      return null;
+    }
+    return parseVisionCoordinates(content);
+  } catch (err) {
+    logger.warn(
+      {
+        provider: provider.name,
+        err: err instanceof Error ? err.message : String(err),
+      },
+      'Vision fallback: provider API call failed',
+    );
+    return null;
+  }
+}
+
 async function findElementViaVision(
   description: string,
 ): Promise<LocatedElement | null> {
-  const apiKey = resolveApiKeyForVision();
-  if (!apiKey) {
-    logger.debug('Vision fallback skipped: no ANTHROPIC_API_KEY available');
+  const providers = resolveVisionProviders();
+  if (providers.length === 0) {
+    logger.debug(
+      'Vision fallback skipped: neither ANTHROPIC_API_KEY nor OPENAI_API_KEY available',
+    );
     return null;
   }
 
@@ -659,78 +846,89 @@ async function findElementViaVision(
     }
 
     const screenshotBytes = Buffer.from(base64, 'base64');
-    const dimensions = getImageDimensionsFromBytes(screenshotBytes)
+    const screenshotSize = getImageDimensionsFromBytes(screenshotBytes)
       || (await getScreenSizeSafe())
       || { width: 1024, height: 768 };
+    const screenSize = (await getScreenSizeSafe())
+      || screenshotSize;
 
-    // Record the call for rate limiting
-    visionCallTimestamps.push(Date.now());
+    const prompt = buildVisionCoordinatePrompt(
+      description,
+      screenshotSize,
+      screenSize,
+    );
+    for (const provider of providers) {
+      if (isVisionRateLimited()) {
+        logger.debug('Vision fallback skipped: rate limited');
+        return null;
+      }
 
-    logger.info({ description }, 'Vision fallback: calling Anthropic Messages API');
+      // Record the call for rate limiting
+      visionCallTimestamps.push(Date.now());
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: VISION_MODEL,
-        max_tokens: 256,
-        messages: [{
-          role: 'user',
-          content: [
-            {
-              type: 'image',
-              source: { type: 'base64', media_type: 'image/png', data: base64 },
-            },
-            {
-              type: 'text',
-              text: `This screenshot is ${dimensions.width}x${dimensions.height} pixels. Find the UI element matching this description: "${description}". Return ONLY a JSON object with the center pixel coordinates: {"x": number, "y": number}. If not found, return {"x": null, "y": null}. No other text.`,
-            },
-          ],
-        }],
-      }),
-    });
+      logger.info(
+        { description, provider: provider.name, model: provider.model },
+        'Vision fallback: calling provider API',
+      );
 
-    if (!response.ok) {
-      logger.warn({ status: response.status }, 'Vision fallback: API call failed');
-      return null;
+      const parsed = await requestVisionCoordinates(provider, prompt, base64);
+      if (!parsed) {
+        continue;
+      }
+
+      if (parsed.x == null || parsed.y == null) {
+        logger.info(
+          { description, provider: provider.name },
+          'Vision fallback: element not found in screenshot',
+        );
+        continue;
+      }
+
+      const screenshotX = Math.round(parsed.x);
+      const screenshotY = Math.round(parsed.y);
+      if (
+        screenshotX < 0 ||
+        screenshotX >= screenshotSize.width ||
+        screenshotY < 0 ||
+        screenshotY >= screenshotSize.height
+      ) {
+        logger.warn(
+          {
+            provider: provider.name,
+            screenshotX,
+            screenshotY,
+            screenshotSize,
+          },
+          'Vision fallback: screenshot coordinates out of bounds',
+        );
+        continue;
+      }
+
+      const converted = toScreenCoordinates(
+        screenshotX,
+        screenshotY,
+        screenshotSize,
+        screenSize,
+      );
+      const x = Math.round(converted.x);
+      const y = Math.round(converted.y);
+      if (x < 0 || x >= screenSize.width || y < 0 || y >= screenSize.height) {
+        logger.warn(
+          { provider: provider.name, x, y, screenSize },
+          'Vision fallback: converted coordinates out of bounds',
+        );
+        continue;
+      }
+
+      logger.info(
+        { description, provider: provider.name, screenshotX, screenshotY, x, y },
+        'Element found via vision fallback',
+      );
+      return { coords: { x, y }, matchedQuery: `vision:${provider.name}:${description}` };
     }
 
-    const result = await response.json() as {
-      content?: Array<{ type: string; text?: string }>;
-    };
-    const textBlock = result.content?.find((b) => b.type === 'text');
-    if (!textBlock?.text) {
-      logger.warn('Vision fallback: no text in API response');
-      return null;
-    }
-
-    // Extract JSON from the response (may be wrapped in markdown code block)
-    const jsonMatch = textBlock.text.match(/\{[^}]+\}/);
-    if (!jsonMatch) {
-      logger.warn({ text: textBlock.text.slice(0, 200) }, 'Vision fallback: no JSON in response');
-      return null;
-    }
-
-    const parsed = JSON.parse(jsonMatch[0]) as { x: number | null; y: number | null };
-    if (parsed.x == null || parsed.y == null) {
-      logger.info({ description }, 'Vision fallback: element not found in screenshot');
-      return null;
-    }
-
-    // Validate coordinates are within screen bounds
-    const x = Math.round(parsed.x);
-    const y = Math.round(parsed.y);
-    if (x < 0 || x >= dimensions.width || y < 0 || y >= dimensions.height) {
-      logger.warn({ x, y, dimensions }, 'Vision fallback: coordinates out of bounds');
-      return null;
-    }
-
-    logger.info({ description, x, y }, 'Element found via vision fallback');
-    return { coords: { x, y }, matchedQuery: `vision:${description}` };
+    logger.info({ description }, 'Vision fallback: no provider found the element');
+    return null;
   } catch (err) {
     logger.warn(
       { err: err instanceof Error ? err.message : String(err) },
@@ -775,7 +973,8 @@ async function findElementCoordinates(
   const treeMatch = await findElementInAccessibilityTree(queries);
   if (treeMatch) return treeMatch;
 
-  // Vision fallback: use Claude's vision API to locate the element in a screenshot.
+  // Vision fallback: use a multimodal provider (Anthropic/OpenAI) to locate
+  // the element in screenshot coordinates, then convert to screen coordinates.
   const visionMatch = await findElementViaVision(queries[0]);
   if (visionMatch) return visionMatch;
 
@@ -1465,8 +1664,22 @@ function formatAnalysisSummary(
   const lines: string[] = [];
   lines.push(`Screenshot saved: ${screenshotPath}`);
   lines.push(
-    `Grid: ${analysis.grid.cols}x${analysis.grid.rows} (${analysis.grid.width}x${analysis.grid.height})`,
+    `Grid: ${analysis.grid.cols}x${analysis.grid.rows} (screenshot ${analysis.grid.width}x${analysis.grid.height})`,
   );
+  lines.push(
+    `Screen: ${analysis.screen.width}x${analysis.screen.height}`,
+  );
+  if (
+    analysis.grid.width !== analysis.screen.width ||
+    analysis.grid.height !== analysis.screen.height
+  ) {
+    lines.push(
+      `Coordinate conversion (CUA to_screen_coordinates): screen_x=round(screenshot_x*${analysis.screen.width}/${analysis.grid.width}), screen_y=round(screenshot_y*${analysis.screen.height}/${analysis.grid.height})`,
+    );
+  } else {
+    lines.push('Coordinate conversion: screenshot coordinates are 1:1 with screen coordinates.');
+  }
+  lines.push('Element center coordinates below are SCREEN pixels for browse_click_xy / browse_type_at_xy.');
   lines.push(
     `Detected elements: ${analysis.elementCount}${analysis.truncated ? ` (showing ${analysis.elements.length})` : ''}`,
   );
@@ -1510,13 +1723,23 @@ function formatAnalysisSummary(
 export function buildScreenshotAnalysis(
   snapshot: unknown,
   imageDimensions: { width: number; height: number },
-  options?: { rows?: number; cols?: number; maxElements?: number },
+  options?: {
+    rows?: number;
+    cols?: number;
+    maxElements?: number;
+    screenWidth?: number;
+    screenHeight?: number;
+  },
 ): ScreenshotAnalysis {
   const grid: ScreenshotGrid = {
     rows: options?.rows || SCREENSHOT_GRID_ROWS,
     cols: options?.cols || SCREENSHOT_GRID_COLS,
     width: Math.max(1, Math.round(imageDimensions.width)),
     height: Math.max(1, Math.round(imageDimensions.height)),
+  };
+  const screen = {
+    width: Math.max(1, Math.round(options?.screenWidth || grid.width)),
+    height: Math.max(1, Math.round(options?.screenHeight || grid.height)),
   };
   const maxElements = Math.max(
     1,
@@ -1577,24 +1800,44 @@ export function buildScreenshotAnalysis(
     }
 
     const label = labelCandidate || role || 'unnamed element';
-    const centerX = Math.round(resolvedBounds.x + resolvedBounds.width / 2);
-    const centerY = Math.round(resolvedBounds.y + resolvedBounds.height / 2);
-    const dedupeKey = `${centerX}:${centerY}:${normalizeForSearch(label)}`;
+    const screenshotCenterX = resolvedBounds.x + resolvedBounds.width / 2;
+    const screenshotCenterY = resolvedBounds.y + resolvedBounds.height / 2;
+    const screenCenter = toScreenCoordinates(
+      screenshotCenterX,
+      screenshotCenterY,
+      { width: grid.width, height: grid.height },
+      screen,
+    );
+    const screenX = Math.round(screenCenter.x);
+    const screenY = Math.round(screenCenter.y);
+    const dedupeKey = `${screenX}:${screenY}:${normalizeForSearch(label)}`;
     if (seen.has(dedupeKey)) continue;
     seen.add(dedupeKey);
 
     const interactive = nodeIsInteractive(node, role);
-    const gridCell = toGridCell(centerX, centerY, grid);
+    const gridCell = toGridCell(screenshotCenterX, screenshotCenterY, grid);
+    const screenTopLeft = toScreenCoordinates(
+      resolvedBounds.x,
+      resolvedBounds.y,
+      { width: grid.width, height: grid.height },
+      screen,
+    );
+    const screenBottomRight = toScreenCoordinates(
+      resolvedBounds.x + resolvedBounds.width,
+      resolvedBounds.y + resolvedBounds.height,
+      { width: grid.width, height: grid.height },
+      screen,
+    );
     candidates.push({
       label,
       role: role || null,
       interactive,
-      center: { x: centerX, y: centerY },
+      center: { x: screenX, y: screenY },
       bounds: {
-        x: Math.round(resolvedBounds.x),
-        y: Math.round(resolvedBounds.y),
-        width: Math.round(resolvedBounds.width),
-        height: Math.round(resolvedBounds.height),
+        x: Math.round(screenTopLeft.x),
+        y: Math.round(screenTopLeft.y),
+        width: Math.max(1, Math.round(screenBottomRight.x - screenTopLeft.x)),
+        height: Math.max(1, Math.round(screenBottomRight.y - screenTopLeft.y)),
       },
       grid: gridCell,
       sortWeight: interactive ? 0 : 1,
@@ -1620,6 +1863,7 @@ export function buildScreenshotAnalysis(
   return {
     capturedAt: new Date().toISOString(),
     grid,
+    screen,
     elementCount: candidates.length,
     truncated: candidates.length > limited.length,
     elements: limited,
@@ -1850,8 +2094,12 @@ async function processCuaRequest(
       const screenshotPath = `/workspace/group/media/${filename}`;
       const imageSize = getImageDimensionsFromBytes(screenshotBytes) ||
         (await getScreenSizeSafe()) || { width: 1024, height: 768 };
+      const screenSize = (await getScreenSizeSafe()) || imageSize;
       const snapshot = await getAccessibilitySnapshotSafe();
-      const analysis = buildScreenshotAnalysis(snapshot, imageSize);
+      const analysis = buildScreenshotAnalysis(snapshot, imageSize, {
+        screenWidth: screenSize.width,
+        screenHeight: screenSize.height,
+      });
       const metadataFilename = filename.replace(/\.png$/, '.labels.json');
       const metadataPath = `/workspace/group/media/${metadataFilename}`;
       analysis.metadataPath = metadataPath;
