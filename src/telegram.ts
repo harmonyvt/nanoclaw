@@ -904,9 +904,11 @@ export async function connectTelegram(
           : 'Agent container: no changes.',
         `Current: ${localHead.slice(0, 8)}`,
         `Latest: ${remoteHead.slice(0, 8)}`,
-        'Reply /update confirm within 5 minutes to apply it.',
       ];
-      await ctx.reply(lines.join('\n'));
+      const kb = new InlineKeyboard()
+        .text('Confirm Update', 'update:confirm')
+        .text('Cancel', 'update:cancel');
+      await ctx.reply(lines.join('\n'), { reply_markup: kb });
     } catch (err) {
       logger.error({ module: 'telegram', err }, 'Failed to check for updates');
       await ctx.reply(
@@ -975,6 +977,45 @@ export async function connectTelegram(
   bot.on('callback_query:data', async (ctx) => {
     if (!ctx.chat || !shouldAccept({ chat: ctx.chat, from: ctx.from })) return;
     const data = ctx.callbackQuery.data;
+
+    // --- Self-update inline button callbacks ---
+    if (data === 'update:confirm' || data === 'update:cancel') {
+      const chatId = makeTelegramChatId(ctx.chat.id);
+      if (data === 'update:cancel') {
+        const hadPending = pendingUpdatesByChat.delete(chatId);
+        await ctx.editMessageReplyMarkup({ reply_markup: undefined });
+        await ctx.answerCallbackQuery({
+          text: hadPending ? 'Update canceled.' : 'No pending update.',
+        });
+        return;
+      }
+      // confirm
+      const pending = pendingUpdatesByChat.get(chatId);
+      if (!pending) {
+        await ctx.answerCallbackQuery({ text: 'No pending update. Run /update first.' });
+        return;
+      }
+      if (Date.now() > pending.expiresAt) {
+        pendingUpdatesByChat.delete(chatId);
+        await ctx.editMessageReplyMarkup({ reply_markup: undefined });
+        await ctx.answerCallbackQuery({ text: 'Confirmation expired. Run /update again.' });
+        return;
+      }
+      pendingUpdatesByChat.delete(chatId);
+      await ctx.editMessageReplyMarkup({ reply_markup: undefined });
+      await ctx.answerCallbackQuery({ text: 'Starting update...' });
+      await ctx.reply(
+        `Starting update now. I will post progress updates in this chat as each step runs.\nI will also write detailed logs to ${SELF_UPDATE_LOG}.`,
+      );
+      try {
+        startSelfUpdateProcess(ctx.chat.id);
+      } catch (err) {
+        logger.error({ module: 'telegram', err }, 'Failed to start self-update process');
+        await ctx.reply('Failed to start update. Check logs and try again.');
+      }
+      return;
+    }
+
     if (!data.startsWith('t:')) return;
 
     const parts = data.split(':');
