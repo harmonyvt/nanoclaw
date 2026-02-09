@@ -88,7 +88,7 @@ Credentials are written to `data/env/env` and mounted read-only at `/workspace/e
 
 ## Container Runtime
 
-Uses **Docker CLI** (`docker run -i --rm`). The codebase was originally written for Apple Container and fully migrated to Docker. Some source comments still reference Apple Container (stale -- see `container-runner.ts:3`, `:241`, `:278`).
+Uses **Docker CLI** (`docker run -i --rm`). The codebase was originally written for Apple Container and fully migrated to Docker. Some source comments still reference Apple Container (stale -- see `container-runner.ts:503`, `:544`).
 
 - Image: `nanoclaw-agent:latest` (configurable via `CONTAINER_IMAGE`)
 - Runs as non-root user `bun`
