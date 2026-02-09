@@ -14,21 +14,40 @@ export async function proxyNoVncFollowPage(vncPassword: string | null): Promise<
     }
     let html = await upstream.text();
 
-    // Inject password + view_only into the page before the closing </head>
-    // noVNC reads these from URL params via WebUtil, so we override them with a script
-    const inject = `<script>
+    // Inject config as a JS object. noVNC reads settings via WebUtil.getConfigVar
+    // which parses URL params. We stash overrides in a global and patch getConfigVar
+    // once noVNC scripts have loaded, so the password never appears in URL params.
+    const overrides: Record<string, string> = {
+      autoconnect: 'true',
+      resize: 'scale',
+      view_only: 'true',
+    };
+    if (vncPassword) overrides.password = vncPassword;
+
+    // Early script: stash overrides as a JS global (before noVNC scripts load)
+    const earlyScript = `<script>window.__noVncOverrides=${JSON.stringify(overrides)};</script>`;
+    html = html.replace('</head>', earlyScript + '\n</head>');
+
+    // Late script: patch WebUtil.getConfigVar after noVNC has defined it
+    const lateScript = `<script>
 (function() {
-  var p = new URLSearchParams(window.location.search);
-  if (!p.has('autoconnect')) p.set('autoconnect', 'true');
-  if (!p.has('resize')) p.set('resize', 'scale');
-  p.set('view_only', 'true');
-  ${vncPassword ? `p.set('password', ${JSON.stringify(vncPassword)});` : ''}
-  if (window.location.search !== '?' + p.toString()) {
-    history.replaceState(null, '', window.location.pathname + '?' + p.toString());
+  var o = window.__noVncOverrides || {};
+  function patch() {
+    if (window.WebUtil && WebUtil.getConfigVar) {
+      var orig = WebUtil.getConfigVar.bind(WebUtil);
+      WebUtil.getConfigVar = function(name, defVal) {
+        return o.hasOwnProperty(name) ? o[name] : orig(name, defVal);
+      };
+    }
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', patch);
+  } else {
+    patch();
   }
 })();
 </script>`;
-    html = html.replace('</head>', inject + '\n</head>');
+    html = html.replace('</body>', lateScript + '\n</body>');
 
     const headers = new Headers({ 'content-type': 'text/html; charset=utf-8' });
     return new Response(html, { status: 200, headers });
