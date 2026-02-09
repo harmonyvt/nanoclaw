@@ -4,7 +4,7 @@ Personal Claude assistant. See [README.md](README.md) for philosophy and setup. 
 
 ## Architecture
 
-Single Bun process (host) connects to Telegram, stores messages in SQLite, and spawns ephemeral Docker containers per message. Each container uses an adapter pattern to dispatch to either the Claude Agent SDK or OpenAI chat completions based on per-group `providerConfig`. Browse automation runs in a CUA desktop sandbox sidecar.
+Single Bun process (host) connects to Telegram, stores messages in SQLite, and spawns ephemeral Docker containers per message. Each container uses an adapter pattern to dispatch to either the Claude Agent SDK or OpenAI chat completions based on per-group `providerConfig`. Browse automation runs in a CUA desktop sandbox sidecar. A web dashboard (Preact) provides log viewing, file browsing, task management, and CUA takeover control.
 
 ```
 Telegram <-> Host (Bun) <-> SQLite
@@ -15,46 +15,97 @@ Telegram <-> Host (Bun) <-> SQLite
                 |           +-- OpenAIAdapter (chat completions + function calling)
                 |
                 +-- CUA desktop sandbox (persistent sidecar)
-                      \-- /cmd API + screenshot transport
+                |     \-- /cmd API + screenshot transport
+                |
+                +-- Dashboard (Bun.serve HTTP/TLS)
+                      +-- Telegram WebApp auth (HMAC-SHA256)
+                      +-- Log viewer, file browser, task manager
+                      +-- CUA takeover (noVNC proxy + live desktop)
 ```
 
 ## Key Files
 
 ### Host Process
 
-| File                      | Purpose                                                            |
-| ------------------------- | ------------------------------------------------------------------ |
-| `src/index.ts`            | Main app: message routing, IPC watcher (messages/tasks/browse)     |
-| `src/config.ts`           | Constants, trigger pattern, paths, Telegram helpers                |
-| `src/container-runner.ts` | Spawns Docker containers, credential resolution, volume mounts     |
-| `src/task-scheduler.ts`   | Polls for due tasks, runs them in containers                       |
-| `src/db.ts`               | SQLite operations (bun:sqlite): messages, chats, tasks, run logs   |
-| `src/telegram.ts`         | grammY bot: text, voice, audio, photo, document handlers           |
-| `src/media.ts`            | File download (Telegram API), Whisper transcription, media cleanup |
-| `src/browse-host.ts`      | Host-side browse bridge for CUA `/cmd` actions                     |
-| `src/sandbox-manager.ts`  | CUA sandbox lifecycle: start/stop/idle timeout (Docker)            |
-| `src/mount-security.ts`   | Validates additional mounts against external allowlist             |
-| `src/supermemory.ts`      | Optional Supermemory integration: retrieve/store long-term memory  |
-| `src/types.ts`            | Shared TypeScript interfaces                                       |
-| `src/logger.ts`           | Pino logger with pino-pretty                                       |
-| `src/skills.ts`           | Skill loading utilities (per-group skill files)                    |
-| `src/utils.ts`            | `loadJson` / `saveJson` helpers                                    |
+| File                        | Purpose                                                            |
+| --------------------------- | ------------------------------------------------------------------ |
+| `src/index.ts`              | Main app: message routing, IPC watcher (messages/tasks/browse)     |
+| `src/config.ts`             | Constants, trigger pattern, paths, Telegram helpers                |
+| `src/container-runner.ts`   | Spawns Docker containers, credential resolution, volume mounts     |
+| `src/task-scheduler.ts`     | Polls for due tasks (60s), runs them in containers                 |
+| `src/db.ts`                 | SQLite operations (bun:sqlite): messages, chats, tasks, run logs   |
+| `src/telegram.ts`           | grammY bot: text, voice, audio, photo, document handlers           |
+| `src/media.ts`              | File download (Telegram API), Whisper transcription, media cleanup |
+| `src/browse-host.ts`        | Host-side browse bridge for CUA `/cmd` actions                     |
+| `src/sandbox-manager.ts`    | CUA sandbox lifecycle: start/stop/idle timeout (Docker)            |
+| `src/cua-client.ts`         | Typed OpenAPI client for CUA `/cmd` API, WebSocket commands        |
+| `src/mount-security.ts`     | Validates additional mounts against external allowlist              |
+| `src/supermemory.ts`        | Optional Supermemory integration: retrieve/store long-term memory  |
+| `src/skills.ts`             | Skill loading utilities (per-group skill files)                    |
+| `src/tts.ts`                | Freya TTS integration: emotion-driven voice synthesis, rate limiting |
+| `src/types.ts`              | Shared TypeScript interfaces                                       |
+| `src/logger.ts`             | Pino logger with multistream (pretty print + ring buffer capture)  |
+| `src/utils.ts`              | `loadJson` / `saveJson` helpers                                    |
+
+### Dashboard & Web UI Server
+
+| File                          | Purpose                                                            |
+| ----------------------------- | ------------------------------------------------------------------ |
+| `src/dashboard-server.ts`     | Main HTTP server: log/container/file/task/sandbox/takeover endpoints |
+| `src/dashboard-auth.ts`       | Telegram WebApp validation (HMAC-SHA256), session mgmt (24h TTL)   |
+| `src/cua-takeover-server.ts`  | Takeover web UI: token sessions, noVNC proxy, VNC password delivery |
+| `src/novnc-proxy.ts`          | noVNC HTTP/WebSocket proxy to CUA sandbox, CSP header stripping    |
+| `src/ui-assets.ts`            | Static asset serving for bundled UI (JS/CSS/fonts from dist/ui/)   |
+| `src/log-sync.ts`             | Structured log ring buffer (500 entries), EventEmitter subscriptions |
+| `src/cua-activity.ts`         | CUA activity event tracking and performance metrics                |
+| `src/cua-trajectory.ts`       | Session trajectory recording (5min gap threshold), persistence     |
+| `src/tailscale-serve.ts`      | Tailscale HTTPS URL generation, port mapping, fallback to 127.0.0.1 |
+
+### Generated Code
+
+| File                                  | Purpose                                             |
+| ------------------------------------- | --------------------------------------------------- |
+| `src/generated/cua-openapi.generated.ts`  | Auto-generated OpenAPI types from CUA API spec  |
+| `src/generated/cua-commands.generated.ts` | CUA command catalog with aliases and parameters |
 
 ### Agent Container
 
-| File                                                  | Purpose                                                             |
-| ----------------------------------------------------- | ------------------------------------------------------------------- |
-| `container/Dockerfile`                                | Agent image: `oven/bun:1-debian` + Chromium + claude-code           |
-| `container/build.sh`                                  | Build script for agent image (`nanoclaw-agent:latest`)              |
-| `container/agent-runner/src/index.ts`                 | Reads JSON from stdin, dispatches to adapter, writes result to stdout |
-| `container/agent-runner/src/types.ts`                 | Shared adapter interfaces (`ProviderAdapter`, `AdapterInput`, etc.) |
-| `container/agent-runner/src/tool-registry.ts`         | Provider-agnostic tool definitions (22 tools with Zod schemas)      |
-| `container/agent-runner/src/ipc-mcp.ts`               | Thin Claude SDK wrapper that maps tool-registry into MCP server     |
-| `container/agent-runner/src/adapters/index.ts`        | `createAdapter()` factory: dispatches to Claude or OpenAI           |
-| `container/agent-runner/src/adapters/claude-adapter.ts`| Claude Agent SDK `query()` with PreCompact hooks                   |
-| `container/agent-runner/src/adapters/openai-adapter.ts`| OpenAI chat completions with function-calling loop (max 50 iter)   |
-| `container/agent-runner/src/adapters/openai-session.ts`| OpenAI conversation history persistence (JSON files, auto-trim)    |
-| `container/agent-runner/src/adapters/openai-tools.ts` | Zod-to-JSON Schema bridge for OpenAI function calling               |
+| File                                                   | Purpose                                                             |
+| ------------------------------------------------------ | ------------------------------------------------------------------- |
+| `container/Dockerfile`                                 | Agent image: `oven/bun:1-debian` + Chromium + claude-code           |
+| `container/build.sh`                                   | Build script for agent image (`nanoclaw-agent:latest`)              |
+| `container/agent-runner/src/index.ts`                  | Reads JSON from stdin, dispatches to adapter, writes result to stdout |
+| `container/agent-runner/src/types.ts`                  | Shared adapter interfaces (`ProviderAdapter`, `AdapterInput`, etc.) |
+| `container/agent-runner/src/tool-registry.ts`          | Provider-agnostic tool definitions (22+ tools with Zod schemas)     |
+| `container/agent-runner/src/ipc-mcp.ts`                | Thin Claude SDK wrapper that maps tool-registry into MCP server     |
+| `container/agent-runner/src/cancel.ts`                 | Cooperative abort: checks `/workspace/ipc/cancel` for `/stop`       |
+| `container/agent-runner/src/adapters/index.ts`         | `createAdapter()` factory: dispatches to Claude or OpenAI           |
+| `container/agent-runner/src/adapters/claude-adapter.ts`| Claude Agent SDK `query()` with PreCompact hooks                    |
+| `container/agent-runner/src/adapters/openai-adapter.ts`| OpenAI chat completions with function-calling loop (max 50 iter)    |
+| `container/agent-runner/src/adapters/openai-session.ts`| OpenAI conversation history persistence (JSON files, auto-trim)     |
+| `container/agent-runner/src/adapters/openai-tools.ts`  | Zod-to-JSON Schema bridge for OpenAI function calling               |
+
+### UI (Preact + TypeScript, bundled by Bun)
+
+| Directory / File                  | Purpose                                                    |
+| --------------------------------- | ---------------------------------------------------------- |
+| `src/ui/build.ts`                 | Bun bundler: compiles TSX entry points to dist/ui/         |
+| `src/ui/dashboard/dashboard.tsx`  | Dashboard entry point, renders DashboardApp                |
+| `src/ui/dashboard/DashboardApp.tsx` | Main shell: tab routing (Logs, Containers, Files, Tasks, Takeover, Trajectory) |
+| `src/ui/dashboard/panes/`        | Individual panes: LogsPane, ContainersPane, FilesPane, TasksPane, TakeoverPane, TrajectoryPane |
+| `src/ui/takeover/takeover.tsx`    | Takeover entry point: auth from embedded session data      |
+| `src/ui/takeover/TakeoverApp.tsx` | Live browser control: keyboard/mouse input, noVNC streaming |
+| `src/ui/takeover/DesktopViewer.tsx` | Embedded noVNC viewer component                          |
+| `src/ui/shared/api.ts`           | Auth token management, typed `apiFetch<T>()` wrapper       |
+| `src/ui/shared/theme.css`        | Design tokens and theme variables                          |
+
+### CUA Sandbox
+
+| File                              | Purpose                                             |
+| --------------------------------- | --------------------------------------------------- |
+| `container/sandbox/Dockerfile`    | CUA desktop sandbox (trycua/cua-xfce) with VNC/noVNC |
+| `container/sandbox/start.sh`      | Sandbox startup script                              |
+| `container/sandbox/rotate-vnc-pw.sh` | VNC password rotation for takeover sessions       |
 
 ### Per-Group
 
@@ -72,7 +123,7 @@ Telegram <-> Host (Bun) <-> SQLite
 
 Per-group personality file. Read by the agent-runner at the start of every query and injected as a `<soul>` XML block before the user's messages. The agent can modify this file to update its own personality at the user's request.
 
-If SOUL.md doesn't exist for a group, the agent is prompted to ask the user to define a personality. The file is freeform markdown. SOUL.md is NOT auto-loaded by the Claude Agent SDK's `settingSources: ['project']` mechanism (which only discovers CLAUDE.md) — the agent-runner manually reads and injects it.
+If SOUL.md doesn't exist for a group, the agent is prompted to ask the user to define a personality. The file is freeform markdown. SOUL.md is NOT auto-loaded by the Claude Agent SDK's `settingSources: ['project']` mechanism (which only discovers CLAUDE.md) -- the agent-runner manually reads and injects it.
 
 ## Credential Flow
 
@@ -131,9 +182,22 @@ Media path is translated from host path to container path in the XML prompt (`me
 - **Lazy start**: Sandbox starts on first `browse_*` tool call
 - **Idle timeout**: Stops after 30 min of no browse activity
 - **Live URL in wait-for-user**: takeover URL `http://<tailscale-ip>:<CUA_TAKEOVER_WEB_PORT>/cua/takeover/<token>` (includes embedded noVNC + continue button; fallback `127.0.0.1`)
-- **VNC authentication**: Random VNC password generated on sandbox start (`VNC_PW` env var). Password rotated per-takeover session — each `browse_wait_for_user` gets a fresh password, invalidated when control returns. noVNC iframe receives the password via URL parameter; direct noVNC URLs are never sent to chat.
+- **VNC authentication**: Random VNC password generated on sandbox start (`VNC_PW` env var). Password rotated per-takeover session -- each `browse_wait_for_user` gets a fresh password, invalidated when control returns. noVNC iframe receives the password via URL parameter; direct noVNC URLs are never sent to chat.
 - **Screenshot feedback**: `browse_screenshot` always saves to group media and is sent as Telegram photo
 - **Persistence**: Sandbox state (browser sessions, cookies, installed software) persists across restarts by default. The container is stopped (not removed) on idle, and restarted on next use. A named Docker volume (`nanoclaw-cua-home`) backs `/home/cua` as a safety net for image updates. Disable with `CUA_SANDBOX_PERSIST=false`.
+
+## Dashboard
+
+A Preact-based web UI served by the host process via `Bun.serve` (with optional TLS).
+
+- **Authentication**: Telegram WebApp HMAC-SHA256 validation; sessions last 24 hours
+- **Tabs**: Logs, Containers, Files, Tasks, Takeover, Trajectory
+- **Log viewer**: Structured log ring buffer (500 entries), real-time streaming via EventEmitter, filtering by level/module
+- **File browser**: Browse group media and files with text/image preview
+- **Task manager**: View and manage scheduled tasks across groups
+- **Takeover pane**: CUA browser control with embedded noVNC, keyboard/mouse input forwarding
+- **Trajectory pane**: CUA activity session history with performance metrics
+- **Build**: `bun run build:ui` compiles `src/ui/` TSX to `dist/ui/` with hashed chunks
 
 ## IPC Patterns
 
@@ -144,6 +208,10 @@ Agent writes JSON to `/workspace/ipc/messages/` or `/workspace/ipc/tasks/`. Host
 ### Request/Response (browse)
 
 Agent writes `req-{id}.json` to `/workspace/ipc/browse/`, polls for `res-{id}.json`. Host processes request, writes response (atomic: temp+rename). Agent cleans up both files.
+
+### Cancel (cooperative abort)
+
+Host writes a cancel file to `/workspace/ipc/cancel` when user sends `/stop`. Agent checks `isCancelled()` to cooperatively abort long-running operations.
 
 ### Authorization
 
@@ -188,13 +256,13 @@ Skills are stored as JSON files in `groups/{folder}/skills/`. When a user types 
 - `browse_wait_for_user` -- Handoff to user via takeover web URL, wait until user returns control
 - `browse_go_back` -- Browser back button
 - `browse_extract_file` -- Extract a file from CUA sandbox to agent (for sending via `send_file`)
-- `browse_upload_file` -- Upload a file from agent into CUA sandbox (e.g., Telegram attachment → browser)
+- `browse_upload_file` -- Upload a file from agent into CUA sandbox (e.g., Telegram attachment -> browser)
 - `browse_evaluate` -- Present for backward compatibility; currently unsupported in CUA mode
 - `browse_close` -- Close browser page
 
 #### `browse_perform` Examples
 
-Edit a spreadsheet cell (double-click → select all → type → confirm):
+Edit a spreadsheet cell (double-click -> select all -> type -> confirm):
 ```json
 { "steps": [
   { "action": "double_click", "x": 240, "y": 438 },
@@ -272,37 +340,41 @@ Requires `SUPERMEMORY_API_KEY`. When enabled, memories are also automatically re
 | Variable                    | Default                  | Purpose                                         |
 | --------------------------- | ------------------------ | ------------------------------------------------ |
 | `OPENAI_API_KEY`            | --                       | Whisper transcription + OpenAI provider API key  |
-| `FIRECRAWL_API_KEY`         | --                       | Firecrawl web scraping                  |
-| `SUPERMEMORY_API_KEY`       | --                       | Supermemory long-term memory (preferred) |
-| `SUPERMEMORY_OPENCLAW_API_KEY` | --                    | Supermemory key alias (accepted fallback) |
-| `SUPERMEMORY_CC_API_KEY`    | --                       | Supermemory key alias (accepted fallback) |
-| `FREYA_TTS_ENABLED`         | `false`                  | Enable Freya TTS (`true` to enable)     |
-| `FREYA_API_KEY`             | --                       | Freya TTS voice synthesis               |
-| `FREYA_CHARACTER_ID`        | `Amika2`                 | Freya TTS character voice               |
-| `FREYA_LANGUAGE`            | `English`                | Freya TTS language                      |
-| `ASSISTANT_NAME`            | `Andy`                   | Bot trigger name (`@Name`)              |
-| `CONTAINER_IMAGE`           | `nanoclaw-agent:latest`  | Docker image for agent containers       |
-| `CONTAINER_TIMEOUT`         | `300000` (5 min)         | Container execution timeout (ms)        |
-| `CONTAINER_MAX_OUTPUT_SIZE` | `10485760` (10MB)        | Max container stdout/stderr             |
-| `SANDBOX_IDLE_TIMEOUT_MS`   | `1800000`                | Sandbox auto-stop timeout               |
-| `SANDBOX_TAILSCALE_ENABLED` | `true`                   | Use Tailscale IP for wait-for-user URLs |
-| `CUA_TAKEOVER_WEB_ENABLED`  | `true`                   | Enable CUA takeover web UI              |
-| `CUA_TAKEOVER_WEB_PORT`     | `7788`                   | Host port for CUA takeover web UI       |
-| `CUA_SANDBOX_IMAGE`         | `trycua/cua-xfce:latest` | CUA Docker image                        |
-| `CUA_SANDBOX_PLATFORM`      | `linux/amd64`            | Docker platform for CUA image pull/run  |
-| `CUA_SANDBOX_COMMAND_PORT`  | `8000`                   | Host port for CUA `/cmd` API            |
-| `CUA_SANDBOX_VNC_PORT`      | `5901`                   | Host port for CUA VNC                   |
-| `CUA_SANDBOX_NOVNC_PORT`    | `6901`                   | Host port for CUA noVNC live view       |
-| `CUA_SANDBOX_SCREEN_WIDTH`  | `1024`                   | CUA desktop width                       |
-| `CUA_SANDBOX_SCREEN_HEIGHT` | `768`                    | CUA desktop height                      |
-| `CUA_SANDBOX_SCREEN_DEPTH`  | `24`                     | CUA desktop color depth                 |
-| `CUA_SANDBOX_SHM_SIZE`      | `512m`                   | Shared memory for Chromium stability    |
-| `CUA_SANDBOX_PERSIST`       | `true`                   | Persist sandbox state across restarts   |
-| `CUA_SANDBOX_HOME_VOLUME`   | `nanoclaw-cua-home`      | Docker volume for CUA home dir          |
-| `CUA_API_KEY`               | --                       | Optional CUA API key passed to sandbox  |
-| `MAX_THINKING_TOKENS`       | `10000`                  | Claude extended thinking token budget   |
-| `LOG_LEVEL`                 | `info`                   | Pino log level                          |
-| `TZ`                        | system                   | Timezone for scheduled tasks            |
+| `FIRECRAWL_API_KEY`         | --                       | Firecrawl web scraping                           |
+| `SUPERMEMORY_API_KEY`       | --                       | Supermemory long-term memory (preferred)         |
+| `SUPERMEMORY_OPENCLAW_API_KEY` | --                    | Supermemory key alias (accepted fallback)        |
+| `SUPERMEMORY_CC_API_KEY`    | --                       | Supermemory key alias (accepted fallback)        |
+| `FREYA_TTS_ENABLED`        | `false`                  | Enable Freya TTS (`true` to enable)              |
+| `FREYA_API_KEY`             | --                       | Freya TTS voice synthesis                        |
+| `FREYA_CHARACTER_ID`        | `Amika2`                 | Freya TTS character voice                        |
+| `FREYA_LANGUAGE`            | `English`                | Freya TTS language                               |
+| `ASSISTANT_NAME`            | `Andy`                   | Bot trigger name (`@Name`)                       |
+| `CONTAINER_IMAGE`           | `nanoclaw-agent:latest`  | Docker image for agent containers                |
+| `CONTAINER_TIMEOUT`         | `300000` (5 min)         | Container execution timeout (ms)                 |
+| `CONTAINER_MAX_OUTPUT_SIZE` | `10485760` (10MB)        | Max container stdout/stderr                      |
+| `DASHBOARD_ENABLED`         | `true`                   | Enable the web dashboard                         |
+| `DASHBOARD_PORT`            | --                       | HTTP port for dashboard server                   |
+| `DASHBOARD_TLS_CERT`        | --                       | TLS cert path for HTTPS dashboard                |
+| `DASHBOARD_TLS_KEY`         | --                       | TLS key path for HTTPS dashboard                 |
+| `SANDBOX_IDLE_TIMEOUT_MS`   | `1800000`                | Sandbox auto-stop timeout                        |
+| `SANDBOX_TAILSCALE_ENABLED` | `true`                   | Use Tailscale IP for wait-for-user URLs          |
+| `CUA_TAKEOVER_WEB_ENABLED`  | `true`                   | Enable CUA takeover web UI                       |
+| `CUA_TAKEOVER_WEB_PORT`     | `7788`                   | Host port for CUA takeover web UI                |
+| `CUA_SANDBOX_IMAGE`         | `trycua/cua-xfce:latest` | CUA Docker image                                 |
+| `CUA_SANDBOX_PLATFORM`      | `linux/amd64`            | Docker platform for CUA image pull/run           |
+| `CUA_SANDBOX_COMMAND_PORT`  | `8000`                   | Host port for CUA `/cmd` API                     |
+| `CUA_SANDBOX_VNC_PORT`      | `5901`                   | Host port for CUA VNC                            |
+| `CUA_SANDBOX_NOVNC_PORT`    | `6901`                   | Host port for CUA noVNC live view                |
+| `CUA_SANDBOX_SCREEN_WIDTH`  | `1024`                   | CUA desktop width                                |
+| `CUA_SANDBOX_SCREEN_HEIGHT` | `768`                    | CUA desktop height                               |
+| `CUA_SANDBOX_SCREEN_DEPTH`  | `24`                     | CUA desktop color depth                          |
+| `CUA_SANDBOX_SHM_SIZE`      | `512m`                   | Shared memory for Chromium stability             |
+| `CUA_SANDBOX_PERSIST`       | `true`                   | Persist sandbox state across restarts            |
+| `CUA_SANDBOX_HOME_VOLUME`   | `nanoclaw-cua-home`      | Docker volume for CUA home dir                   |
+| `CUA_API_KEY`               | --                       | Optional CUA API key passed to sandbox           |
+| `MAX_THINKING_TOKENS`       | `10000`                  | Claude extended thinking token budget            |
+| `LOG_LEVEL`                 | `info`                   | Pino log level                                   |
+| `TZ`                        | system                   | Timezone for scheduled tasks                     |
 
 ## Data Directory Structure
 
@@ -313,6 +385,7 @@ data/
     messages/                 # Outgoing message files
     tasks/                    # Task scheduling files
     browse/                   # Browse request/response files
+    cancel                    # Cancel signal file (written by host on /stop)
     current_tasks.json        # Tasks snapshot (host writes, agent reads)
     available_groups.json     # Groups snapshot (main only)
   env/env                     # Resolved credentials for containers
@@ -324,6 +397,8 @@ store/
 logs/
   nanoclaw.log                # stdout (launchd)
   nanoclaw.error.log          # stderr (launchd)
+dist/
+  ui/                         # Bundled dashboard/takeover assets (JS/CSS)
 ```
 
 ## Group Isolation
@@ -339,19 +414,56 @@ Run commands directly -- don't tell the user to run them.
 
 ```bash
 bun dev                      # Run with hot reload (--watch)
-bun run build                # Compile TypeScript
-./container/build.sh         # Rebuild agent container
-docker pull --platform linux/amd64 trycua/cua-xfce:latest # Pull/update CUA sandbox image
+bun run build                # Build UI + compile TypeScript (build:ui then build:server)
+bun run build:ui             # Bundle Preact UI to dist/ui/
+bun run build:server         # Compile server TypeScript (tsc)
+bun run typecheck            # Type-check without emitting (tsc --noEmit)
+bun run format               # Format with Prettier (single quotes)
+bun run format:check         # Check formatting without writing
+bun test                     # Run all tests (bun test)
+./container/build.sh         # Rebuild agent container image
+docker pull --platform linux/amd64 trycua/cua-xfce:latest  # Pull/update CUA sandbox image
 ```
 
-Service management (production via launchd):
+### Deployment Scripts
 
 ```bash
-# Template at launchd/com.nanoclaw.plist (replace {{placeholders}})
-# Install to ~/Library/LaunchAgents/com.nanoclaw.plist
+bun run docker:requirements  # Validate Docker daemon/images, pull CUA image
+bun run deploy:macos         # Build + install/reload launchd service
+bun run deploy:linux         # Build + install/reload systemd user service
+```
+
+Service management:
+
+```bash
+# macOS (launchd) -- template at launchd/com.nanoclaw.plist
 launchctl load ~/Library/LaunchAgents/com.nanoclaw.plist
 launchctl unload ~/Library/LaunchAgents/com.nanoclaw.plist
+
+# Linux (systemd) -- template at systemd/com.nanoclaw.service
+systemctl --user start com.nanoclaw
+systemctl --user stop com.nanoclaw
+systemctl --user restart com.nanoclaw
 ```
+
+### Code Conventions
+
+- **Runtime**: Bun (not Node.js). Use `bun:sqlite` for database, `Bun.serve` for HTTP.
+- **TypeScript**: Strict mode, ES2022 target, NodeNext modules. Preact JSX (`jsxImportSource: preact`).
+- **Formatting**: Prettier with single quotes (`.prettierrc: { "singleQuote": true }`).
+- **UI**: Preact (not React). Dashboard and takeover UIs are in `src/ui/`, compiled by `src/ui/build.ts`.
+- **UI is excluded from tsc**: The `tsconfig.json` excludes `src/ui/**` -- the UI is bundled separately by Bun.
+- **Dependencies**: Minimal. Host: grammy, pino, supermemory, zod, preact. Container: @anthropic-ai/claude-agent-sdk, openai, zod.
+- **No test framework configuration** -- uses Bun's built-in test runner (`bun test`).
+- **XML for agent prompts**: Messages to the agent are formatted as XML (`<messages><message>...</message></messages>`).
+
+### Test Files
+
+Host tests (in `src/`):
+- `db.test.ts`, `mount-security.test.ts`, `skill-tools.test.ts`, `config.test.ts`, `browse-host.test.ts`, `skills.test.ts`, `provider-config.test.ts`
+
+Container tests (in `container/agent-runner/src/`):
+- `index.test.ts`, `tool-registry.test.ts`, `adapters/integration.test.ts`, `adapters/openai-adapter.test.ts`, `adapters/openai-session.test.ts`, `adapters/openai-tools.test.ts`
 
 ## Message Format
 
@@ -364,3 +476,11 @@ Messages are formatted as XML for the agent prompt:
 ```
 
 Content is XML-escaped. Media attributes are optional. Bot's own messages (prefixed with `ASSISTANT_NAME:`) are filtered out.
+
+## Contributing
+
+**Accepted PRs:** Bug fixes, security fixes, simplifications, reducing code.
+
+**Not accepted as PRs:** Features, capabilities, compatibility, enhancements. These should be contributed as skills (`.claude/skills/{name}/SKILL.md`).
+
+A skill contains the **instructions** Claude follows to transform a NanoClaw installation -- not pre-built code. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
