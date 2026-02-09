@@ -1438,7 +1438,7 @@ export function interruptContainer(
   }
 
   logger.info({ module: 'container', groupFolder }, 'Container interrupt requested');
-  return { interrupted: true, message: 'Interrupting...' };
+  return { interrupted: true, message: 'Interrupting' };
 }
 
 /**
