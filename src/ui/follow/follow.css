@@ -51,6 +51,7 @@
 
 .follow-activity {
   width: 400px;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   background: var(--panel);
