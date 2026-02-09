@@ -195,7 +195,7 @@ interface SDKStreamEvent {
 const THINKING_YIELD_INTERVAL = 3000;
 
 /** Max chars of thinking content to include in a snapshot */
-const THINKING_SNAPSHOT_LENGTH = 200;
+const THINKING_SNAPSHOT_LENGTH = 4000;
 
 // ─── Adapter ─────────────────────────────────────────────────────────────────
 
@@ -251,18 +251,14 @@ export class ClaudeAdapter implements ProviderAdapter {
             thinkingBuffer += event.delta.thinking || '';
             const now = Date.now();
             if (now - lastThinkingYield >= THINKING_YIELD_INTERVAL && thinkingBuffer.length > 0) {
-              const snippet = thinkingBuffer.length > THINKING_SNAPSHOT_LENGTH
-                ? '...' + thinkingBuffer.slice(-THINKING_SNAPSHOT_LENGTH)
-                : thinkingBuffer;
+              const snippet = thinkingBuffer.slice(-THINKING_SNAPSHOT_LENGTH);
               yield { type: 'thinking', content: snippet };
               lastThinkingYield = now;
             }
           }
           // Flush thinking buffer when a content block ends
           if (event.type === 'content_block_stop' && thinkingBuffer.length > 0) {
-            const snippet = thinkingBuffer.length > THINKING_SNAPSHOT_LENGTH
-              ? '...' + thinkingBuffer.slice(-THINKING_SNAPSHOT_LENGTH)
-              : thinkingBuffer;
+            const snippet = thinkingBuffer.slice(-THINKING_SNAPSHOT_LENGTH);
             yield { type: 'thinking', content: snippet };
             thinkingBuffer = '';
             lastThinkingYield = Date.now();

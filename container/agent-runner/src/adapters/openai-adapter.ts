@@ -149,7 +149,7 @@ export class OpenAIAdapter implements ProviderAdapter {
       // Capture reasoning content from o-series models (o1, o3, etc.)
       const { reasoning_content: reasoning } = assistantMessage as ChatCompletionMessageWithReasoning;
       if (reasoning) {
-        const snippet = reasoning.length > 200 ? '...' + reasoning.slice(-200) : reasoning;
+        const snippet = reasoning.slice(-4000);
         yield { type: 'thinking', content: snippet };
       }
 
