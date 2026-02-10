@@ -10,6 +10,12 @@ import { CronExpressionParser } from 'cron-parser';
 import Supermemory from 'supermemory';
 import type { NanoTool, IpcMcpContext, ToolResult } from './types.js';
 import { isCancelled } from './cancel.js';
+import { getComposioClient, getComposioUserId } from './composio.js';
+import type {
+  ToolListParams,
+  ToolExecuteParams,
+} from '@composio/client/resources/tools.js';
+import type { ConnectedAccountListParams } from '@composio/client/resources/connected-accounts.js';
 
 // ─── IPC Constants ──────────────────────────────────────────────────────────
 
@@ -288,7 +294,7 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
         const date = new Date(scheduleValue);
         if (isNaN(date.getTime())) {
           return {
-            content: `Invalid timestamp: "${scheduleValue}". Use ISO 8601 format like "2026-02-01T15:30:00.000Z".`,
+            content: `Invalid timestamp: "${scheduleValue}". Use ISO 8601 local time format like "2026-02-01T15:30:00" (no Z suffix).`,
             isError: true,
           };
         }
@@ -1124,6 +1130,349 @@ If a skill with the same name already exists, it will be overwritten.`,
       } catch (err) {
         return {
           content: `Supermemory search error: ${err instanceof Error ? err.message : String(err)}`,
+          isError: true,
+        };
+      }
+    },
+  },
+
+  // ── Composio (500+ third-party integrations via API) ────────────────────
+
+  {
+    name: 'composio_list_tools',
+    description:
+      'Search and discover available Composio tools by toolkit (e.g., "googlecalendar", "gmail", "slack", "github", "notion") or free-text search. Returns tool slugs, names, and descriptions. Use this first to find which tools are available for a service.',
+    schema: z.object({
+      toolkit_slug: z
+        .string()
+        .optional()
+        .describe(
+          'Filter by toolkit slug (e.g., "googlecalendar", "gmail", "slack", "github", "notion", "linear", "jira")',
+        ),
+      search: z
+        .string()
+        .optional()
+        .describe(
+          'Free-text search query to find tools by name or description (e.g., "create event", "send email")',
+        ),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(100)
+        .optional()
+        .default(20)
+        .describe('Max results to return (default: 20, max: 100)'),
+    }),
+    handler: async (args): Promise<ToolResult> => {
+      const client = getComposioClient();
+      if (!client) {
+        return {
+          content:
+            'COMPOSIO_API_KEY is not set. Ask the admin to configure the Composio API key.',
+          isError: true,
+        };
+      }
+
+      try {
+        const params: ToolListParams = {};
+        if (args.toolkit_slug) params.toolkit_slug = args.toolkit_slug as string;
+        if (args.search) params.search = args.search as string;
+        params.limit = (args.limit as number | undefined) ?? 20;
+
+        const response = await client.tools.list(params);
+        const items = response.items || [];
+
+        if (items.length === 0) {
+          return { content: 'No tools found matching your criteria.' };
+        }
+
+        const formatted = items
+          .map(
+            (t: { slug: string; name: string; description: string; no_auth?: boolean }) =>
+              `- **${t.slug}**: ${t.name}\n  ${t.description.slice(0, 150)}${t.description.length > 150 ? '...' : ''}`,
+          )
+          .join('\n\n');
+
+        return {
+          content: `Found ${items.length} Composio tools (total: ${response.total_items}):\n\n${formatted}`,
+        };
+      } catch (err) {
+        return {
+          content: `Composio list tools error: ${err instanceof Error ? err.message : String(err)}`,
+          isError: true,
+        };
+      }
+    },
+  },
+
+  {
+    name: 'composio_get_tool',
+    description:
+      'Get detailed info about a specific Composio tool, including its input parameters schema. Use this before executing a tool to understand what arguments it needs.',
+    schema: z.object({
+      tool_slug: z
+        .string()
+        .describe(
+          'The tool slug (e.g., "GOOGLECALENDAR_CREATE_EVENT", "GMAIL_SEND_EMAIL")',
+        ),
+    }),
+    handler: async (args): Promise<ToolResult> => {
+      const client = getComposioClient();
+      if (!client) {
+        return {
+          content:
+            'COMPOSIO_API_KEY is not set. Ask the admin to configure the Composio API key.',
+          isError: true,
+        };
+      }
+
+      try {
+        const tool = await client.tools.retrieve(args.tool_slug as string);
+
+        const info = [
+          `**${tool.slug}** (${tool.name})`,
+          `Toolkit: ${tool.toolkit?.name || 'unknown'} (${tool.toolkit?.slug || 'unknown'})`,
+          `Status: ${tool.status}`,
+          `Auth required: ${!tool.no_auth}`,
+          `\nDescription: ${tool.description}`,
+          `\nInput parameters:\n\`\`\`json\n${JSON.stringify(tool.input_parameters, null, 2).slice(0, 3000)}\n\`\`\``,
+        ];
+
+        return { content: info.join('\n') };
+      } catch (err) {
+        return {
+          content: `Composio get tool error: ${err instanceof Error ? err.message : String(err)}`,
+          isError: true,
+        };
+      }
+    },
+  },
+
+  {
+    name: 'composio_execute',
+    description:
+      'Execute a Composio tool with the given arguments. Requires a connected account for tools that need authentication. Use composio_list_connections first to check if the service is connected, and composio_get_tool to see what arguments are needed.',
+    schema: z.object({
+      tool_slug: z
+        .string()
+        .describe(
+          'The tool slug to execute (e.g., "GOOGLECALENDAR_CREATE_EVENT")',
+        ),
+      arguments: z
+        .record(z.string(), z.unknown())
+        .optional()
+        .describe(
+          'Key-value arguments for the tool (check composio_get_tool for required params)',
+        ),
+      text: z
+        .string()
+        .optional()
+        .describe(
+          'Alternative: natural language description of what to do (Composio uses AI to generate arguments)',
+        ),
+      connected_account_id: z
+        .string()
+        .optional()
+        .describe(
+          'Specific connected account ID to use (from composio_list_connections). If omitted, Composio picks the default for this user.',
+        ),
+    }),
+    handler: async (args, ctx): Promise<ToolResult> => {
+      const client = getComposioClient();
+      if (!client) {
+        return {
+          content:
+            'COMPOSIO_API_KEY is not set. Ask the admin to configure the Composio API key.',
+          isError: true,
+        };
+      }
+
+      try {
+        const userId = getComposioUserId(ctx.groupFolder);
+
+        const params: ToolExecuteParams = {
+          user_id: userId,
+        };
+
+        if (args.arguments) {
+          params.arguments = args.arguments as Record<string, unknown>;
+        }
+        if (args.text) {
+          params.text = args.text as string;
+        }
+        if (args.connected_account_id) {
+          params.connected_account_id = args.connected_account_id as string;
+        }
+
+        const response = await client.tools.execute(
+          args.tool_slug as string,
+          params,
+        );
+
+        if (!response.successful) {
+          return {
+            content: `Composio execution failed: ${response.error || 'Unknown error'}\n\nIf this is an auth error, the user may need to connect their account first. Use composio_list_connections to check, or composio_get_connect_url to set up authentication.`,
+            isError: true,
+          };
+        }
+
+        const MAX_SIZE = 50 * 1024; // 50KB
+        let output = JSON.stringify(response.data, null, 2);
+        if (output.length > MAX_SIZE) {
+          output = output.slice(0, MAX_SIZE) + '\n\n[Output truncated at 50KB]';
+        }
+
+        return { content: output };
+      } catch (err) {
+        return {
+          content: `Composio execute error: ${err instanceof Error ? err.message : String(err)}`,
+          isError: true,
+        };
+      }
+    },
+  },
+
+  {
+    name: 'composio_list_connections',
+    description:
+      'List connected accounts for this group. Shows which third-party services (Google, Slack, GitHub, etc.) are already authenticated and ready to use with Composio tools.',
+    schema: z.object({
+      toolkit_slug: z
+        .string()
+        .optional()
+        .describe(
+          'Filter by toolkit (e.g., "googlecalendar", "gmail", "slack")',
+        ),
+    }),
+    handler: async (args, ctx): Promise<ToolResult> => {
+      const client = getComposioClient();
+      if (!client) {
+        return {
+          content:
+            'COMPOSIO_API_KEY is not set. Ask the admin to configure the Composio API key.',
+          isError: true,
+        };
+      }
+
+      try {
+        const userId = getComposioUserId(ctx.groupFolder);
+
+        const params: ConnectedAccountListParams = {
+          user_ids: [userId],
+        };
+        if (args.toolkit_slug) {
+          params.toolkit_slugs = [args.toolkit_slug as string];
+        }
+
+        const response = await client.connectedAccounts.list(params);
+        const accounts = response.items || [];
+
+        if (accounts.length === 0) {
+          return {
+            content: args.toolkit_slug
+              ? `No connected accounts found for toolkit "${args.toolkit_slug}". Use composio_get_connect_url to set up authentication.`
+              : 'No connected accounts found. Use composio_get_connect_url to connect a service.',
+          };
+        }
+
+        const formatted = accounts
+          .map(
+            (a: {
+              id: string;
+              status?: string;
+              toolkit?: { slug?: string; name?: string };
+            }) => {
+              const toolkit = a.toolkit?.name || a.toolkit?.slug || 'unknown';
+              return `- **${a.id}**: ${toolkit} (${a.status || 'unknown'})`;
+            },
+          )
+          .join('\n');
+
+        return {
+          content: `Connected accounts (${accounts.length}):\n${formatted}`,
+        };
+      } catch (err) {
+        return {
+          content: `Composio list connections error: ${err instanceof Error ? err.message : String(err)}`,
+          isError: true,
+        };
+      }
+    },
+  },
+
+  {
+    name: 'composio_get_connect_url',
+    description:
+      'Get an authentication URL to connect a new service (e.g., Google, Slack, GitHub). The user will need to visit this URL to authorize access. You can use browse_navigate to open it in the sandbox browser, or send it to the user via send_message for them to open manually.',
+    schema: z.object({
+      toolkit_slug: z
+        .string()
+        .describe(
+          'The toolkit to connect (e.g., "googlecalendar", "gmail", "slack", "github", "notion")',
+        ),
+      auth_config_id: z
+        .string()
+        .optional()
+        .describe(
+          'Specific auth config ID to use (from Composio dashboard). Usually not needed — auto-detected from toolkit.',
+        ),
+    }),
+    handler: async (args, ctx): Promise<ToolResult> => {
+      const client = getComposioClient();
+      if (!client) {
+        return {
+          content:
+            'COMPOSIO_API_KEY is not set. Ask the admin to configure the Composio API key.',
+          isError: true,
+        };
+      }
+
+      try {
+        const userId = getComposioUserId(ctx.groupFolder);
+        let authConfigId = args.auth_config_id as string | undefined;
+
+        // If no auth_config_id provided, look up the default for this toolkit
+        if (!authConfigId) {
+          const authConfigs = await client.authConfigs.list({
+            toolkit_slug: args.toolkit_slug as string,
+          });
+          const configs = authConfigs.items || [];
+          // Prefer default (Composio-managed) auth configs over custom ones
+          const managed = configs.find(
+            (c: { type?: string }) => c.type === 'default',
+          );
+          const config = managed || configs[0];
+          if (!config) {
+            return {
+              content: `No auth config found for toolkit "${args.toolkit_slug}". You may need to set one up in the Composio dashboard first.`,
+              isError: true,
+            };
+          }
+          authConfigId = config.id;
+        }
+
+        const linkResponse = await client.link.create({
+          user_id: userId,
+          auth_config_id: authConfigId,
+        });
+
+        const url = linkResponse.redirect_url;
+
+        if (!url) {
+          return {
+            content:
+              'Failed to generate connection URL. The toolkit may not be available or may require custom auth configuration in the Composio dashboard.',
+            isError: true,
+          };
+        }
+
+        return {
+          content: `Authentication URL for ${args.toolkit_slug}:\n\n${url}\n\nThe user needs to visit this URL to authorize access. You can:\n1. Use browse_navigate to open it in the sandbox browser\n2. Use send_message to share the URL with the user\n\nAfter authorization, the connection will be available immediately.`,
+        };
+      } catch (err) {
+        return {
+          content: `Composio connect URL error: ${err instanceof Error ? err.message : String(err)}`,
           isError: true,
         };
       }
