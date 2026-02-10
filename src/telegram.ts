@@ -459,7 +459,7 @@ async function verifySelfUpdate(): Promise<void> {
           `Actual: ${currentHead.slice(0, 8)}`,
           `Check ${SELF_UPDATE_LOG} for details.`,
         ];
-    await sendTelegramMessage(marker.chatId, lines.join('\n'));
+    await sendTelegramMessage(makeTelegramChatId(Number(marker.chatId)), lines.join('\n'));
   } catch (err) {
     logger.error({ module: 'telegram', err }, 'Failed to verify self-update');
   }
