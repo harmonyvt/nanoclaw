@@ -92,6 +92,7 @@ import {
   ensureSandbox,
   startIdleWatcher,
 } from './sandbox-manager.js';
+import { isVaultEnabled, processVaultRequest } from './vault-host.js';
 import {
   getTakeoverUrl,
   startCuaTakeoverServer,
@@ -175,6 +176,8 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
   firecrawl_map: 'mapping URLs',
   // Memory
   memory_save: 'saving to memory', memory_search: 'searching memory',
+  // Vault
+  vault_list_items: 'checking vault', vault_get_item: 'retrieving credential',
   // Tasks
   schedule_task: 'scheduling task', list_tasks: 'checking tasks',
   pause_task: 'pausing task', resume_task: 'resuming task',
@@ -1226,6 +1229,78 @@ function startIpcWatcher(): void {
           'Error reading IPC browse directory',
         );
       }
+
+      // Process vault requests from this group's IPC directory
+      if (isVaultEnabled()) {
+      const vaultDir = path.join(ipcBaseDir, sourceGroup, 'vault');
+      try {
+        if (fs.existsSync(vaultDir)) {
+          const reqFiles = fs
+            .readdirSync(vaultDir)
+            .filter((f) => f.startsWith('req-') && f.endsWith('.json'));
+          for (const file of reqFiles) {
+            const filePath = path.join(vaultDir, file);
+            try {
+              const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+              const { id: requestId, action, params } = data;
+              const vaultParams = (params || {}) as Record<string, unknown>;
+
+              const result = await processVaultRequest(
+                requestId,
+                action,
+                vaultParams,
+                sourceGroup,
+              );
+
+              // Write response file (atomic: temp + rename)
+              const resFile = path.join(vaultDir, `res-${requestId}.json`);
+              const tmpFile = `${resFile}.tmp`;
+              fs.writeFileSync(tmpFile, JSON.stringify(result));
+              fs.renameSync(tmpFile, resFile);
+
+              // Clean up request file
+              fs.unlinkSync(filePath);
+
+              logger.debug(
+                { module: 'index', requestId, action, sourceGroup, status: result.status },
+                'Vault request processed',
+              );
+            } catch (err) {
+              logger.error(
+                { module: 'index', file, sourceGroup, err },
+                'Error processing vault request',
+              );
+              // Write error response so agent doesn't hang
+              try {
+                const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+                const resFile = path.join(vaultDir, `res-${data.id}.json`);
+                const tmpFile = `${resFile}.tmp`;
+                fs.writeFileSync(
+                  tmpFile,
+                  JSON.stringify({
+                    status: 'error',
+                    error: err instanceof Error ? err.message : String(err),
+                  }),
+                );
+                fs.renameSync(tmpFile, resFile);
+              } catch {
+                // Can't even write error response
+              }
+              try {
+                fs.unlinkSync(filePath);
+              } catch {
+                // Already cleaned up
+              }
+            }
+          }
+        }
+      } catch (err) {
+        logger.error(
+          { module: 'index', err, sourceGroup },
+          'Error reading IPC vault directory',
+        );
+      }
+      } // isVaultEnabled
 
       // Process status events from this group's IPC directory
       const statusDir = path.join(ipcBaseDir, sourceGroup, 'status');

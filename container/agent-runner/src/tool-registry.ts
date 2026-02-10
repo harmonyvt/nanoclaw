@@ -17,6 +17,7 @@ export const IPC_DIR = '/workspace/ipc';
 export const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
 export const TASKS_DIR = path.join(IPC_DIR, 'tasks');
 export const BROWSE_DIR = path.join(IPC_DIR, 'browse');
+export const VAULT_DIR = path.join(IPC_DIR, 'vault');
 export const SUPERMEMORY_KEY_ENV_VARS = [
   'SUPERMEMORY_API_KEY',
   'SUPERMEMORY_OPENCLAW_API_KEY',
@@ -108,6 +109,54 @@ export async function writeBrowseRequest(
   return {
     status: 'error',
     error: `Browse request timed out after ${timeoutMs / 1000}s`,
+  };
+}
+
+export async function writeVaultRequest(
+  action: string,
+  params: Record<string, unknown>,
+  timeoutMs = 30000,
+): Promise<{
+  status: string;
+  result?: unknown;
+  error?: string;
+}> {
+  fs.mkdirSync(VAULT_DIR, { recursive: true });
+
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const reqFile = path.join(VAULT_DIR, `req-${id}.json`);
+  const resFile = path.join(VAULT_DIR, `res-${id}.json`);
+
+  // Atomic write request
+  const tempReq = `${reqFile}.tmp`;
+  fs.writeFileSync(tempReq, JSON.stringify({ id, action, params }));
+  fs.renameSync(tempReq, reqFile);
+
+  // Poll for response
+  const pollInterval = 500;
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, pollInterval));
+
+    if (isCancelled()) {
+      try { fs.unlinkSync(reqFile); } catch {}
+      try { fs.unlinkSync(resFile); } catch {}
+      return { status: 'error', error: 'Vault request cancelled by user interrupt' };
+    }
+
+    if (fs.existsSync(resFile)) {
+      const data = JSON.parse(fs.readFileSync(resFile, 'utf-8'));
+      try { fs.unlinkSync(reqFile); } catch {}
+      try { fs.unlinkSync(resFile); } catch {}
+      return data;
+    }
+  }
+
+  try { fs.unlinkSync(reqFile); } catch {}
+  return {
+    status: 'error',
+    error: `Vault request timed out after ${timeoutMs / 1000}s`,
   };
 }
 
@@ -1576,6 +1625,92 @@ If a skill with the same name already exists, it will be overwritten.`,
       return {
         content: `File uploaded: ${res.result}`,
       };
+    },
+  },
+
+  // ── 1Password Vault (IPC request/response to host) ─────────────────────
+
+  {
+    name: 'vault_list_items',
+    description:
+      'List all credentials stored in the agent\'s dedicated 1Password vault. Returns item names and categories (no secret values). Use this to discover available credentials before retrieving them with vault_get_item.',
+    schema: z.object({}),
+    handler: async (): Promise<ToolResult> => {
+      const res = await writeVaultRequest('list_items', {});
+      if (res.status === 'error') {
+        return {
+          content: `Vault list failed: ${res.error}`,
+          isError: true,
+        };
+      }
+
+      const items = res.result as Array<{
+        id: string;
+        title: string;
+        category: string;
+        urls?: string[];
+      }>;
+
+      if (!items || items.length === 0) {
+        return { content: 'No items found in the vault.' };
+      }
+
+      const formatted = items
+        .map((item) => {
+          let line = `- ${item.title} (${item.category})`;
+          if (item.urls && item.urls.length > 0) {
+            line += ` [${item.urls.join(', ')}]`;
+          }
+          return line;
+        })
+        .join('\n');
+
+      return { content: `Vault items (${items.length}):\n${formatted}` };
+    },
+  },
+
+  {
+    name: 'vault_get_item',
+    description:
+      'Retrieve login credentials or other fields from a specific item in the agent\'s 1Password vault. Returns all fields including username, password, URLs, and notes. Use this when you need to log into a website during CUA browser automation.',
+    schema: z.object({
+      item_name: z
+        .string()
+        .describe(
+          'The name/title of the item to retrieve (e.g., "Netflix", "GitHub", "Gmail"). Case-insensitive.',
+        ),
+    }),
+    handler: async (args): Promise<ToolResult> => {
+      const res = await writeVaultRequest('get_item', {
+        item_name: args.item_name as string,
+      });
+      if (res.status === 'error') {
+        return {
+          content: `Vault get item failed: ${res.error}`,
+          isError: true,
+        };
+      }
+
+      const item = res.result as {
+        id: string;
+        title: string;
+        category: string;
+        fields: Array<{ label: string; value: string; type: string }>;
+        urls?: string[];
+      };
+
+      const lines: string[] = [`Item: ${item.title} (${item.category})`];
+
+      if (item.urls && item.urls.length > 0) {
+        lines.push(`URLs: ${item.urls.join(', ')}`);
+      }
+
+      lines.push('Fields:');
+      for (const field of item.fields) {
+        lines.push(`  ${field.label}: ${field.value}`);
+      }
+
+      return { content: lines.join('\n') };
     },
   },
 ];
