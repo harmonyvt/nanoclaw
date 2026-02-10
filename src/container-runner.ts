@@ -437,6 +437,7 @@ function resolveCredentials(): CredentialResult {
   // Collect non-auth API keys from .env (always included regardless of auth source)
   const extraVars = [
     'OPENAI_API_KEY',
+    'MINIMAX_API_KEY',
     'FIRECRAWL_API_KEY',
     'SUPERMEMORY_API_KEY',
     'SUPERMEMORY_OPENCLAW_API_KEY',
