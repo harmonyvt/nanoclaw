@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { STORE_DIR } from './config.js';
-import { NewMessage, ScheduledTask, TaskRunLog } from './types.js';
+import { NewMessage, ScheduledTask, TaskRunLog, Thread } from './types.js';
 
 let db: Database;
 
@@ -87,6 +87,34 @@ export function initDatabase(): void {
   } catch {
     /* column already exists */
   }
+
+  // Thread_id column on messages (migration for existing DBs)
+  try {
+    db.exec(`ALTER TABLE messages ADD COLUMN thread_id TEXT`);
+  } catch {
+    /* column already exists */
+  }
+
+  // Threads tables
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS threads (
+      id TEXT PRIMARY KEY,
+      chat_jid TEXT NOT NULL,
+      name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      session_id TEXT,
+      FOREIGN KEY (chat_jid) REFERENCES chats(jid)
+    );
+    CREATE INDEX IF NOT EXISTS idx_threads_chat ON threads(chat_jid);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_threads_chat_name ON threads(chat_jid, name COLLATE NOCASE);
+
+    CREATE TABLE IF NOT EXISTS active_threads (
+      chat_jid TEXT PRIMARY KEY,
+      thread_id TEXT NOT NULL,
+      FOREIGN KEY (thread_id) REFERENCES threads(id)
+    );
+  `);
 
   // Dashboard log tables
   db.exec(`
@@ -183,9 +211,10 @@ export function storeTextMessage(
   content: string,
   timestamp: string,
   isFromMe: boolean,
+  threadId?: string,
 ): void {
   db.prepare(
-    `INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, thread_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     msgId,
     chatJid,
@@ -194,6 +223,7 @@ export function storeTextMessage(
     content,
     timestamp,
     isFromMe ? 1 : 0,
+    threadId ?? null,
   );
 }
 
@@ -211,9 +241,10 @@ export function storeMediaMessage(
   isFromMe: boolean,
   mediaType: string,
   mediaPath: string,
+  threadId?: string,
 ): void {
   db.prepare(
-    `INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, media_type, media_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, media_type, media_path, thread_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     msgId,
     chatJid,
@@ -224,6 +255,7 @@ export function storeMediaMessage(
     isFromMe ? 1 : 0,
     mediaType,
     mediaPath,
+    threadId ?? null,
   );
 }
 
@@ -237,7 +269,7 @@ export function getNewMessages(
   const placeholders = jids.map(() => '?').join(',');
   // Filter out bot's own messages by checking content prefix (not is_from_me, since user shares the account)
   const sql = `
-    SELECT id, chat_jid, sender, sender_name, content, timestamp, media_type, media_path
+    SELECT id, chat_jid, sender, sender_name, content, timestamp, media_type, media_path, thread_id
     FROM messages
     WHERE timestamp > ? AND chat_jid IN (${placeholders}) AND content NOT LIKE ?
     ORDER BY timestamp
@@ -259,10 +291,26 @@ export function getMessagesSince(
   chatJid: string,
   sinceTimestamp: string,
   botPrefix: string,
+  threadId?: string,
 ): NewMessage[] {
   // Filter out bot's own messages by checking content prefix
+  if (threadId) {
+    const includeNull = isDefaultThread(chatJid, threadId);
+    const threadFilter = includeNull
+      ? '(thread_id = ? OR thread_id IS NULL)'
+      : 'thread_id = ?';
+    const sql = `
+      SELECT id, chat_jid, sender, sender_name, content, timestamp, media_type, media_path, thread_id
+      FROM messages
+      WHERE chat_jid = ? AND timestamp > ? AND content NOT LIKE ? AND ${threadFilter}
+      ORDER BY timestamp
+    `;
+    return db
+      .prepare(sql)
+      .all(chatJid, sinceTimestamp, `${botPrefix}:%`, threadId) as NewMessage[];
+  }
   const sql = `
-    SELECT id, chat_jid, sender, sender_name, content, timestamp, media_type, media_path
+    SELECT id, chat_jid, sender, sender_name, content, timestamp, media_type, media_path, thread_id
     FROM messages
     WHERE chat_jid = ? AND timestamp > ? AND content NOT LIKE ?
     ORDER BY timestamp
@@ -660,4 +708,157 @@ export function getAllTaskRunLogs(
     group_folder: string;
     schedule_type: string;
   })[];
+}
+
+// ── Thread functions ────────────────────────────────────────────────────
+
+export function createThread(
+  id: string,
+  chatJid: string,
+  name: string,
+  sessionId?: string,
+): Thread {
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO threads (id, chat_jid, name, created_at, updated_at, session_id) VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(id, chatJid, name, now, now, sessionId ?? null);
+  return { id, chat_jid: chatJid, name, created_at: now, updated_at: now, session_id: sessionId ?? null };
+}
+
+export function getThread(id: string): Thread | undefined {
+  return db.prepare('SELECT * FROM threads WHERE id = ?').get(id) as Thread | undefined;
+}
+
+export function getThreadByName(chatJid: string, name: string): Thread | undefined {
+  return db
+    .prepare('SELECT * FROM threads WHERE chat_jid = ? AND name = ? COLLATE NOCASE')
+    .get(chatJid, name) as Thread | undefined;
+}
+
+export function getThreadsForChat(chatJid: string): Thread[] {
+  return db
+    .prepare('SELECT * FROM threads WHERE chat_jid = ? ORDER BY updated_at DESC')
+    .all(chatJid) as Thread[];
+}
+
+export function getActiveThread(chatJid: string): Thread | undefined {
+  const row = db
+    .prepare(
+      `SELECT t.* FROM threads t
+       JOIN active_threads at ON t.id = at.thread_id
+       WHERE at.chat_jid = ?`,
+    )
+    .get(chatJid) as Thread | undefined;
+  return row;
+}
+
+export function setActiveThread(chatJid: string, threadId: string): void {
+  db.prepare(
+    `INSERT INTO active_threads (chat_jid, thread_id) VALUES (?, ?)
+     ON CONFLICT(chat_jid) DO UPDATE SET thread_id = excluded.thread_id`,
+  ).run(chatJid, threadId);
+}
+
+export function updateThreadSession(threadId: string, sessionId: string | null): void {
+  db.prepare(
+    `UPDATE threads SET session_id = ?, updated_at = ? WHERE id = ?`,
+  ).run(sessionId, new Date().toISOString(), threadId);
+}
+
+export function updateThreadTimestamp(threadId: string): void {
+  db.prepare(
+    `UPDATE threads SET updated_at = ? WHERE id = ?`,
+  ).run(new Date().toISOString(), threadId);
+}
+
+export function renameThread(threadId: string, newName: string): void {
+  db.prepare(
+    `UPDATE threads SET name = ?, updated_at = ? WHERE id = ?`,
+  ).run(newName, new Date().toISOString(), threadId);
+}
+
+export function deleteThread(threadId: string): void {
+  // Remove active_threads reference if this was the active thread
+  db.prepare('DELETE FROM active_threads WHERE thread_id = ?').run(threadId);
+  // Clear thread_id from messages (don't delete the messages)
+  db.prepare('UPDATE messages SET thread_id = NULL WHERE thread_id = ?').run(threadId);
+  db.prepare('DELETE FROM threads WHERE id = ?').run(threadId);
+}
+
+export function getThreadMessageCount(threadId: string, chatJid?: string): number {
+  const includeNull = chatJid && isDefaultThread(chatJid, threadId);
+  const sql = includeNull
+    ? 'SELECT COUNT(*) as count FROM messages WHERE (thread_id = ? OR thread_id IS NULL)'
+    : 'SELECT COUNT(*) as count FROM messages WHERE thread_id = ?';
+  const row = db.prepare(sql).get(threadId) as { count: number } | undefined;
+  return row?.count ?? 0;
+}
+
+export function getThreadMessages(
+  threadId: string,
+  limit = 50,
+  offset = 0,
+  chatJid?: string,
+): NewMessage[] {
+  const includeNull = chatJid && isDefaultThread(chatJid, threadId);
+  const sql = includeNull
+    ? `SELECT id, chat_jid, sender, sender_name, content, timestamp, media_type, media_path, thread_id
+       FROM messages WHERE (thread_id = ? OR thread_id IS NULL) ORDER BY timestamp DESC LIMIT ? OFFSET ?`
+    : `SELECT id, chat_jid, sender, sender_name, content, timestamp, media_type, media_path, thread_id
+       FROM messages WHERE thread_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?`;
+  return db.prepare(sql).all(threadId, limit, offset) as NewMessage[];
+}
+
+/**
+ * Ensure a default thread exists for a chat. Returns the active thread.
+ * If no threads exist, creates a "Default" thread and sets it as active.
+ */
+export function ensureDefaultThread(chatJid: string): Thread {
+  const active = getActiveThread(chatJid);
+  if (active) return active;
+
+  // Check if any threads exist
+  const threads = getThreadsForChat(chatJid);
+  if (threads.length > 0) {
+    // Activate the most recently updated thread
+    setActiveThread(chatJid, threads[0].id);
+    return threads[0];
+  }
+
+  // Create default thread
+  const id = `thread-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const thread = createThread(id, chatJid, 'Default');
+  setActiveThread(chatJid, thread.id);
+  return thread;
+}
+
+/**
+ * Check if a chat_jid exists in the chats table.
+ */
+export function chatExists(chatJid: string): boolean {
+  const row = db
+    .prepare('SELECT 1 FROM chats WHERE jid = ?')
+    .get(chatJid);
+  return !!row;
+}
+
+/**
+ * Check if a thread is the oldest (default) thread for its chat.
+ * Legacy messages (thread_id IS NULL) are included in the default thread's context.
+ */
+export function isDefaultThread(chatJid: string, threadId: string): boolean {
+  const oldest = db
+    .prepare('SELECT id FROM threads WHERE chat_jid = ? ORDER BY created_at ASC LIMIT 1')
+    .get(chatJid) as { id: string } | undefined;
+  return oldest?.id === threadId;
+}
+
+/**
+ * Get all distinct chat_jids that have at least one thread.
+ */
+export function getChatsWithThreads(): string[] {
+  const rows = db
+    .prepare('SELECT DISTINCT chat_jid FROM threads ORDER BY chat_jid')
+    .all() as { chat_jid: string }[];
+  return rows.map(r => r.chat_jid);
 }
