@@ -962,7 +962,7 @@ async function handleFileTransfer(req: Request): Promise<Response> {
 
       if (base64Content.length <= CHUNK_SIZE) {
         await runCuaCommand('run_command', {
-          command: `echo '${base64Content}' | base64 -d > ${shellSingleQuote(cuaDest)}`,
+          command: `printf '%s' '${base64Content}' | base64 -d > ${shellSingleQuote(cuaDest)}`,
         });
       } else {
         const totalChunks = Math.ceil(base64Content.length / CHUNK_SIZE);
@@ -970,7 +970,7 @@ async function handleFileTransfer(req: Request): Promise<Response> {
           const chunk = base64Content.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
           const redirect = i === 0 ? '>' : '>>';
           await runCuaCommand('run_command', {
-            command: `echo '${chunk}' | base64 -d ${redirect} ${shellSingleQuote(cuaDest)}`,
+            command: `printf '%s' '${chunk}' | base64 -d ${redirect} ${shellSingleQuote(cuaDest)}`,
           });
         }
       }
