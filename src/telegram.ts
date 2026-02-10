@@ -11,6 +11,7 @@ import {
   TELEGRAM_OWNER_ID,
   makeTelegramChatId,
   extractTelegramChatId,
+  DEFAULT_PROVIDER,
 } from './config.js';
 
 import {
@@ -726,9 +727,14 @@ export async function connectTelegram(
     const uptimeHours = Math.floor(uptimeMs / 3600000);
     const uptimeMinutes = Math.floor((uptimeMs % 3600000) / 60000);
 
+    const provider = group?.providerConfig?.provider || DEFAULT_PROVIDER;
+    const model = group?.providerConfig?.model || '(default)';
+
     const lines = [
       `Session: ${sessionId ? 'active' : 'none'}`,
       `Group: ${group ? group.name : 'unregistered'}`,
+      `Provider: ${provider}`,
+      `Model: ${model}`,
       `Messages: ${messageCount}`,
       `Uptime: ${uptimeHours}h ${uptimeMinutes}m`,
       `Version: v${APP_VERSION}`,
