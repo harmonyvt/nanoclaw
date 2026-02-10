@@ -26,6 +26,7 @@ import {
 import {
   AvailableGroup,
   cleanupOrphanPersistentContainers,
+  ensureAgentImage,
   interruptContainer,
   killAllContainers,
   runContainerAgent,
@@ -1664,7 +1665,7 @@ function ensureContainerSystemRunning(): void {
   }
 }
 
-function ensureDockerImageRequirements(): void {
+async function ensureDockerImageRequirements(): Promise<void> {
   if (CUA_SANDBOX_IMAGE_IS_LEGACY) {
     logger.warn(
       {
@@ -1676,15 +1677,11 @@ function ensureDockerImageRequirements(): void {
     );
   }
 
-  try {
-    execSync(`docker image inspect ${CONTAINER_IMAGE}`, { stdio: 'pipe' });
+  const imageReady = await ensureAgentImage();
+  if (imageReady) {
     logger.debug({ module: 'index', image: CONTAINER_IMAGE }, 'Agent image is available');
-  } catch {
-    logger.error(
-      { module: 'index', image: CONTAINER_IMAGE },
-      'Agent Docker image is missing. Build it with ./container/build.sh',
-    );
-    throw new Error(`Missing Docker image: ${CONTAINER_IMAGE}`);
+  } else {
+    throw new Error(`Missing Docker image: ${CONTAINER_IMAGE} (auto-rebuild failed)`);
   }
 
   try {
@@ -1732,7 +1729,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   ensureContainerSystemRunning();
-  ensureDockerImageRequirements();
+  await ensureDockerImageRequirements();
   cleanupOrphanPersistentContainers();
   initDatabase();
   logger.info({ module: 'index' }, 'Database initialized');
