@@ -294,10 +294,14 @@ export function getMessagesSince(
 ): NewMessage[] {
   // Filter out bot's own messages by checking content prefix
   if (threadId) {
+    const includeNull = isDefaultThread(chatJid, threadId);
+    const threadFilter = includeNull
+      ? '(thread_id = ? OR thread_id IS NULL)'
+      : 'thread_id = ?';
     const sql = `
       SELECT id, chat_jid, sender, sender_name, content, timestamp, media_type, media_path, thread_id
       FROM messages
-      WHERE chat_jid = ? AND timestamp > ? AND content NOT LIKE ? AND (thread_id = ? OR thread_id IS NULL)
+      WHERE chat_jid = ? AND timestamp > ? AND content NOT LIKE ? AND ${threadFilter}
       ORDER BY timestamp
     `;
     return db
@@ -780,10 +784,12 @@ export function deleteThread(threadId: string): void {
   db.prepare('DELETE FROM threads WHERE id = ?').run(threadId);
 }
 
-export function getThreadMessageCount(threadId: string): number {
-  const row = db
-    .prepare('SELECT COUNT(*) as count FROM messages WHERE thread_id = ?')
-    .get(threadId) as { count: number } | undefined;
+export function getThreadMessageCount(threadId: string, chatJid?: string): number {
+  const includeNull = chatJid && isDefaultThread(chatJid, threadId);
+  const sql = includeNull
+    ? 'SELECT COUNT(*) as count FROM messages WHERE (thread_id = ? OR thread_id IS NULL)'
+    : 'SELECT COUNT(*) as count FROM messages WHERE thread_id = ?';
+  const row = db.prepare(sql).get(threadId) as { count: number } | undefined;
   return row?.count ?? 0;
 }
 
@@ -791,13 +797,15 @@ export function getThreadMessages(
   threadId: string,
   limit = 50,
   offset = 0,
+  chatJid?: string,
 ): NewMessage[] {
-  return db
-    .prepare(
-      `SELECT id, chat_jid, sender, sender_name, content, timestamp, media_type, media_path, thread_id
-       FROM messages WHERE thread_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?`,
-    )
-    .all(threadId, limit, offset) as NewMessage[];
+  const includeNull = chatJid && isDefaultThread(chatJid, threadId);
+  const sql = includeNull
+    ? `SELECT id, chat_jid, sender, sender_name, content, timestamp, media_type, media_path, thread_id
+       FROM messages WHERE (thread_id = ? OR thread_id IS NULL) ORDER BY timestamp DESC LIMIT ? OFFSET ?`
+    : `SELECT id, chat_jid, sender, sender_name, content, timestamp, media_type, media_path, thread_id
+       FROM messages WHERE thread_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?`;
+  return db.prepare(sql).all(threadId, limit, offset) as NewMessage[];
 }
 
 /**
@@ -821,6 +829,27 @@ export function ensureDefaultThread(chatJid: string): Thread {
   const thread = createThread(id, chatJid, 'Default');
   setActiveThread(chatJid, thread.id);
   return thread;
+}
+
+/**
+ * Check if a chat_jid exists in the chats table.
+ */
+export function chatExists(chatJid: string): boolean {
+  const row = db
+    .prepare('SELECT 1 FROM chats WHERE jid = ?')
+    .get(chatJid);
+  return !!row;
+}
+
+/**
+ * Check if a thread is the oldest (default) thread for its chat.
+ * Legacy messages (thread_id IS NULL) are included in the default thread's context.
+ */
+export function isDefaultThread(chatJid: string, threadId: string): boolean {
+  const oldest = db
+    .prepare('SELECT id FROM threads WHERE chat_jid = ? ORDER BY created_at ASC LIMIT 1')
+    .get(chatJid) as { id: string } | undefined;
+  return oldest?.id === threadId;
 }
 
 /**

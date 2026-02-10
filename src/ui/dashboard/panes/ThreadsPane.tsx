@@ -62,8 +62,8 @@ export function ThreadsPane({ initialChatJid, initialThreadId }: ThreadsPaneProp
       setActiveThreadId(data.active_thread_id);
       setError(null);
       return data;
-    } catch (err: any) {
-      setError(err?.message || 'Failed to load threads');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to load threads');
       return null;
     }
   }, []);
@@ -77,8 +77,8 @@ export function ThreadsPane({ initialChatJid, initialThreadId }: ThreadsPaneProp
       setMessageTotal(data.total);
       // Scroll to bottom after render
       setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
-    } catch (err: any) {
-      setError(err?.message || 'Failed to load messages');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to load messages');
     }
   }, []);
 
@@ -143,8 +143,8 @@ export function ThreadsPane({ initialChatJid, initialThreadId }: ThreadsPaneProp
       });
       setActiveThreadId(threadId);
       await loadThreads(chatJid);
-    } catch (err: any) {
-      setError(err?.message || 'Failed to switch thread');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to switch thread');
     }
   }, [chatJid, loadThreads]);
 
@@ -162,8 +162,8 @@ export function ThreadsPane({ initialChatJid, initialThreadId }: ThreadsPaneProp
       setSelectedThread({ ...created, is_active: false, message_count: 0 });
       setMessages([]);
       setMessageTotal(0);
-    } catch (err: any) {
-      setError(err?.message || 'Failed to create thread');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to create thread');
     }
   }, [chatJid, newName, loadThreads]);
 
@@ -181,8 +181,8 @@ export function ThreadsPane({ initialChatJid, initialThreadId }: ThreadsPaneProp
       if (selectedThread?.id === threadId) {
         setSelectedThread(prev => prev ? { ...prev, name: renameValue.trim() } : null);
       }
-    } catch (err: any) {
-      setError(err?.message || 'Failed to rename thread');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to rename thread');
     }
   }, [chatJid, renameValue, loadThreads, selectedThread]);
 
@@ -199,8 +199,8 @@ export function ThreadsPane({ initialChatJid, initialThreadId }: ThreadsPaneProp
         setMessages([]);
       }
       await loadThreads(chatJid);
-    } catch (err: any) {
-      setError(err?.message || 'Failed to delete thread');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to delete thread');
     }
   }, [chatJid, selectedThread, loadThreads]);
 
