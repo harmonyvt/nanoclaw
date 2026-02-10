@@ -15,12 +15,10 @@ import type {
   ContentBlockParam,
   ToolResultBlockParam,
   Tool,
-  ContentBlock,
   ToolUseBlock,
   TextBlock,
 } from '@anthropic-ai/sdk/resources/messages';
 import { z } from 'zod';
-import fs from 'fs';
 import type { ProviderAdapter, AdapterInput, AgentEvent } from '../types.js';
 import { buildSystemPrompt } from './openai-adapter.js';
 import { executeNanoTool } from './openai-tools.js';
@@ -72,6 +70,34 @@ function generateSessionId(): string {
   return `${timestamp}-${random}`;
 }
 
+/**
+ * Convert stored session messages back to Anthropic MessageParam[].
+ * Only restores user/assistant messages with compatible content shapes.
+ */
+function sessionToMessages(history: SessionMessage[]): MessageParam[] {
+  const messages: MessageParam[] = [];
+  for (const msg of history) {
+    if (msg.role === 'system') continue;
+    if (msg.role === 'user' || msg.role === 'assistant') {
+      messages.push({
+        role: msg.role,
+        content: msg.content as MessageParam['content'],
+      });
+    }
+  }
+  return messages;
+}
+
+/**
+ * Convert Anthropic MessageParam[] to generic session messages for persistence.
+ */
+function messagesToSession(messages: MessageParam[]): SessionMessage[] {
+  return messages.map((msg) => ({
+    role: msg.role,
+    content: msg.content as SessionMessage['content'],
+  }));
+}
+
 // ─── Adapter ────────────────────────────────────────────────────────────────
 
 export class MinimaxAdapter implements ProviderAdapter {
@@ -85,14 +111,12 @@ export class MinimaxAdapter implements ProviderAdapter {
     const sessionId = input.sessionId || generateSessionId();
     yield { type: 'session_init', sessionId };
 
-    const history = loadHistory(input.sessionId, SESSIONS_DIR);
+    const history = loadHistory(sessionId, SESSIONS_DIR);
     const systemPrompt = buildSystemPrompt(input);
     const tools = buildAnthropicTools();
 
     // Restore previous messages (excluding system, we pass it separately)
-    const restoredHistory = history.filter(
-      (m) => m.role !== 'system',
-    ) as unknown as MessageParam[];
+    const restoredHistory = sessionToMessages(history);
 
     // Build messages array: history + new user message
     const messages: MessageParam[] = [
@@ -189,7 +213,6 @@ export class MinimaxAdapter implements ProviderAdapter {
     }
 
     // Save conversation history
-    const toSave = messages as unknown as SessionMessage[];
-    saveHistory(sessionId, toSave, SESSIONS_DIR);
+    saveHistory(sessionId, messagesToSession(messages), SESSIONS_DIR);
   }
 }
