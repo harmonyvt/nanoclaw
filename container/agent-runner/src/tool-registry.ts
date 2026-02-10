@@ -11,6 +11,11 @@ import Supermemory from 'supermemory';
 import type { NanoTool, IpcMcpContext, ToolResult } from './types.js';
 import { isCancelled } from './cancel.js';
 import { getComposioClient, getComposioUserId } from './composio.js';
+import type {
+  ToolListParams,
+  ToolExecuteParams,
+} from '@composio/client/resources/tools.js';
+import type { ConnectedAccountListParams } from '@composio/client/resources/connected-accounts.js';
 
 // ─── IPC Constants ──────────────────────────────────────────────────────────
 
@@ -289,7 +294,7 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
         const date = new Date(scheduleValue);
         if (isNaN(date.getTime())) {
           return {
-            content: `Invalid timestamp: "${scheduleValue}". Use ISO 8601 format like "2026-02-01T15:30:00.000Z".`,
+            content: `Invalid timestamp: "${scheduleValue}". Use ISO 8601 local time format like "2026-02-01T15:30:00" (no Z suffix).`,
             isError: true,
           };
         }
@@ -1138,7 +1143,7 @@ If a skill with the same name already exists, it will be overwritten.`,
     description:
       'Search and discover available Composio tools by toolkit (e.g., "googlecalendar", "gmail", "slack", "github", "notion") or free-text search. Returns tool slugs, names, and descriptions. Use this first to find which tools are available for a service.',
     schema: z.object({
-      toolkit: z
+      toolkit_slug: z
         .string()
         .optional()
         .describe(
@@ -1152,7 +1157,11 @@ If a skill with the same name already exists, it will be overwritten.`,
         ),
       limit: z
         .number()
+        .int()
+        .min(1)
+        .max(100)
         .optional()
+        .default(20)
         .describe('Max results to return (default: 20, max: 100)'),
     }),
     handler: async (args): Promise<ToolResult> => {
@@ -1166,12 +1175,12 @@ If a skill with the same name already exists, it will be overwritten.`,
       }
 
       try {
-        const params: Record<string, unknown> = {};
-        if (args.toolkit) params.toolkit_slug = args.toolkit as string;
+        const params: ToolListParams = {};
+        if (args.toolkit_slug) params.toolkit_slug = args.toolkit_slug as string;
         if (args.search) params.search = args.search as string;
-        params.limit = Math.min((args.limit as number) || 20, 100);
+        params.limit = (args.limit as number | undefined) ?? 20;
 
-        const response = await client.tools.list(params as any);
+        const response = await client.tools.list(params);
         const items = response.items || [];
 
         if (items.length === 0) {
@@ -1282,12 +1291,12 @@ If a skill with the same name already exists, it will be overwritten.`,
       try {
         const userId = getComposioUserId(ctx.groupFolder);
 
-        const params: Record<string, unknown> = {
+        const params: ToolExecuteParams = {
           user_id: userId,
         };
 
         if (args.arguments) {
-          params.arguments = args.arguments;
+          params.arguments = args.arguments as Record<string, unknown>;
         }
         if (args.text) {
           params.text = args.text as string;
@@ -1298,7 +1307,7 @@ If a skill with the same name already exists, it will be overwritten.`,
 
         const response = await client.tools.execute(
           args.tool_slug as string,
-          params as any,
+          params,
         );
 
         if (!response.successful) {
@@ -1349,14 +1358,14 @@ If a skill with the same name already exists, it will be overwritten.`,
       try {
         const userId = getComposioUserId(ctx.groupFolder);
 
-        const params: Record<string, unknown> = {
+        const params: ConnectedAccountListParams = {
           user_ids: [userId],
         };
         if (args.toolkit_slug) {
           params.toolkit_slugs = [args.toolkit_slug as string];
         }
 
-        const response = await client.connectedAccounts.list(params as any);
+        const response = await client.connectedAccounts.list(params);
         const accounts = response.items || [];
 
         if (accounts.length === 0) {
