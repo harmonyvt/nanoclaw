@@ -13,6 +13,8 @@ data/
 groups/*/media/
 groups/*/logs/
 groups/*/trajectory/
+groups/*/.openai-sessions/
+groups/*/.minimax-sessions/
 
 # Secrets
 *.keys.json

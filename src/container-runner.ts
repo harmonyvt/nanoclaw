@@ -39,6 +39,73 @@ const HEARTBEAT_STALE_THRESHOLD = 30_000;           // Heartbeat older than 30s 
 // Use env var to force one-shot mode
 const FORCE_ONESHOT = process.env.NANOCLAW_ONESHOT === '1';
 
+// ─── Agent Image Self-Heal ──────────────────────────────────────────────────
+
+let imageRebuilding: Promise<boolean> | null = null;
+
+function isAgentImagePresent(): boolean {
+  try {
+    execSync(`docker image inspect ${CONTAINER_IMAGE}`, { stdio: 'pipe', timeout: 5000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function looksLikeImageMissing(errorText: string): boolean {
+  return /No such image|Unable to find image|manifest unknown|image.*not found/i.test(errorText);
+}
+
+async function rebuildAgentImage(): Promise<boolean> {
+  const buildScript = path.join(process.cwd(), 'container', 'build.sh');
+  if (!fs.existsSync(buildScript)) {
+    logger.error({ module: 'container' }, 'container/build.sh not found, cannot auto-rebuild agent image');
+    return false;
+  }
+  logger.warn(
+    { module: 'container', image: CONTAINER_IMAGE },
+    'Agent image missing, auto-rebuilding via container/build.sh...',
+  );
+  try {
+    execSync(`bash "${buildScript}"`, {
+      stdio: 'pipe',
+      timeout: 300_000,
+      cwd: path.dirname(buildScript),
+    });
+    logger.info(
+      { module: 'container', image: CONTAINER_IMAGE },
+      'Agent image rebuilt successfully',
+    );
+    return true;
+  } catch (err) {
+    logger.error(
+      { module: 'container', image: CONTAINER_IMAGE, err },
+      'Failed to rebuild agent image',
+    );
+    return false;
+  }
+}
+
+/**
+ * Ensure the agent Docker image exists, rebuilding it if missing.
+ * Concurrent callers share a single rebuild to avoid racing builds.
+ */
+export async function ensureAgentImage(): Promise<boolean> {
+  if (isAgentImagePresent()) return true;
+
+  // Coalesce concurrent rebuild attempts
+  if (imageRebuilding) {
+    await imageRebuilding;
+    return isAgentImagePresent();
+  }
+
+  imageRebuilding = rebuildAgentImage().finally(() => {
+    imageRebuilding = null;
+  });
+  await imageRebuilding;
+  return isAgentImagePresent();
+}
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export interface ContainerInput {
@@ -370,6 +437,7 @@ function resolveCredentials(): CredentialResult {
   // Collect non-auth API keys from .env (always included regardless of auth source)
   const extraVars = [
     'OPENAI_API_KEY',
+    'MINIMAX_API_KEY',
     'FIRECRAWL_API_KEY',
     'SUPERMEMORY_API_KEY',
     'SUPERMEMORY_OPENCLAW_API_KEY',
@@ -1166,11 +1234,42 @@ async function getOrStartContainer(
       timeout: 30000,
     }).trim();
   } catch (err) {
-    logger.error(
-      { module: 'container', group: group.name, error: err },
-      'Failed to start persistent container',
-    );
-    return null;
+    const errMsg = err instanceof Error ? err.message : String(err);
+
+    // Self-heal: if the image was pruned, rebuild and retry once
+    if (looksLikeImageMissing(errMsg)) {
+      logger.warn(
+        { module: 'container', group: group.name },
+        'Persistent container start failed due to missing image, attempting rebuild',
+      );
+      const rebuilt = await ensureAgentImage();
+      if (rebuilt) {
+        try {
+          containerId = execSync(`docker ${containerArgs.join(' ')}`, {
+            encoding: 'utf-8',
+            timeout: 30000,
+          }).trim();
+        } catch (retryErr) {
+          logger.error(
+            { module: 'container', group: group.name, error: retryErr },
+            'Failed to start persistent container after image rebuild',
+          );
+          return null;
+        }
+      } else {
+        logger.error(
+          { module: 'container', group: group.name },
+          'Image rebuild failed, cannot start persistent container',
+        );
+        return null;
+      }
+    } else {
+      logger.error(
+        { module: 'container', group: group.name, error: err },
+        'Failed to start persistent container',
+      );
+      return null;
+    }
   }
 
   logger.info(
@@ -1446,15 +1545,28 @@ export function interruptContainer(
 /**
  * Run a container agent for the given group and input.
  * Uses persistent mode by default, falls back to one-shot if needed.
+ * If the run fails due to a missing image, auto-rebuilds and retries once.
  */
 export async function runContainerAgent(
   group: RegisteredGroup,
   input: ContainerInput,
 ): Promise<ContainerOutput> {
-  if (FORCE_ONESHOT) {
-    return runOneShotContainer(group, input);
+  const run = FORCE_ONESHOT ? runOneShotContainer : runPersistentContainer;
+  const result = await run(group, input);
+
+  // Self-heal: if the error looks like a missing image, rebuild and retry once
+  if (result.status === 'error' && result.error && looksLikeImageMissing(result.error)) {
+    logger.warn(
+      { module: 'container', group: group.name },
+      'Container run failed due to missing image, attempting auto-rebuild and retry',
+    );
+    const rebuilt = await ensureAgentImage();
+    if (rebuilt) {
+      return run(group, input);
+    }
   }
-  return runPersistentContainer(group, input);
+
+  return result;
 }
 
 /**
