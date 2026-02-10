@@ -40,8 +40,8 @@ interface VaultRequestResult {
 // ─── State ──────────────────────────────────────────────────────────────────
 
 // Lazy-initialized 1Password SDK client
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let sdkClient: any = null;
+type OnePasswordClient = Awaited<ReturnType<typeof import('@1password/sdk').createClient>>;
+let sdkClient: OnePasswordClient | null = null;
 let cachedVaultId: string | null = null;
 
 // ─── SDK Initialization ─────────────────────────────────────────────────────
@@ -54,8 +54,7 @@ export function isVaultEnabled(): boolean {
  * Lazily initialize the 1Password SDK client.
  * Returns null if the SDK is not available or token is not configured.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function getClient(): Promise<any> {
+async function getClient(): Promise<OnePasswordClient | null> {
   if (sdkClient) return sdkClient;
 
   if (!OP_SERVICE_ACCOUNT_TOKEN) {
@@ -91,16 +90,15 @@ async function getVaultId(): Promise<string | null> {
   if (!client) return null;
 
   try {
-    const vaults = await client.vaults.listAll();
-    for await (const vault of vaults) {
-      if (vault.title === OP_VAULT_NAME) {
-        cachedVaultId = vault.id;
-        logger.info(
-          { module: 'vault', vaultName: OP_VAULT_NAME, vaultId: cachedVaultId },
-          'Vault found',
-        );
-        return cachedVaultId;
-      }
+    const vaults = await client.vaults.list();
+    const match = vaults.find((v) => v.title === OP_VAULT_NAME);
+    if (match) {
+      cachedVaultId = match.id;
+      logger.info(
+        { module: 'vault', vaultName: OP_VAULT_NAME, vaultId: cachedVaultId },
+        'Vault found',
+      );
+      return cachedVaultId;
     }
     logger.error(
       { module: 'vault', vaultName: OP_VAULT_NAME },
@@ -126,17 +124,12 @@ async function listItems(): Promise<VaultItem[]> {
   const vaultId = await getVaultId();
   if (!vaultId) throw new Error(`Vault "${OP_VAULT_NAME}" not found`);
 
-  const items: VaultItem[] = [];
-  const itemList = await client.items.listAll(vaultId);
-  for await (const item of itemList) {
-    items.push({
-      id: item.id,
-      title: item.title,
-      category: item.category || 'Unknown',
-    });
-  }
-
-  return items;
+  const itemList = await client.items.list(vaultId);
+  return itemList.map((item) => ({
+    id: item.id,
+    title: item.title,
+    category: item.category || 'Unknown',
+  }));
 }
 
 /**
@@ -151,15 +144,11 @@ async function getItem(itemTitle: string): Promise<VaultItemDetail> {
   if (!vaultId) throw new Error(`Vault "${OP_VAULT_NAME}" not found`);
 
   // Find item by title
-  const itemList = await client.items.listAll(vaultId);
-  let targetItemId: string | null = null;
-
-  for await (const item of itemList) {
-    if (item.title.toLowerCase() === itemTitle.toLowerCase()) {
-      targetItemId = item.id;
-      break;
-    }
-  }
+  const itemList = await client.items.list(vaultId);
+  const target = itemList.find(
+    (item) => item.title.toLowerCase() === itemTitle.toLowerCase(),
+  );
+  const targetItemId = target?.id ?? null;
 
   if (!targetItemId) {
     throw new Error(
@@ -184,9 +173,9 @@ async function getItem(itemTitle: string): Promise<VaultItemDetail> {
   }
 
   const urls: string[] = [];
-  if (fullItem.urls) {
-    for (const url of fullItem.urls) {
-      if (url.href) urls.push(url.href);
+  if (fullItem.websites) {
+    for (const website of fullItem.websites) {
+      if (website.url) urls.push(website.url);
     }
   }
 

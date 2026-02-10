@@ -1231,6 +1231,7 @@ function startIpcWatcher(): void {
       }
 
       // Process vault requests from this group's IPC directory
+      if (isVaultEnabled()) {
       const vaultDir = path.join(ipcBaseDir, sourceGroup, 'vault');
       try {
         if (fs.existsSync(vaultDir)) {
@@ -1299,6 +1300,7 @@ function startIpcWatcher(): void {
           'Error reading IPC vault directory',
         );
       }
+      } // isVaultEnabled
 
       // Process status events from this group's IPC directory
       const statusDir = path.join(ipcBaseDir, sourceGroup, 'status');
