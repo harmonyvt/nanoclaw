@@ -107,6 +107,7 @@ export function initDatabase(): void {
       FOREIGN KEY (chat_jid) REFERENCES chats(jid)
     );
     CREATE INDEX IF NOT EXISTS idx_threads_chat ON threads(chat_jid);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_threads_chat_name ON threads(chat_jid, name COLLATE NOCASE);
 
     CREATE TABLE IF NOT EXISTS active_threads (
       chat_jid TEXT PRIMARY KEY,
