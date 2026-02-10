@@ -443,7 +443,8 @@ async function verifySelfUpdate(): Promise<void> {
     try { fs.unlinkSync(SELF_UPDATE_MARKER); } catch { /* ignore */ }
   }
 
-  if (!marker.chatId || !marker.expectedHead) return;
+  const numericChatId = Number(marker.chatId);
+  if (!Number.isFinite(numericChatId) || !marker.expectedHead) return;
 
   try {
     const currentHead = await runGit(['rev-parse', 'HEAD']);
@@ -459,7 +460,7 @@ async function verifySelfUpdate(): Promise<void> {
           `Actual: ${currentHead.slice(0, 8)}`,
           `Check ${SELF_UPDATE_LOG} for details.`,
         ];
-    await sendTelegramMessage(marker.chatId, lines.join('\n'));
+    await sendTelegramMessage(makeTelegramChatId(numericChatId), lines.join('\n'));
   } catch (err) {
     logger.error({ module: 'telegram', err }, 'Failed to verify self-update');
   }
