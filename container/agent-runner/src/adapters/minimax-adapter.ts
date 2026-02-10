@@ -155,6 +155,11 @@ export class MinimaxAdapter implements ProviderAdapter {
           textParts.push((block as TextBlock).text);
         } else if (block.type === 'tool_use') {
           toolUseBlocks.push(block as ToolUseBlock);
+        } else if (block.type === 'thinking') {
+          const thinkingContent = (block as any).thinking || '';
+          if (thinkingContent) {
+            yield { type: 'thinking', content: thinkingContent.slice(-4000) };
+          }
         }
       }
 
