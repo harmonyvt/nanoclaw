@@ -137,6 +137,9 @@ function escapeHtml(s: string): string {
 /** Pending argument collection state: chatJid → { skillName, groupFolder, chatJid } */
 const pendingQueueArgs = new Map<string, { skillName: string; groupFolder: string; chatJid: string }>();
 
+/** Run-all mode: groupFolder → sender context. When set, processMessage chains the next pending item after each completes. */
+export const runAllActive = new Map<string, { chatJid: string; senderId: string; senderName: string }>();
+
 function queueShortId(id: string): string {
   return id.slice(-8);
 }
@@ -1397,7 +1400,8 @@ export async function connectTelegram(
         }
         await ctx.answerCallbackQuery({ text: `Running /${next.skill_name}...` });
         // Store as a text message so processMessage picks it up as a skill invocation
-        const msgId = `sq-run-${Date.now()}`;
+        // Embed queue item ID in message ID so processMessage can target the exact item
+        const msgId = `sq-run-${next.id}`;
         const skillCmd = next.skill_args ? `/${next.skill_name} ${next.skill_args}` : `/${next.skill_name}`;
         updateQueuedSkillStatus(next.id, 'running');
         storeTextMessage(msgId, qChatId, ctx.from.id.toString(), ctx.from.first_name, skillCmd, new Date().toISOString(), false);
@@ -1417,16 +1421,17 @@ export async function connectTelegram(
           await ctx.answerCallbackQuery({ text: 'Queue is empty' });
           return;
         }
-        await ctx.answerCallbackQuery({ text: `Running ${pending.length} skill(s)...` });
-        // Run each skill sequentially by posting them as messages
-        for (const item of pending) {
-          const msgId = `sq-run-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-          const skillCmd = item.skill_args ? `/${item.skill_name} ${item.skill_args}` : `/${item.skill_name}`;
-          updateQueuedSkillStatus(item.id, 'running');
-          storeTextMessage(msgId, qChatId, ctx.from.id.toString(), ctx.from.first_name, skillCmd, new Date().toISOString(), false);
-        }
+        await ctx.answerCallbackQuery({ text: `Running ${pending.length} skill(s) sequentially...` });
+        // Enable run-all mode so processMessage chains the next item after each completes
+        runAllActive.set(qGroup.folder, { chatJid: qChatId, senderId: ctx.from.id.toString(), senderName: ctx.from.first_name });
+        // Start only the first pending item; the rest will be triggered on completion
+        const first = pending[0];
+        const msgId = `sq-run-${first.id}`;
+        const skillCmd = first.skill_args ? `/${first.skill_name} ${first.skill_args}` : `/${first.skill_name}`;
+        updateQueuedSkillStatus(first.id, 'running');
+        storeTextMessage(msgId, qChatId, ctx.from.id.toString(), ctx.from.first_name, skillCmd, new Date().toISOString(), false);
         try {
-          await ctx.editMessageText(`Running all ${pending.length} queued skill(s)...`, { reply_markup: { inline_keyboard: [] } });
+          await ctx.editMessageText(`Running all ${pending.length} queued skill(s) sequentially...`, { reply_markup: { inline_keyboard: [] } });
         } catch { /* message may not be editable */ }
         return;
       }

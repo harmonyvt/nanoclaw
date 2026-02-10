@@ -39,8 +39,11 @@ import {
   getAllTasks,
   getMessagesSince,
   getNewMessages,
+  getNextPendingSkill,
+  getQueuedSkillById,
   getSkillQueue,
   initDatabase,
+  storeTextMessage,
   updateQueuedSkillStatus,
 } from './db.js';
 import { runTaskNow, startSchedulerLoop } from './task-scheduler.js';
@@ -60,6 +63,7 @@ import {
   sendTelegramVoice,
   setTelegramTyping,
   stopTelegram,
+  runAllActive,
 } from './telegram.js';
 import type { SessionManager, TaskActionHandler, InterruptHandler } from './telegram.js';
 import { NewMessage, RegisteredGroup, Session } from './types.js';
@@ -341,17 +345,18 @@ async function processMessage(msg: NewMessage): Promise<void> {
       const prompt = parts.join('\n\n');
 
       await setTyping(msg.chat_jid, true);
-      // Track if this is a queued skill so we can update its status
-      const runningQueueItems = getSkillQueue(group.folder).filter(
-        (qi) => qi.status === 'running' && qi.skill_name === skillName,
-      );
+      // Track if this is a queued skill so we can update its status.
+      // Queue item ID is embedded in the message ID (sq-run-{queueItemId}).
+      const queueItemId = msg.id.startsWith('sq-run-') ? msg.id.slice('sq-run-'.length) : null;
+      const queueItem = queueItemId ? getQueuedSkillById(queueItemId) : null;
       let response: string | null = null;
       try {
         response = await runAgent(group, prompt, msg.chat_jid, { isSkillInvocation: true });
       } catch (err) {
-        // Mark queued skill as failed
-        for (const qi of runningQueueItems) {
-          updateQueuedSkillStatus(qi.id, 'failed', { error: String(err) });
+        if (queueItem) {
+          updateQueuedSkillStatus(queueItem.id, 'failed', { error: String(err) });
+          // Stop run-all chain on failure
+          runAllActive.delete(group.folder);
         }
         throw err;
       } finally {
@@ -359,8 +364,29 @@ async function processMessage(msg: NewMessage): Promise<void> {
       }
 
       // Mark queued skill as completed
-      for (const qi of runningQueueItems) {
-        updateQueuedSkillStatus(qi.id, 'completed', response ? { result: response.slice(0, 500) } : undefined);
+      if (queueItem) {
+        updateQueuedSkillStatus(queueItem.id, 'completed', response ? { result: response.slice(0, 500) } : undefined);
+      }
+
+      // If run-all mode is active, chain the next pending item
+      if (queueItem && runAllActive.has(group.folder)) {
+        const next = getNextPendingSkill(group.folder);
+        if (next) {
+          const ctx = runAllActive.get(group.folder)!;
+          updateQueuedSkillStatus(next.id, 'running');
+          storeTextMessage(
+            `sq-run-${next.id}`,
+            ctx.chatJid,
+            ctx.senderId,
+            ctx.senderName,
+            next.skill_args ? `/${next.skill_name} ${next.skill_args}` : `/${next.skill_name}`,
+            new Date().toISOString(),
+            false,
+          );
+        } else {
+          // No more pending items — clear run-all mode
+          runAllActive.delete(group.folder);
+        }
       }
 
       if (response) {

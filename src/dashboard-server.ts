@@ -34,6 +34,7 @@ import {
   getTaskRunLogs,
   getAllTaskRunLogs,
   getAllSkillQueueItems,
+  getQueuedSkillById,
   removeFromSkillQueue,
   clearSkillQueue,
 } from './db.js';
@@ -304,22 +305,41 @@ function handleTaskRunLogsList(url: URL): Response {
 
 // ── Skill Queue API ──────────────────────────────────────────────────────
 
-function handleQueueList(url: URL): Response {
+function isValidGroup(group: string, session: { userId: number; groupFolder?: string }): boolean {
+  // If the session is scoped to a specific group, enforce it
+  if (session.groupFolder && session.groupFolder !== group) return false;
+  // Verify the group folder actually exists
+  const groupRoot = path.join(GROUPS_DIR, group);
+  return fs.existsSync(groupRoot);
+}
+
+function handleQueueList(url: URL, session: { userId: number; groupFolder?: string }): Response {
   const group = url.searchParams.get('group');
   if (!group) {
     return jsonResponse({ error: 'group parameter required' }, 400);
   }
+  if (!isValidGroup(group, session)) {
+    return jsonResponse({ error: 'unauthorized group' }, 403);
+  }
   return jsonResponse(getAllSkillQueueItems(group));
 }
 
-async function handleQueueAction(req: Request): Promise<Response> {
+async function handleQueueAction(req: Request, session: { userId: number; groupFolder?: string }): Promise<Response> {
   try {
     const body = (await req.json()) as { action: string; group?: string; id?: string };
     if (body.action === 'remove' && body.id) {
+      // Verify the item belongs to an authorized group
+      const item = getQueuedSkillById(body.id);
+      if (!item || !isValidGroup(item.group_folder, session)) {
+        return jsonResponse({ error: 'not found or unauthorized' }, 403);
+      }
       const removed = removeFromSkillQueue(body.id);
       return jsonResponse({ success: removed });
     }
     if (body.action === 'clear' && body.group) {
+      if (!isValidGroup(body.group, session)) {
+        return jsonResponse({ error: 'unauthorized group' }, 403);
+      }
       const count = clearSkillQueue(body.group);
       return jsonResponse({ cleared: count });
     }
@@ -1254,8 +1274,8 @@ function handleRequest(req: Request, server: import('bun').Server<NoVncWsData>):
   if (pathname === '/api/tasks/runs') return handleTaskRunLogsList(url);
 
   // Queue
-  if (pathname === '/api/queue') return handleQueueList(url);
-  if (pathname === '/api/queue/action' && req.method === 'POST') return handleQueueAction(req);
+  if (pathname === '/api/queue') return handleQueueList(url, session);
+  if (pathname === '/api/queue/action' && req.method === 'POST') return handleQueueAction(req, session);
 
   // Files API — GET routes
   if (pathname === '/api/files/groups') return handleFilesGroupsList();

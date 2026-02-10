@@ -722,7 +722,7 @@ export function getSkillQueue(groupFolder: string): QueuedSkill[] {
 export function getAllSkillQueueItems(groupFolder: string): QueuedSkill[] {
   return db
     .prepare(
-      `SELECT * FROM skill_queue WHERE group_folder = ? ORDER BY position DESC`,
+      `SELECT * FROM skill_queue WHERE group_folder = ? ORDER BY position ASC`,
     )
     .all(groupFolder) as QueuedSkill[];
 }
