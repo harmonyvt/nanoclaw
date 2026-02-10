@@ -12,7 +12,6 @@ import {
   makeTelegramChatId,
   extractTelegramChatId,
   DEFAULT_PROVIDER,
-  DEFAULT_MODEL,
 } from './config.js';
 
 import {
@@ -729,19 +728,13 @@ export async function connectTelegram(
     const uptimeMinutes = Math.floor((uptimeMs % 3600000) / 60000);
 
     const provider = group?.providerConfig?.provider || DEFAULT_PROVIDER;
-    const model = group?.providerConfig?.model || DEFAULT_MODEL || '(default)';
-    const apiUrl = provider === 'minimax'
-      ? 'https://api.minimax.io/anthropic'
-      : provider === 'openai'
-        ? 'https://api.openai.com'
-        : 'https://api.anthropic.com';
+    const model = group?.providerConfig?.model || '(default)';
 
     const lines = [
       `Session: ${sessionId ? 'active' : 'none'}`,
       `Group: ${group ? group.name : 'unregistered'}`,
       `Provider: ${provider}`,
       `Model: ${model}`,
-      `API: ${apiUrl}`,
       `Messages: ${messageCount}`,
       `Uptime: ${uptimeHours}h ${uptimeMinutes}m`,
       `Version: v${APP_VERSION}`,
