@@ -20,6 +20,10 @@ groups/*/.minimax-sessions/
 *.keys.json
 .env
 
+# Python
+.venv/
+__pycache__/
+
 # OS
 .DS_Store
 

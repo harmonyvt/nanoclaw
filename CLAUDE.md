@@ -351,6 +351,18 @@ bun dev                      # Run with hot reload (--watch)
 bun run build                # Compile TypeScript
 ./container/build.sh         # Rebuild agent container
 docker pull --platform linux/amd64 trycua/cua-xfce:latest # Pull/update CUA sandbox image
+bun run setup:tts            # Set up TTS server (uv sync)
+bun run dev:tts              # Run TTS server locally (uv run)
+./tts-server/deploy.sh user@host  # Deploy TTS to remote machine
+```
+
+### TTS Server (`tts-server/`)
+
+Python FastAPI server managed with [uv](https://docs.astral.sh/uv/). Uses `pyproject.toml` for dependencies — no manual venv management needed.
+
+```bash
+bun run setup:tts            # Equivalent to: cd tts-server && uv sync
+bun run dev:tts              # Equivalent to: cd tts-server && uv run server.py
 ```
 
 Service management (production via launchd):

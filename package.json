@@ -19,7 +19,9 @@
     "setup:envs": "bun run scripts/setup-envs.ts",
     "docker:requirements": "./scripts/ensure-docker-requirements.sh",
     "deploy:macos": "./scripts/deploy-launchd.sh",
-    "deploy:linux": "./scripts/deploy-systemd.sh"
+    "deploy:linux": "./scripts/deploy-systemd.sh",
+    "setup:tts": "cd tts-server && uv sync",
+    "dev:tts": "cd tts-server && uv run server.py"
   },
   "dependencies": {
     "@grammyjs/files": "^1.2.0",

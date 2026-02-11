@@ -1,6 +1,0 @@
-torch
-qwen-tts
-soundfile
-numpy
-fastapi
-uvicorn[standard]

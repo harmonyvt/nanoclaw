@@ -6,15 +6,13 @@ Self-hosted TTS inference server. Loads both Qwen3-TTS models (VoiceDesign + Cus
 
 ```bash
 cd tts-server
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+uv sync
 
 # Optional: install flash-attn on CUDA machines for faster inference
-# pip install flash-attn --no-build-isolation
+# uv pip install flash-attn --no-build-isolation
 
 export TTS_API_KEY=your-secret-key
-python server.py
+uv run server.py
 ```
 
 Models are downloaded from HuggingFace on first run (~3.5GB each).
@@ -25,7 +23,7 @@ Models are downloaded from HuggingFace on first run (~3.5GB each).
 ./deploy.sh user@your-tailscale-host
 ```
 
-This rsyncs the server, creates a venv, installs dependencies, and sets up a launchd (macOS) or systemd (Linux) service.
+This rsyncs the server, installs uv + dependencies, and sets up a launchd (macOS) or systemd (Linux) service.
 
 ## Environment Variables
 

@@ -72,24 +72,68 @@ export function isQwenTTSEnabled(): boolean {
   return QWEN_TTS_ENABLED;
 }
 
+/** Default voice profile using QWEN_TTS_DEFAULT_* env vars. */
+export function defaultVoiceProfile(): VoiceProfile {
+  return {
+    provider: 'qwen3-tts',
+    mode: 'custom_voice',
+    custom_voice: {
+      speaker: QWEN_TTS_DEFAULT_SPEAKER,
+      language: QWEN_TTS_DEFAULT_LANGUAGE,
+    },
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+}
+
 /** Load a group's voice profile from voice_profile.json. */
 export function loadVoiceProfile(groupFolder: string): VoiceProfile | null {
   try {
     const profilePath = path.join(GROUPS_DIR, groupFolder, 'voice_profile.json');
     if (!fs.existsSync(profilePath)) return null;
     const raw = fs.readFileSync(profilePath, 'utf-8');
-    const profile = JSON.parse(raw) as VoiceProfile;
+    const parsed: unknown = JSON.parse(raw);
 
-    // Basic validation
+    // Validate shape instead of type assertion
     if (
-      profile.provider !== 'qwen3-tts' ||
-      !['voice_design', 'custom_voice'].includes(profile.mode)
+      typeof parsed !== 'object' || parsed === null ||
+      (parsed as Record<string, unknown>).provider !== 'qwen3-tts' ||
+      !['voice_design', 'custom_voice'].includes(
+        (parsed as Record<string, unknown>).mode as string,
+      )
     ) {
       logger.warn(
-        { module: 'tts-qwen', groupFolder, profile },
+        { module: 'tts-qwen', groupFolder },
         'Invalid voice profile, ignoring',
       );
       return null;
+    }
+
+    const obj = parsed as Record<string, unknown>;
+    const mode = obj.mode as 'voice_design' | 'custom_voice';
+
+    const profile: VoiceProfile = {
+      provider: 'qwen3-tts',
+      mode,
+      created_at: typeof obj.created_at === 'string' ? obj.created_at : '',
+      updated_at: typeof obj.updated_at === 'string' ? obj.updated_at : '',
+    };
+
+    if (mode === 'voice_design' && typeof obj.voice_design === 'object' && obj.voice_design !== null) {
+      const vd = obj.voice_design as Record<string, unknown>;
+      profile.voice_design = {
+        description: typeof vd.description === 'string' ? vd.description : '',
+        language: typeof vd.language === 'string' ? vd.language : QWEN_TTS_DEFAULT_LANGUAGE,
+      };
+    } else if (mode === 'custom_voice') {
+      const cv = typeof obj.custom_voice === 'object' && obj.custom_voice !== null
+        ? obj.custom_voice as Record<string, unknown>
+        : {};
+      profile.custom_voice = {
+        speaker: typeof cv.speaker === 'string' ? cv.speaker : QWEN_TTS_DEFAULT_SPEAKER,
+        instruct: typeof cv.instruct === 'string' ? cv.instruct : '',
+        language: typeof cv.language === 'string' ? cv.language : QWEN_TTS_DEFAULT_LANGUAGE,
+      };
     }
 
     return profile;

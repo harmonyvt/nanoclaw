@@ -70,6 +70,7 @@ import {
   synthesizeSpeech,
 } from './tts.js';
 import {
+  defaultVoiceProfile,
   isQwenTTSEnabled,
   loadVoiceProfile,
   synthesizeQwenTTS,
@@ -584,7 +585,10 @@ Only include the relevant mode's config (voice_design or custom_voice), not both
     const sepIndex = text.indexOf(voiceSep);
 
     // Check if any TTS provider is enabled and not muted
-    const qwenProfile = isQwenTTSEnabled() ? loadVoiceProfile(group.folder) : null;
+    // Falls back to default voice profile (QWEN_TTS_DEFAULT_*) when no voice_profile.json exists
+    const qwenProfile = isQwenTTSEnabled()
+      ? (loadVoiceProfile(group.folder) ?? defaultVoiceProfile())
+      : null;
     const ttsEnabled = !isMuted && ((qwenProfile !== null) || isFreyaEnabled());
 
     if (ttsEnabled) {
@@ -983,7 +987,9 @@ function startIpcWatcher(): void {
                   isMain ||
                   (targetGroup && targetGroup.folder === sourceGroup)
                 ) {
-                  const ipcQwenProfile = isQwenTTSEnabled() ? loadVoiceProfile(sourceGroup) : null;
+                  const ipcQwenProfile = isQwenTTSEnabled()
+                    ? (loadVoiceProfile(sourceGroup) ?? defaultVoiceProfile())
+                    : null;
 
                   if (ipcQwenProfile) {
                     // Qwen3-TTS via Modal (primary)

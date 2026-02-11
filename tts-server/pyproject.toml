@@ -1,0 +1,13 @@
+[project]
+name = "nanoclaw-tts"
+version = "0.1.0"
+description = "Self-hosted Qwen3-TTS inference server"
+requires-python = ">=3.11"
+dependencies = [
+    "torch",
+    "qwen-tts",
+    "soundfile",
+    "numpy",
+    "fastapi",
+    "uvicorn[standard]",
+]

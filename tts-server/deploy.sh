@@ -7,7 +7,7 @@
 #
 # What it does:
 #   1. Rsyncs tts-server/ to ~/nanoclaw-tts/ on the target
-#   2. Creates Python venv + installs deps
+#   2. Installs uv + deps
 #   3. Optionally installs flash-attn (CUDA only)
 #   4. Installs ffmpeg if missing
 #   5. Sets up launchd (macOS) or systemd (Linux) service
@@ -52,20 +52,20 @@ if ! command -v ffmpeg &>/dev/null; then
   fi
 fi
 
-# Create venv if needed
-if [ ! -d .venv ]; then
-  echo "==> Creating Python venv..."
-  python3 -m venv .venv
+# Install uv if missing
+if ! command -v uv &>/dev/null; then
+  echo "==> Installing uv..."
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  export PATH="$HOME/.local/bin:$PATH"
 fi
 
-echo "==> Installing Python dependencies..."
-.venv/bin/pip install -q --upgrade pip
-.venv/bin/pip install -q -r requirements.txt
+echo "==> Installing Python dependencies via uv..."
+uv sync
 
 # Install flash-attn on CUDA systems
 if command -v nvidia-smi &>/dev/null; then
   echo "==> NVIDIA GPU detected, installing flash-attn..."
-  .venv/bin/pip install -q flash-attn --no-build-isolation 2>/dev/null || \
+  uv pip install flash-attn --no-build-isolation 2>/dev/null || \
     echo "    flash-attn install failed (non-critical, will use standard attention)"
 fi
 
@@ -86,8 +86,8 @@ fi
 # Source .env to get the key for display
 source .env
 
-# Set up service
-PYTHON_PATH="$(pwd)/.venv/bin/python"
+# Set up service — use `uv run` so the venv is automatic
+UV_PATH="$(command -v uv)"
 SERVER_PATH="$(pwd)/server.py"
 
 if [[ "$OS" == "Darwin" ]]; then
@@ -105,7 +105,8 @@ if [[ "$OS" == "Darwin" ]]; then
   <string>${PLIST_NAME}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${PYTHON_PATH}</string>
+    <string>${UV_PATH}</string>
+    <string>run</string>
     <string>${SERVER_PATH}</string>
   </array>
   <key>WorkingDirectory</key>
@@ -151,7 +152,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=$(pwd)
-ExecStart=${PYTHON_PATH} ${SERVER_PATH}
+ExecStart=${UV_PATH} run ${SERVER_PATH}
 EnvironmentFile=$(pwd)/.env
 Environment=TTS_PORT=8787
 Restart=on-failure
