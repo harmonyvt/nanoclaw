@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { STORE_DIR } from './config.js';
-import { NewMessage, ScheduledTask, TaskRunLog } from './types.js';
+import { NewMessage, QueuedSkill, ScheduledTask, TaskRunLog } from './types.js';
 
 let db: Database;
 
@@ -116,6 +116,24 @@ export function initDatabase(): void {
       indexed_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_container_logs_group ON container_logs(group_folder);
+
+    CREATE TABLE IF NOT EXISTS skill_queue (
+      id TEXT PRIMARY KEY,
+      group_folder TEXT NOT NULL,
+      chat_jid TEXT NOT NULL,
+      skill_name TEXT NOT NULL,
+      skill_args TEXT,
+      position INTEGER NOT NULL,
+      status TEXT DEFAULT 'pending',
+      result TEXT,
+      error TEXT,
+      created_at TEXT NOT NULL,
+      started_at TEXT,
+      completed_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_skill_queue_group ON skill_queue(group_folder);
+    CREATE INDEX IF NOT EXISTS idx_skill_queue_status ON skill_queue(status);
+    CREATE INDEX IF NOT EXISTS idx_skill_queue_position ON skill_queue(group_folder, position);
   `);
 }
 
@@ -660,4 +678,122 @@ export function getAllTaskRunLogs(
     group_folder: string;
     schedule_type: string;
   })[];
+}
+
+// ── Skill Queue functions ────────────────────────────────────────────────
+
+export function addToSkillQueue(
+  item: Pick<QueuedSkill, 'id' | 'group_folder' | 'chat_jid' | 'skill_name' | 'skill_args'>,
+): QueuedSkill {
+  const now = new Date().toISOString();
+  // Get next position for this group
+  const maxPos = db
+    .prepare(
+      "SELECT COALESCE(MAX(position), 0) as max_pos FROM skill_queue WHERE group_folder = ? AND status IN ('pending', 'running')",
+    )
+    .get(item.group_folder) as { max_pos: number };
+  const position = maxPos.max_pos + 1;
+
+  db.prepare(
+    `INSERT INTO skill_queue (id, group_folder, chat_jid, skill_name, skill_args, position, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)`,
+  ).run(item.id, item.group_folder, item.chat_jid, item.skill_name, item.skill_args, position, now);
+
+  return {
+    ...item,
+    position,
+    status: 'pending',
+    result: null,
+    error: null,
+    created_at: now,
+    started_at: null,
+    completed_at: null,
+  };
+}
+
+export function getSkillQueue(groupFolder: string): QueuedSkill[] {
+  return db
+    .prepare(
+      `SELECT * FROM skill_queue WHERE group_folder = ? AND status IN ('pending', 'running') ORDER BY position`,
+    )
+    .all(groupFolder) as QueuedSkill[];
+}
+
+export function getAllSkillQueueItems(groupFolder: string): QueuedSkill[] {
+  return db
+    .prepare(
+      `SELECT * FROM skill_queue WHERE group_folder = ? ORDER BY position ASC`,
+    )
+    .all(groupFolder) as QueuedSkill[];
+}
+
+export function getQueuedSkillById(id: string): QueuedSkill | undefined {
+  return db.prepare('SELECT * FROM skill_queue WHERE id = ?').get(id) as
+    | QueuedSkill
+    | undefined;
+}
+
+export function getQueuedSkillByShortId(shortId: string): QueuedSkill | undefined {
+  return db
+    .prepare("SELECT * FROM skill_queue WHERE id LIKE '%' || ?")
+    .get(shortId) as QueuedSkill | undefined;
+}
+
+export function getNextPendingSkill(groupFolder: string): QueuedSkill | undefined {
+  return db
+    .prepare(
+      `SELECT * FROM skill_queue WHERE group_folder = ? AND status = 'pending' ORDER BY position LIMIT 1`,
+    )
+    .get(groupFolder) as QueuedSkill | undefined;
+}
+
+export function updateQueuedSkillStatus(
+  id: string,
+  status: QueuedSkill['status'],
+  extra?: { result?: string; error?: string },
+): void {
+  const now = new Date().toISOString();
+  if (status === 'running') {
+    db.prepare('UPDATE skill_queue SET status = ?, started_at = ? WHERE id = ?').run(status, now, id);
+  } else if (status === 'completed' || status === 'failed' || status === 'cancelled') {
+    db.prepare(
+      'UPDATE skill_queue SET status = ?, result = ?, error = ?, completed_at = ? WHERE id = ?',
+    ).run(status, extra?.result ?? null, extra?.error ?? null, now, id);
+  } else {
+    db.prepare('UPDATE skill_queue SET status = ? WHERE id = ?').run(status, id);
+  }
+}
+
+export function removeFromSkillQueue(id: string): boolean {
+  const result = db.prepare('DELETE FROM skill_queue WHERE id = ?').run(id);
+  return result.changes > 0;
+}
+
+export function clearSkillQueue(groupFolder: string): number {
+  const result = db
+    .prepare("DELETE FROM skill_queue WHERE group_folder = ? AND status = 'pending'")
+    .run(groupFolder);
+  return result.changes;
+}
+
+export function moveQueuedSkill(id: string, direction: 'up' | 'down'): boolean {
+  const item = getQueuedSkillById(id);
+  if (!item || item.status !== 'pending') return false;
+
+  const targetPosition = direction === 'up' ? item.position - 1 : item.position + 1;
+  if (targetPosition < 1) return false;
+
+  // Find the item at the target position
+  const other = db
+    .prepare(
+      "SELECT * FROM skill_queue WHERE group_folder = ? AND position = ? AND status IN ('pending', 'running')",
+    )
+    .get(item.group_folder, targetPosition) as QueuedSkill | undefined;
+
+  if (!other) return false;
+
+  // Swap positions
+  db.prepare('UPDATE skill_queue SET position = ? WHERE id = ?').run(targetPosition, id);
+  db.prepare('UPDATE skill_queue SET position = ? WHERE id = ?').run(item.position, other.id);
+  return true;
 }

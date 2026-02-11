@@ -27,6 +27,15 @@ import {
   storeChatMetadata,
   storeMediaMessage,
   storeTextMessage,
+  addToSkillQueue,
+  getSkillQueue,
+  getQueuedSkillById,
+  getQueuedSkillByShortId,
+  removeFromSkillQueue,
+  clearSkillQueue,
+  moveQueuedSkill,
+  getNextPendingSkill,
+  updateQueuedSkillStatus,
 } from './db.js';
 import {
   ensureWaitForUserRequest,
@@ -38,7 +47,7 @@ import { getDashboardUrl } from './dashboard-server.js';
 import { downloadTelegramFile, transcribeAudio } from './media.js';
 import { logger } from './logger.js';
 import { ensureSandbox } from './sandbox-manager.js';
-import { RegisteredGroup, ScheduledTask } from './types.js';
+import { QueuedSkill, RegisteredGroup, ScheduledTask } from './types.js';
 import {
   loadSkillsForGroup,
   getSkill as getSkillFromDisk,
@@ -121,6 +130,63 @@ function truncatePrompt(prompt: string, max = 60): string {
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// --- Skill Queue helpers ---
+
+/** Pending argument collection state: chatJid → { skillName, groupFolder, chatJid } */
+const pendingQueueArgs = new Map<string, { skillName: string; groupFolder: string; chatJid: string }>();
+
+/** Run-all mode: groupFolder → sender context. When set, processMessage chains the next pending item after each completes. */
+export const runAllActive = new Map<string, { chatJid: string; senderId: string; senderName: string }>();
+
+function queueShortId(id: string): string {
+  return id.slice(-8);
+}
+
+function formatQueueList(items: QueuedSkill[]): string {
+  if (items.length === 0) return 'Queue is empty. Use /skills to queue a skill.';
+
+  const pending = items.filter((i) => i.status === 'pending').length;
+  const running = items.filter((i) => i.status === 'running').length;
+
+  const parts = [];
+  if (pending) parts.push(`${pending} pending`);
+  if (running) parts.push(`${running} running`);
+
+  const lines = [`<b>Skill Queue</b> (${parts.join(', ')})\n`];
+
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    const statusIcon = item.status === 'running' ? '▶' : `${i + 1}.`;
+    lines.push(
+      `${statusIcon} /<b>${escapeHtml(item.skill_name)}</b>${item.skill_args ? ` <i>${escapeHtml(truncatePrompt(item.skill_args, 40))}</i>` : ''}`,
+    );
+  }
+
+  return lines.join('\n');
+}
+
+function buildQueueKeyboard(items: QueuedSkill[]): InlineKeyboard {
+  const kb = new InlineKeyboard();
+
+  for (const item of items) {
+    if (item.status !== 'pending') continue;
+    const sid = queueShortId(item.id);
+    kb.text(`/${item.skill_name}`, `q:noop:${sid}`);
+    kb.text('Up', `q:up:${sid}`)
+      .text('Down', `q:dn:${sid}`)
+      .text('Remove', `q:rm:${sid}`)
+      .row();
+  }
+
+  // Action buttons
+  if (items.some((i) => i.status === 'pending')) {
+    kb.text('Run Next', 'q:next').text('Run All', 'q:all').row();
+    kb.text('Clear Queue', 'q:clear').row();
+  }
+
+  return kb;
 }
 
 function formatTaskList(tasks: ScheduledTask[]): string {
@@ -264,7 +330,8 @@ type SlashCommandSpec = {
     | 'thinking'
     | 'stop'
     | 'help'
-    | 'skills';
+    | 'skills'
+    | 'queue';
   description: string;
   help: string;
 };
@@ -339,6 +406,11 @@ const TELEGRAM_SLASH_COMMANDS: SlashCommandSpec[] = [
     command: 'skills',
     description: 'List and run stored skills',
     help: 'List stored skills (reusable workflows)',
+  },
+  {
+    command: 'queue',
+    description: 'View and manage the skill queue',
+    help: 'View queued skills, run next, clear queue',
   },
 ];
 
@@ -846,11 +918,31 @@ export async function connectTelegram(
     const kb = new InlineKeyboard();
     for (const s of skills) {
       kb.text(`Run /${s.name}`, `sk:run:${s.name}`)
+        .text('Queue', `sq:add:${s.name}`)
         .text('Delete', `sk:del:${s.name}`)
         .row();
     }
 
     await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb });
+  });
+
+  // --- /queue command: show and manage skill queue ---
+  bot.command('queue', async (ctx) => {
+    if (!shouldAccept(ctx)) return;
+    const chatId = makeTelegramChatId(ctx.chat.id);
+    const group = registeredGroups()[chatId];
+    if (!group) {
+      await ctx.reply('No group registered for this chat.');
+      return;
+    }
+
+    const items = getSkillQueue(group.folder);
+    const text = formatQueueList(items);
+    const kb = items.length > 0 ? buildQueueKeyboard(items) : undefined;
+    await ctx.reply(text, {
+      parse_mode: 'HTML',
+      ...(kb ? { reply_markup: kb } : {}),
+    });
   });
 
   bot.command('verbose', async (ctx) => {
@@ -1203,6 +1295,7 @@ export async function connectTelegram(
         const kb = new InlineKeyboard();
         for (const s of skills) {
           kb.text(`Run /${s.name}`, `sk:run:${s.name}`)
+            .text('Queue', `sq:add:${s.name}`)
             .text('Delete', `sk:del:${s.name}`)
             .row();
         }
@@ -1211,6 +1304,194 @@ export async function connectTelegram(
       }
 
       await ctx.answerCallbackQuery({ text: 'Unknown skill action' });
+      return;
+    }
+
+    // --- Skill Queue inline button callbacks ---
+    if (data.startsWith('sq:')) {
+      const sqParts = data.split(':');
+      if (sqParts.length < 3) {
+        await ctx.answerCallbackQuery({ text: 'Invalid queue action' });
+        return;
+      }
+      const sqAction = sqParts[1];
+      const sqSkillName = sqParts.slice(2).join(':');
+      if (!/^[a-z][a-z0-9_]{1,30}$/.test(sqSkillName)) {
+        await ctx.answerCallbackQuery({ text: 'Invalid skill name' });
+        return;
+      }
+      const sqChatId = makeTelegramChatId(ctx.chat.id);
+      const sqGroup = registeredGroups()[sqChatId];
+      if (!sqGroup) {
+        await ctx.answerCallbackQuery({ text: 'No group found' });
+        return;
+      }
+
+      if (sqAction === 'add') {
+        const skill = getSkillFromDisk(sqGroup.folder, sqSkillName);
+        if (!skill) {
+          await ctx.answerCallbackQuery({ text: 'Skill not found' });
+          return;
+        }
+
+        // If skill expects parameters, ask user for them
+        if (skill.parameters) {
+          pendingQueueArgs.set(sqChatId, {
+            skillName: sqSkillName,
+            groupFolder: sqGroup.folder,
+            chatJid: sqChatId,
+          });
+          await ctx.answerCallbackQuery({ text: 'Provide arguments below' });
+          const numericId = extractTelegramChatId(sqChatId);
+          await bot!.api.sendMessage(
+            numericId,
+            `Queuing <b>/${escapeHtml(sqSkillName)}</b>\n\nThis skill accepts: <i>${escapeHtml(skill.parameters)}</i>\n\nReply with the arguments, or send <b>skip</b> to queue without arguments:`,
+            { parse_mode: 'HTML' },
+          );
+          return;
+        }
+
+        // No parameters needed — queue directly
+        const id = `sq-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        addToSkillQueue({
+          id,
+          group_folder: sqGroup.folder,
+          chat_jid: sqChatId,
+          skill_name: sqSkillName,
+          skill_args: null,
+        });
+        await ctx.answerCallbackQuery({ text: `/${sqSkillName} queued` });
+        // Show updated queue
+        const items = getSkillQueue(sqGroup.folder);
+        const numericId = extractTelegramChatId(sqChatId);
+        await bot!.api.sendMessage(
+          numericId,
+          `Added <b>/${escapeHtml(sqSkillName)}</b> to queue.\n\n${formatQueueList(items)}`,
+          { parse_mode: 'HTML', reply_markup: buildQueueKeyboard(items) },
+        );
+        return;
+      }
+
+      await ctx.answerCallbackQuery({ text: 'Unknown queue action' });
+      return;
+    }
+
+    // --- Queue management inline button callbacks ---
+    if (data.startsWith('q:')) {
+      const qParts = data.split(':');
+      const qAction = qParts[1];
+      const qChatId = makeTelegramChatId(ctx.chat.id);
+      const qGroup = registeredGroups()[qChatId];
+      if (!qGroup) {
+        await ctx.answerCallbackQuery({ text: 'No group found' });
+        return;
+      }
+
+      if (qAction === 'noop') {
+        await ctx.answerCallbackQuery();
+        return;
+      }
+
+      if (qAction === 'next') {
+        const next = getNextPendingSkill(qGroup.folder);
+        if (!next) {
+          await ctx.answerCallbackQuery({ text: 'Queue is empty' });
+          return;
+        }
+        await ctx.answerCallbackQuery({ text: `Running /${next.skill_name}...` });
+        // Store as a text message so processMessage picks it up as a skill invocation
+        // Embed queue item ID in message ID so processMessage can target the exact item
+        const msgId = `sq-run-${next.id}`;
+        const skillCmd = next.skill_args ? `/${next.skill_name} ${next.skill_args}` : `/${next.skill_name}`;
+        updateQueuedSkillStatus(next.id, 'running');
+        storeTextMessage(msgId, qChatId, ctx.from.id.toString(), ctx.from.first_name, skillCmd, new Date().toISOString(), false);
+        // Update the message to show updated queue
+        const items = getSkillQueue(qGroup.folder);
+        const text = formatQueueList(items);
+        const kb = items.some((i) => i.status === 'pending') ? buildQueueKeyboard(items) : undefined;
+        try {
+          await ctx.editMessageText(text, { parse_mode: 'HTML', ...(kb ? { reply_markup: kb } : { reply_markup: { inline_keyboard: [] } }) });
+        } catch { /* message may not be editable */ }
+        return;
+      }
+
+      if (qAction === 'all') {
+        const pending = getSkillQueue(qGroup.folder).filter((i) => i.status === 'pending');
+        if (pending.length === 0) {
+          await ctx.answerCallbackQuery({ text: 'Queue is empty' });
+          return;
+        }
+        await ctx.answerCallbackQuery({ text: `Running ${pending.length} skill(s) sequentially...` });
+        // Enable run-all mode so processMessage chains the next item after each completes
+        runAllActive.set(qGroup.folder, { chatJid: qChatId, senderId: ctx.from.id.toString(), senderName: ctx.from.first_name });
+        // Start only the first pending item; the rest will be triggered on completion
+        const first = pending[0];
+        const msgId = `sq-run-${first.id}`;
+        const skillCmd = first.skill_args ? `/${first.skill_name} ${first.skill_args}` : `/${first.skill_name}`;
+        updateQueuedSkillStatus(first.id, 'running');
+        storeTextMessage(msgId, qChatId, ctx.from.id.toString(), ctx.from.first_name, skillCmd, new Date().toISOString(), false);
+        try {
+          await ctx.editMessageText(`Running all ${pending.length} queued skill(s) sequentially...`, { reply_markup: { inline_keyboard: [] } });
+        } catch { /* message may not be editable */ }
+        return;
+      }
+
+      if (qAction === 'clear') {
+        const count = clearSkillQueue(qGroup.folder);
+        await ctx.answerCallbackQuery({ text: `Cleared ${count} item(s)` });
+        try {
+          await ctx.editMessageText('Queue cleared.', { reply_markup: { inline_keyboard: [] } });
+        } catch { /* message may not be editable */ }
+        return;
+      }
+
+      if (qAction === 'rm') {
+        const qSid = qParts[2];
+        if (!qSid) {
+          await ctx.answerCallbackQuery({ text: 'Missing ID' });
+          return;
+        }
+        const item = getQueuedSkillById(qSid) || getQueuedSkillByShortId(qSid);
+        if (!item) {
+          await ctx.answerCallbackQuery({ text: 'Item not found' });
+          return;
+        }
+        removeFromSkillQueue(item.id);
+        await ctx.answerCallbackQuery({ text: `Removed /${item.skill_name}` });
+        // Refresh queue view
+        const items = getSkillQueue(qGroup.folder);
+        const text = formatQueueList(items);
+        const kb = items.length > 0 ? buildQueueKeyboard(items) : undefined;
+        try {
+          await ctx.editMessageText(text, { parse_mode: 'HTML', ...(kb ? { reply_markup: kb } : { reply_markup: { inline_keyboard: [] } }) });
+        } catch { /* message may not be editable */ }
+        return;
+      }
+
+      if (qAction === 'up' || qAction === 'dn') {
+        const qSid = qParts[2];
+        if (!qSid) {
+          await ctx.answerCallbackQuery({ text: 'Missing ID' });
+          return;
+        }
+        const item = getQueuedSkillById(qSid) || getQueuedSkillByShortId(qSid);
+        if (!item) {
+          await ctx.answerCallbackQuery({ text: 'Item not found' });
+          return;
+        }
+        const moved = moveQueuedSkill(item.id, qAction === 'up' ? 'up' : 'down');
+        await ctx.answerCallbackQuery({ text: moved ? 'Moved' : 'Cannot move' });
+        // Refresh queue view
+        const items = getSkillQueue(qGroup.folder);
+        const text = formatQueueList(items);
+        const kb = items.length > 0 ? buildQueueKeyboard(items) : undefined;
+        try {
+          await ctx.editMessageText(text, { parse_mode: 'HTML', ...(kb ? { reply_markup: kb } : { reply_markup: { inline_keyboard: [] } }) });
+        } catch { /* message may not be editable */ }
+        return;
+      }
+
+      await ctx.answerCallbackQuery({ text: 'Unknown queue action' });
       return;
     }
 
@@ -1376,7 +1657,7 @@ export async function connectTelegram(
 
   // --- Message handlers ---
 
-  bot.on('message:text', (ctx) => {
+  bot.on('message:text', async (ctx) => {
     if (!shouldAccept(ctx)) return;
     const firstEntity = ctx.message.entities?.[0];
     const isSlashCommand =
@@ -1385,6 +1666,27 @@ export async function connectTelegram(
 
     const { chatId, timestamp, sender, senderName, msgId } = extractMeta(ctx);
     const content = ctx.message.text;
+
+    // Check for pending queue argument collection
+    const pendingArg = pendingQueueArgs.get(chatId);
+    if (pendingArg) {
+      pendingQueueArgs.delete(chatId);
+      const skillArgs = content.trim().toLowerCase() === 'skip' ? null : content.trim();
+      const id = `sq-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      addToSkillQueue({
+        id,
+        group_folder: pendingArg.groupFolder,
+        chat_jid: chatId,
+        skill_name: pendingArg.skillName,
+        skill_args: skillArgs,
+      });
+      const items = getSkillQueue(pendingArg.groupFolder);
+      await ctx.reply(
+        `Added <b>/${escapeHtml(pendingArg.skillName)}</b>${skillArgs ? ` with args: <i>${escapeHtml(truncatePrompt(skillArgs, 60))}</i>` : ''} to queue.\n\n${formatQueueList(items)}`,
+        { parse_mode: 'HTML', reply_markup: buildQueueKeyboard(items) },
+      );
+      return;
+    }
 
     storeChatMetadata(chatId, timestamp, senderName);
 

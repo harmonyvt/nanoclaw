@@ -94,3 +94,18 @@ export interface Skill {
   created_at: string;
   updated_at: string;
 }
+
+export interface QueuedSkill {
+  id: string;
+  group_folder: string;
+  chat_jid: string;
+  skill_name: string;
+  skill_args: string | null;
+  position: number;
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+  result: string | null;
+  error: string | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+}
