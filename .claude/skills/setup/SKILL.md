@@ -79,14 +79,20 @@ Per-group provider/model can also be configured later when registering groups (t
 
 Ask if they want voice messages enabled. If yes:
 
-1. Verify Modal is set up: `modal profile current`
-2. Create HF token secret if needed: `modal secret create hf-token HF_TOKEN=hf_xxx`
-3. Deploy the TTS app: `modal deploy modal/qwen3_tts_app.py`
-4. Test it works: `modal run modal/qwen3_tts_app.py`
-5. Get Modal credentials from `~/.modal.toml` and set in `.env`:
+1. Install system dependencies:
+   ```bash
+   # macOS
+   brew install ffmpeg sox
+   # Linux
+   sudo apt-get install -y ffmpeg sox
+   ```
+2. Install TTS Python dependencies: `bun run setup:tts`
+3. Set in `.env`:
    - `QWEN_TTS_ENABLED=true`
-   - `MODAL_TOKEN_ID=ak-...`
-   - `MODAL_TOKEN_SECRET=as-...`
+   - `QWEN_TTS_URL=http://localhost:8787` (for local) or `http://<tailscale-ip>:8787` (for remote)
+   - `QWEN_TTS_API_KEY=<key>` (optional for local, required for remote)
+
+The TTS server auto-starts with `bun dev` when URL points to localhost. For remote deployment, use `./tts-server/deploy.sh user@host`.
 
 Voice profiles are auto-generated when SOUL.md is created. Users can customize via `/design_voice` in Telegram.
 

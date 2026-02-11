@@ -42,13 +42,21 @@ echo "==> Detecting platform..."
 OS="$(uname -s)"
 echo "    OS: ${OS}"
 
-# Install ffmpeg if missing
-if ! command -v ffmpeg &>/dev/null; then
-  echo "==> Installing ffmpeg..."
-  if [[ "$OS" == "Darwin" ]]; then
-    brew install ffmpeg
-  else
-    sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+# Install system dependencies (ffmpeg + sox)
+if [[ "$OS" == "Darwin" ]]; then
+  for pkg in ffmpeg sox; do
+    if ! command -v "$pkg" &>/dev/null; then
+      echo "==> Installing ${pkg}..."
+      brew install "$pkg"
+    fi
+  done
+else
+  MISSING=()
+  command -v ffmpeg &>/dev/null || MISSING+=(ffmpeg)
+  command -v sox &>/dev/null || MISSING+=(sox)
+  if [ ${#MISSING[@]} -gt 0 ]; then
+    echo "==> Installing ${MISSING[*]}..."
+    sudo apt-get update -qq && sudo apt-get install -y -qq "${MISSING[@]}"
   fi
 fi
 

@@ -10,28 +10,46 @@ Deploy the self-hosted Qwen3-TTS server to a local or remote machine. Run comman
 ## 1. Choose Target
 
 Ask the user where to deploy:
-- **Local**: Run directly on this machine
+- **Local**: Run directly on this machine (auto-starts with `bun dev`)
 - **Remote**: Deploy via SSH to another machine (e.g. a Tailscale node with a GPU)
 
 ## 2a. Local Deploy
 
+Install system dependencies:
+
 ```bash
-cd tts-server
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+# macOS
+brew install ffmpeg sox
+
+# Linux (Debian/Ubuntu)
+sudo apt-get install -y ffmpeg sox
+```
+
+Install Python dependencies:
+
+```bash
+bun run setup:tts
 ```
 
 Optional (CUDA only):
 ```bash
-pip install flash-attn --no-build-isolation
+cd tts-server && uv pip install flash-attn --no-build-isolation
 ```
 
-Start the server:
+Set env vars in `.env`:
+```
+QWEN_TTS_ENABLED=true
+QWEN_TTS_URL=http://localhost:8787
+```
+
+Start everything (TTS server auto-starts when URL is localhost):
 ```bash
-export TTS_API_KEY=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
-echo "API Key: $TTS_API_KEY"
-python server.py
+bun dev
+```
+
+Or run the TTS server standalone:
+```bash
+bun run dev:tts
 ```
 
 ## 2b. Remote Deploy via SSH
@@ -42,9 +60,9 @@ python server.py
 
 This script:
 1. Rsyncs `tts-server/` to `~/nanoclaw-tts/` on the target
-2. Creates Python venv + installs dependencies
-3. Installs flash-attn on CUDA systems automatically
-4. Installs ffmpeg if missing
+2. Installs ffmpeg and sox (brew on macOS, apt on Linux)
+3. Installs uv + Python dependencies
+4. Installs flash-attn on CUDA systems automatically
 5. Sets up launchd (macOS) or systemd (Linux) service
 6. Generates an API key if not provided
 
@@ -79,6 +97,9 @@ curl -X POST http://<host-ip>:8787/synthesize \
 ```bash
 # macOS
 launchctl kickstart -k gui/$(id -u)/com.nanoclaw 2>/dev/null || echo "Service not installed (use /deploy)"
+
+# Linux
+systemctl --user restart com.nanoclaw
 
 # Or foreground: bun dev
 ```

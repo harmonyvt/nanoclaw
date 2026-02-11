@@ -1,4 +1,4 @@
-import { execSync } from 'child_process';
+import { execSync, spawn, type ChildProcess } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -22,6 +22,8 @@ import {
   TRIGGER_PATTERN,
   MAX_AGENT_RETRIES,
   AGENT_RETRY_DELAY,
+  QWEN_TTS_ENABLED,
+  QWEN_TTS_URL,
 } from './config.js';
 import {
   AvailableGroup,
@@ -1862,6 +1864,64 @@ async function ensureDockerImageRequirements(): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// TTS server subprocess (auto-start when QWEN_TTS_URL points to localhost)
+// ---------------------------------------------------------------------------
+
+let ttsProcess: ChildProcess | null = null;
+
+function shouldAutoStartTts(): boolean {
+  if (!QWEN_TTS_ENABLED || !QWEN_TTS_URL) return false;
+  try {
+    const url = new URL(QWEN_TTS_URL);
+    return ['localhost', '127.0.0.1', '0.0.0.0'].includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function startTtsServer(): void {
+  const ttsDir = path.join(import.meta.dir, '..', 'tts-server');
+  if (!fs.existsSync(path.join(ttsDir, 'server.py'))) {
+    logger.warn({ module: 'tts' }, 'tts-server/server.py not found, skipping TTS auto-start');
+    return;
+  }
+
+  logger.info({ module: 'tts', url: QWEN_TTS_URL }, 'Starting local TTS server');
+  ttsProcess = spawn('uv', ['run', 'server.py'], {
+    cwd: ttsDir,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env },
+  });
+
+  ttsProcess.stdout?.on('data', (data: Buffer) => {
+    for (const line of data.toString().trim().split('\n')) {
+      logger.info({ module: 'tts' }, line);
+    }
+  });
+
+  ttsProcess.stderr?.on('data', (data: Buffer) => {
+    for (const line of data.toString().trim().split('\n')) {
+      logger.info({ module: 'tts' }, line);
+    }
+  });
+
+  ttsProcess.on('exit', (code) => {
+    if (code !== null && code !== 0) {
+      logger.error({ module: 'tts', code }, 'TTS server exited unexpectedly');
+    }
+    ttsProcess = null;
+  });
+}
+
+function stopTtsServer(): void {
+  if (ttsProcess) {
+    logger.info({ module: 'tts' }, 'Stopping TTS server');
+    ttsProcess.kill('SIGTERM');
+    ttsProcess = null;
+  }
+}
+
 async function main(): Promise<void> {
   if (!TELEGRAM_BOT_TOKEN) {
     logger.error({ module: 'index' }, 'TELEGRAM_BOT_TOKEN is required');
@@ -1910,6 +1970,7 @@ async function main(): Promise<void> {
     runTaskNow: (taskId: string) => runTaskNow(taskId, schedulerDeps),
   };
 
+  if (shouldAutoStartTts()) startTtsServer();
   startCuaTakeoverServer();
   startDashboardServer();
   initTailscaleServe();
@@ -1946,6 +2007,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     stopTelegram();
     killAllContainers();
     await disconnectBrowser();
+    stopTtsServer();
     stopTailscaleServe();
     stopDashboardServer();
     stopLogSync();

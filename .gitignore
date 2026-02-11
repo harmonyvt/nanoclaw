@@ -9,12 +9,14 @@ store/
 data/
 /logs/
 
-# Runtime data inside groups (media downloads, container logs, trajectory sessions)
+# Runtime data inside groups (media, logs, agent-generated config)
 groups/*/media/
 groups/*/logs/
 groups/*/trajectory/
 groups/*/.openai-sessions/
 groups/*/.minimax-sessions/
+groups/*/SOUL.md
+groups/*/voice_profile.json
 
 # Secrets
 *.keys.json
