@@ -9,8 +9,10 @@ import {
   DASHBOARD_URL,
   GROUPS_DIR,
   DATA_DIR,
+  CUA_SANDBOX_CONTAINER_NAME,
 } from './config.js';
-import { getSandboxHostIp, isSandboxRunning, ensureSandbox, getSandboxUrl, resetIdleTimer } from './sandbox-manager.js';
+import { getSandboxHostIp, isSandboxRunning, ensureSandbox, getSandboxUrl, resetIdleTimer, resetSandbox } from './sandbox-manager.js';
+import { getContainerStatus, killContainer, interruptContainer } from './container-runner.js';
 import { getTailscaleHttpsUrl } from './tailscale-serve.js';
 import { logger } from './logger.js';
 import {
@@ -984,6 +986,65 @@ async function handleFileTransfer(req: Request): Promise<Response> {
   }
 }
 
+// ── Processes API handlers ────────────────────────────────────────────────
+
+function handleProcessesList(): Response {
+  const agents = getContainerStatus().map((c) => ({
+    type: 'agent' as const,
+    ...c,
+  }));
+
+  const sandboxRunning = isSandboxRunning();
+  const processes = [
+    ...agents,
+    {
+      type: 'sandbox' as const,
+      groupFolder: 'cua-sandbox',
+      containerId: CUA_SANDBOX_CONTAINER_NAME,
+      lastUsed: '',
+      idleSeconds: 0,
+      running: sandboxRunning,
+    },
+  ];
+
+  return jsonResponse(processes);
+}
+
+async function handleProcessKill(req: Request): Promise<Response> {
+  const body = (await req.json()) as { groupFolder?: string; type?: string };
+  if (!body.groupFolder) return jsonResponse({ error: 'groupFolder required' }, 400);
+
+  if (body.type === 'sandbox' || body.groupFolder === 'cua-sandbox') {
+    resetSandbox();
+    return jsonResponse({ ok: true, action: 'killed', target: 'cua-sandbox' });
+  }
+
+  killContainer(body.groupFolder, 'dashboard force-kill');
+  return jsonResponse({ ok: true, action: 'killed', target: body.groupFolder });
+}
+
+async function handleProcessRestart(req: Request): Promise<Response> {
+  const body = (await req.json()) as { groupFolder?: string; type?: string };
+  if (!body.groupFolder) return jsonResponse({ error: 'groupFolder required' }, 400);
+
+  if (body.type === 'sandbox' || body.groupFolder === 'cua-sandbox') {
+    resetSandbox();
+    await ensureSandbox();
+    return jsonResponse({ ok: true, action: 'restarted', target: 'cua-sandbox' });
+  }
+
+  killContainer(body.groupFolder, 'dashboard restart');
+  return jsonResponse({ ok: true, action: 'restarted', target: body.groupFolder });
+}
+
+async function handleProcessInterrupt(req: Request): Promise<Response> {
+  const body = (await req.json()) as { groupFolder?: string };
+  if (!body.groupFolder) return jsonResponse({ error: 'groupFolder required' }, 400);
+
+  const result = interruptContainer(body.groupFolder);
+  return jsonResponse(result);
+}
+
 // ── Takeover API handlers ────────────────────────────────────────────────
 
 function handleTakeoverList(): Response {
@@ -1222,6 +1283,12 @@ function handleRequest(req: Request, server: import('bun').Server<NoVncWsData>):
   // Tasks
   if (pathname === '/api/tasks') return handleTasksList(url);
   if (pathname === '/api/tasks/runs') return handleTaskRunLogsList(url);
+
+  // Processes (live running containers)
+  if (pathname === '/api/processes') return handleProcessesList();
+  if (req.method === 'POST' && pathname === '/api/processes/kill') return handleProcessKill(req);
+  if (req.method === 'POST' && pathname === '/api/processes/restart') return handleProcessRestart(req);
+  if (req.method === 'POST' && pathname === '/api/processes/interrupt') return handleProcessInterrupt(req);
 
   // Files API — GET routes
   if (pathname === '/api/files/groups') return handleFilesGroupsList();

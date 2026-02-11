@@ -110,6 +110,8 @@ export function cleanupOldMedia(mediaDir: string, maxAgeDays: number): void {
   let cleaned = 0;
 
   for (const file of fs.readdirSync(mediaDir)) {
+    // Preserve voice clone reference audio
+    if (file.startsWith('voice_ref')) continue;
     const filePath = path.join(mediaDir, file);
     try {
       const stat = fs.statSync(filePath);

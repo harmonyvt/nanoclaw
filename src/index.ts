@@ -1,4 +1,4 @@
-import { execSync } from 'child_process';
+import { execSync, spawn, type ChildProcess } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -22,10 +22,13 @@ import {
   TRIGGER_PATTERN,
   MAX_AGENT_RETRIES,
   AGENT_RETRY_DELAY,
+  QWEN_TTS_ENABLED,
+  QWEN_TTS_URL,
 } from './config.js';
 import {
   AvailableGroup,
   cleanupOrphanPersistentContainers,
+  consumeGroupInterrupted,
   ensureAgentImage,
   interruptContainer,
   killAllContainers,
@@ -69,6 +72,12 @@ import {
   parseEmotion,
   synthesizeSpeech,
 } from './tts.js';
+import {
+  defaultVoiceProfile,
+  isQwenTTSEnabled,
+  loadVoiceProfile,
+  synthesizeQwenTTS,
+} from './tts-qwen.js';
 import { loadJson, saveJson } from './utils.js';
 import { logger } from './logger.js';
 import {
@@ -289,6 +298,127 @@ async function processMessage(msg: NewMessage): Promise<void> {
     }
   }
 
+  // Handle /mute toggle (host-level, no agent needed)
+  if (/^\/mute$/i.test(content)) {
+    const mutePath = path.join(GROUPS_DIR, group.folder, '.tts_muted');
+    const wasMuted = fs.existsSync(mutePath);
+    if (wasMuted) {
+      fs.unlinkSync(mutePath);
+      await sendMessage(msg.chat_jid, 'TTS unmuted — voice messages enabled.');
+    } else {
+      fs.writeFileSync(mutePath, '');
+      await sendMessage(msg.chat_jid, 'TTS muted — text only.');
+    }
+    return;
+  }
+
+  // Handle /voice — unified TTS voice configuration (design, preset, clone, reset)
+  const voiceMatch = content.match(/^\/voice(?:\s+(.*))?$/i);
+  if (voiceMatch) {
+    const params = voiceMatch[1] || '';
+    const instructions = `Help the user configure the TTS voice for this chat.
+
+First, read /workspace/group/voice_profile.json to show current settings (if it exists).
+
+Options:
+
+1. **Design a voice from description** — Ask the user to describe how they want the voice to sound. Examples: 'a warm, confident female voice with a slight British accent, mid-30s', 'a deep, calm male voice, authoritative but friendly'. Write voice_profile.json with mode: voice_design.
+
+2. **Use a preset voice** — Show the available preset voices:
+   - Vivian (female, warm)
+   - Serena (female, elegant)
+   - Dylan (male, casual)
+   - Eric (male, authoritative)
+   - Ryan (male, friendly)
+   - Aiden (male, young)
+   - Uncle_Fu (male, mature)
+   - Ono_Anna (female, Japanese)
+   - Sohee (female, Korean)
+   Write voice_profile.json with mode: custom_voice. Optional 'instruct' field for style direction.
+
+3. **Clone a voice from audio** — The user provides an audio source:
+
+   **Downloading from URLs:**
+   Use the download_audio tool directly — it uses yt-dlp and supports YouTube, Twitch, SoundCloud, and hundreds of other platforms:
+     download_audio({ url: "https://...", filename: "ref_voice_raw" })
+
+   **Other sources (non-URL):**
+   a. **Telegram attachment** — Check recent messages for media files in /workspace/group/media/
+   b. **Direct file path** — Use as-is
+
+   Process the audio to proper format (24kHz mono WAV, max 10 seconds) using the convert_audio tool:
+     convert_audio({ input_path: "/workspace/group/media/ref_voice_raw.wav", output_path: "/workspace/group/media/voice_ref.wav", sample_rate: 24000, mono: true, max_duration: 10 })
+
+   Get a transcript: use the transcribe_audio tool on the processed WAV file.
+   If transcribe_audio fails (no API key), ask the user for the transcript or leave ref_text empty (lower quality clone).
+
+   Write voice_profile.json with mode: voice_clone.
+
+4. **Reset to default** — Delete /workspace/group/voice_profile.json.
+
+Supported languages: Chinese, English, Japanese, Korean, German, French, Russian, Portuguese, Spanish, Italian.
+
+After any voice change, send a test voice message using send_voice with a short greeting so the user can hear the result.
+
+Voice profile JSON format (include only the active mode's config, not all):
+{
+  "provider": "qwen3-tts",
+  "mode": "voice_design" or "custom_voice" or "voice_clone",
+  "voice_design": { "description": "...", "language": "English" },
+  "custom_voice": { "speaker": "...", "instruct": "...", "language": "English" },
+  "voice_clone": { "ref_audio_path": "media/voice_ref.wav", "ref_text": "transcript or empty", "language": "English" },
+  "created_at": "<ISO timestamp>",
+  "updated_at": "<ISO timestamp>"
+}`;
+
+    const escapeXml = (s: string) =>
+      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    let skillXml = `<skill name="voice"`;
+    if (params) skillXml += ` parameters="${escapeXml(params)}"`;
+    skillXml += `>\n${escapeXml(instructions)}\n</skill>`;
+
+    const sinceTimestamp = lastAgentTimestamp[msg.chat_jid] || '';
+    const missedMessages = getMessagesSince(msg.chat_jid, sinceTimestamp, ASSISTANT_NAME);
+
+    let memoryXml = '';
+    if (isSupermemoryEnabled()) {
+      const latestMessage = missedMessages[missedMessages.length - 1]?.content || '';
+      const memories = await retrieveMemories(group.folder, latestMessage);
+      if (memories) memoryXml = formatMemoryContext(memories);
+    }
+
+    const lines = missedMessages.map((m) => {
+      let mediaAttrs = '';
+      if (m.media_type && m.media_path) {
+        const groupDir = path.join(GROUPS_DIR, group.folder);
+        const containerPath = m.media_path.startsWith(groupDir)
+          ? '/workspace/group' + m.media_path.slice(groupDir.length)
+          : m.media_path;
+        mediaAttrs = ` media_type="${escapeXml(m.media_type)}" media_path="${escapeXml(containerPath)}"`;
+      }
+      return `<message sender="${escapeXml(m.sender_name)}" time="${m.timestamp}"${mediaAttrs}>${escapeXml(m.content)}</message>`;
+    });
+    const messagesXml = `<messages>\n${lines.join('\n')}\n</messages>`;
+
+    const prompt = [memoryXml, skillXml, messagesXml].filter(Boolean).join('\n\n');
+
+    await setTyping(msg.chat_jid, true);
+    const response = await runAgent(group, prompt, msg.chat_jid, { isSkillInvocation: true });
+    await setTyping(msg.chat_jid, false);
+
+    if (response) {
+      lastAgentTimestamp[msg.chat_jid] = msg.timestamp;
+      saveState();
+      const voiceSep = '---voice---';
+      const sepIdx = response.indexOf(voiceSep);
+      const cleanText = sepIdx !== -1 ? response.replace(voiceSep, '').trim() : response;
+      if (cleanText && !cleanText.startsWith('[') && !cleanText.endsWith('queued')) {
+        await sendMessage(msg.chat_jid, cleanText);
+      }
+    }
+    return;
+  }
+
   // Check if message is a skill invocation: /skill_name [params]
   const skillMatch = content.match(/^\/([a-z][a-z0-9_]{1,30})(?:\s+(.*))?$/);
   if (skillMatch) {
@@ -460,8 +590,11 @@ async function processMessage(msg: NewMessage): Promise<void> {
     if (cuaEntry.screenshotMessageId) await deleteTelegramMessage(cuaEntry.chatJid, cuaEntry.screenshotMessageId);
   }
 
+  // Always advance the timestamp so failed/interrupted messages are not reprocessed
+  lastAgentTimestamp[msg.chat_jid] = msg.timestamp;
+  saveState();
+
   if (response) {
-    lastAgentTimestamp[msg.chat_jid] = msg.timestamp;
     let text = response;
     if (DEBUG_THREADS) {
       const threadId = sessions[group.folder];
@@ -470,49 +603,68 @@ async function processMessage(msg: NewMessage): Promise<void> {
       }
     }
 
-    // Auto-TTS: parse structured voice response (---voice--- separator)
+    // Auto-TTS: voice-first with text transcription
+    // Mute state: groups/{folder}/.tts_muted file presence = muted (default: not muted)
+    const isMuted = fs.existsSync(path.join(GROUPS_DIR, group.folder, '.tts_muted'));
     const voiceSep = '---voice---';
     const sepIndex = text.indexOf(voiceSep);
 
-    if (isFreyaEnabled()) {
+    // Check if any TTS provider is enabled and not muted
+    // Falls back to default voice profile (QWEN_TTS_DEFAULT_*) when no voice_profile.json exists
+    const qwenProfile = isQwenTTSEnabled()
+      ? (loadVoiceProfile(group.folder) ?? defaultVoiceProfile())
+      : null;
+    const ttsEnabled = !isMuted && ((qwenProfile !== null) || isFreyaEnabled());
+
+    if (ttsEnabled) {
       let voicePart: string;
-      let textPart: string | null;
+      let textPart: string;
 
       if (sepIndex !== -1) {
-        // Structured: voice summary + text follow-up
+        // Structured: voice summary + full text transcription
         voicePart = text.slice(0, sepIndex).trim();
-        textPart = text.slice(sepIndex + voiceSep.length).trim();
-      } else if (!looksLikeCode(text) && text.length <= 500) {
-        // Short non-code response: voice only
-        voicePart = text;
-        textPart = null;
+        textPart = text.slice(sepIndex + voiceSep.length).trim() || voicePart;
+      } else if (!looksLikeCode(text)) {
+        // Non-code response: voice it all, transcribe after
+        // Truncate voice to 2000 chars (TTS limit), full text always sent
+        voicePart = text.length > 2000 ? text.slice(0, 2000) + '...' : text;
+        textPart = text;
       } else {
-        // Long or code-heavy with no separator: text only
+        // Code-heavy: text only (TTS would be useless)
         voicePart = '';
         textPart = text;
       }
 
       if (voicePart) {
+        const ttsStatusId = await sendTelegramStatusMessage(msg.chat_jid, 'speaking');
         try {
-          const emotion = detectEmotionFromText(voicePart);
-          const markedText = formatFreyaText(voicePart, emotion);
           const mediaDir = path.join(GROUPS_DIR, group.folder, 'media');
-          const oggPath = await synthesizeSpeech(markedText, mediaDir);
+          let oggPath: string;
+
+          if (qwenProfile) {
+            // Qwen3-TTS via Modal (primary)
+            oggPath = await synthesizeQwenTTS(voicePart, qwenProfile, mediaDir, group.folder);
+          } else {
+            // Freya TTS (fallback)
+            const emotion = detectEmotionFromText(voicePart);
+            const markedText = formatFreyaText(voicePart, emotion);
+            oggPath = await synthesizeSpeech(markedText, mediaDir);
+          }
+
           await sendTelegramVoice(msg.chat_jid, oggPath);
         } catch (err) {
           logger.error({ module: 'index', err }, 'Auto-TTS failed, sending as text');
-          // On TTS failure, prepend voice part back to text
-          textPart = textPart
-            ? `${voicePart}\n\n${textPart}`
-            : voicePart;
+        } finally {
+          if (ttsStatusId) await deleteTelegramMessage(msg.chat_jid, ttsStatusId);
         }
       }
 
+      // Always send text transcription after voice
       if (textPart) {
         await sendMessage(msg.chat_jid, textPart);
       }
     } else {
-      // Freya disabled: strip separator and send as plain text
+      // TTS disabled or muted: strip separator and send as plain text
       const cleanText =
         sepIndex !== -1 ? text.replace(voiceSep, '').trim() : text;
       await sendMessage(msg.chat_jid, cleanText);
@@ -580,6 +732,15 @@ async function runAgent(
 
   for (let attempt = 0; attempt <= MAX_AGENT_RETRIES; attempt++) {
     if (attempt > 0) {
+      // Check if group was interrupted before retrying
+      if (consumeGroupInterrupted(group.folder)) {
+        logger.info(
+          { module: 'index', group: group.name, attempt },
+          'Skipping retry — group was interrupted',
+        );
+        return null;
+      }
+
       logger.warn(
         { module: 'index', group: group.name, attempt, maxRetries: MAX_AGENT_RETRIES },
         `Retrying agent after error (attempt ${attempt + 1}/${MAX_AGENT_RETRIES + 1})`,
@@ -593,6 +754,15 @@ async function runAgent(
       if (output.newSessionId) {
         sessions[group.folder] = output.newSessionId;
         saveJson(path.join(DATA_DIR, 'sessions.json'), sessions);
+      }
+
+      // Interrupted: stop immediately, don't retry
+      if (output.status === 'interrupted') {
+        logger.info(
+          { module: 'index', group: group.name },
+          'Agent interrupted, skipping retries',
+        );
+        return null;
       }
 
       if (output.status === 'error') {
@@ -857,15 +1027,45 @@ function startIpcWatcher(): void {
                 data.chatJid &&
                 data.text
               ) {
-                // Voice message via Freya TTS
+                // Voice message via TTS (Qwen3-TTS primary, Freya fallback)
                 const targetGroup = registeredGroups[data.chatJid];
                 if (
                   isMain ||
                   (targetGroup && targetGroup.folder === sourceGroup)
                 ) {
-                  if (isFreyaEnabled()) {
+                  const ipcQwenProfile = isQwenTTSEnabled()
+                    ? (loadVoiceProfile(sourceGroup) ?? defaultVoiceProfile())
+                    : null;
+
+                  if (ipcQwenProfile) {
+                    // Qwen3-TTS via Modal (primary)
+                    const ttsStatusId = await sendTelegramStatusMessage(data.chatJid, 'speaking');
                     try {
-                      // Resolve emotion: agent-specified or keyword fallback
+                      const mediaDir = path.join(GROUPS_DIR, sourceGroup, 'media');
+                      const oggPath = await synthesizeQwenTTS(data.text, ipcQwenProfile, mediaDir, sourceGroup);
+                      await sendTelegramVoice(data.chatJid, oggPath);
+                      logger.info(
+                        {
+                          module: 'index',
+                          chatJid: data.chatJid,
+                          sourceGroup,
+                          mode: ipcQwenProfile.mode,
+                        },
+                        'IPC voice message sent (Qwen3-TTS)',
+                      );
+                    } catch (err) {
+                      logger.error(
+                        { module: 'index', err, chatJid: data.chatJid },
+                        'Qwen3-TTS failed, falling back to text',
+                      );
+                      await sendMessage(data.chatJid, data.text);
+                    } finally {
+                      if (ttsStatusId) await deleteTelegramMessage(data.chatJid, ttsStatusId);
+                    }
+                  } else if (isFreyaEnabled()) {
+                    // Freya TTS (archived fallback)
+                    const ttsStatusId = await sendTelegramStatusMessage(data.chatJid, 'speaking');
+                    try {
                       let emotion;
                       if (data.emotion) {
                         const parsed = parseEmotion(data.emotion);
@@ -882,15 +1082,8 @@ function startIpcWatcher(): void {
                         emotion = detectEmotionFromText(data.text);
                       }
                       const markedText = formatFreyaText(data.text, emotion);
-                      const mediaDir = path.join(
-                        GROUPS_DIR,
-                        sourceGroup,
-                        'media',
-                      );
-                      const oggPath = await synthesizeSpeech(
-                        markedText,
-                        mediaDir,
-                      );
+                      const mediaDir = path.join(GROUPS_DIR, sourceGroup, 'media');
+                      const oggPath = await synthesizeSpeech(markedText, mediaDir);
                       await sendTelegramVoice(data.chatJid, oggPath);
                       logger.info(
                         {
@@ -899,19 +1092,21 @@ function startIpcWatcher(): void {
                           sourceGroup,
                           emotion: emotion.name,
                         },
-                        'IPC voice message sent',
+                        'IPC voice message sent (Freya)',
                       );
                     } catch (err) {
                       logger.error(
                         { module: 'index', err, chatJid: data.chatJid },
-                        'TTS failed, falling back to text',
+                        'Freya TTS failed, falling back to text',
                       );
                       await sendMessage(data.chatJid, data.text);
+                    } finally {
+                      if (ttsStatusId) await deleteTelegramMessage(data.chatJid, ttsStatusId);
                     }
                   } else {
                     logger.warn(
                       { module: 'index', sourceGroup },
-                      'send_voice used but FREYA_API_KEY not set, sending as text',
+                      'send_voice used but no TTS provider configured, sending as text',
                     );
                     await sendMessage(data.chatJid, data.text);
                   }
@@ -1719,6 +1914,64 @@ async function ensureDockerImageRequirements(): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// TTS server subprocess (auto-start when QWEN_TTS_URL points to localhost)
+// ---------------------------------------------------------------------------
+
+let ttsProcess: ChildProcess | null = null;
+
+function shouldAutoStartTts(): boolean {
+  if (!QWEN_TTS_ENABLED || !QWEN_TTS_URL) return false;
+  try {
+    const url = new URL(QWEN_TTS_URL);
+    return ['localhost', '127.0.0.1', '0.0.0.0'].includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function startTtsServer(): void {
+  const ttsDir = path.join(import.meta.dir, '..', 'tts-server');
+  if (!fs.existsSync(path.join(ttsDir, 'server.py'))) {
+    logger.warn({ module: 'tts' }, 'tts-server/server.py not found, skipping TTS auto-start');
+    return;
+  }
+
+  logger.info({ module: 'tts', url: QWEN_TTS_URL }, 'Starting local TTS server');
+  ttsProcess = spawn('uv', ['run', 'server.py'], {
+    cwd: ttsDir,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env },
+  });
+
+  ttsProcess.stdout?.on('data', (data: Buffer) => {
+    for (const line of data.toString().trim().split('\n')) {
+      logger.info({ module: 'tts' }, line);
+    }
+  });
+
+  ttsProcess.stderr?.on('data', (data: Buffer) => {
+    for (const line of data.toString().trim().split('\n')) {
+      logger.info({ module: 'tts' }, line);
+    }
+  });
+
+  ttsProcess.on('exit', (code) => {
+    if (code !== null && code !== 0) {
+      logger.error({ module: 'tts', code }, 'TTS server exited unexpectedly');
+    }
+    ttsProcess = null;
+  });
+}
+
+function stopTtsServer(): void {
+  if (ttsProcess) {
+    logger.info({ module: 'tts' }, 'Stopping TTS server');
+    ttsProcess.kill('SIGTERM');
+    ttsProcess = null;
+  }
+}
+
 async function main(): Promise<void> {
   if (!TELEGRAM_BOT_TOKEN) {
     logger.error({ module: 'index' }, 'TELEGRAM_BOT_TOKEN is required');
@@ -1767,6 +2020,7 @@ async function main(): Promise<void> {
     runTaskNow: (taskId: string) => runTaskNow(taskId, schedulerDeps),
   };
 
+  if (shouldAutoStartTts()) startTtsServer();
   startCuaTakeoverServer();
   startDashboardServer();
   initTailscaleServe();
@@ -1803,6 +2057,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     stopTelegram();
     killAllContainers();
     await disconnectBrowser();
+    stopTtsServer();
     stopTailscaleServe();
     stopDashboardServer();
     stopLogSync();

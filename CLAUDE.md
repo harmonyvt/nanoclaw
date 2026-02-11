@@ -34,6 +34,7 @@ Telegram <-> Host (Bun) <-> SQLite
 | `src/browse-host.ts`      | Host-side browse bridge for CUA `/cmd` actions                     |
 | `src/sandbox-manager.ts`  | CUA sandbox lifecycle: start/stop/idle timeout (Docker)            |
 | `src/mount-security.ts`   | Validates additional mounts against external allowlist             |
+| `src/tts-qwen.ts`        | Qwen3-TTS client: voice profiles, HTTP synthesis via self-hosted server |
 | `src/supermemory.ts`      | Optional Supermemory integration: retrieve/store long-term memory  |
 | `src/types.ts`            | Shared TypeScript interfaces                                       |
 | `src/logger.ts`           | Pino logger with pino-pretty                                       |
@@ -62,6 +63,7 @@ Telegram <-> Host (Bun) <-> SQLite
 | ------------------------------ | --------------------------------------------------- |
 | `groups/{name}/CLAUDE.md`      | Per-group agent instructions and memory             |
 | `groups/{name}/SOUL.md`        | Per-group personality/behavior (optional)           |
+| `groups/{name}/voice_profile.json` | Per-group TTS voice config (Qwen3-TTS)          |
 | `groups/{name}/media/`         | Downloaded photos, voice, docs, screenshots         |
 | `groups/{name}/conversations/` | Archived conversation transcripts (PreCompact hook) |
 | `groups/{name}/skills/`        | Stored skill definitions (JSON, one per skill)      |
@@ -155,7 +157,13 @@ Per-group IPC directories prevent cross-group access. Non-main groups can only s
 
 - `send_message` -- Send message to current chat
 - `send_file` -- Send a file/document to current chat (path must be under /workspace/group/ or /workspace/global/)
-- `send_voice` -- Send a voice message using Freya TTS (text-to-speech with emotion support)
+- `send_voice` -- Send a voice message using Qwen3-TTS (primary) or Freya TTS (fallback). Voice characteristics from per-group `voice_profile.json`
+
+### Audio Processing
+
+- `download_audio` -- Download audio from URL via yt-dlp (YouTube, Twitch, SoundCloud, etc.). Returns path to downloaded WAV file.
+- `convert_audio` -- Convert audio with ffmpeg (format, sample rate, mono, trim duration). Ideal for preparing voice clone reference audio (24kHz mono WAV, max 10s).
+- `transcribe_audio` -- Transcribe an audio file to text using OpenAI Whisper (requires OPENAI_API_KEY)
 
 ### Task Scheduling
 
@@ -239,6 +247,7 @@ Requires `SUPERMEMORY_API_KEY`. When enabled, memories are also automatically re
 | `/pr`            | Create a pull request (branches off main if needed)            |
 | `/restart`       | Restart the NanoClaw background service                        |
 | `/logs`          | View recent logs, errors, or follow live output                |
+| `/voice`         | Configure TTS voice (design, preset, or clone from audio)      |
 | `/debug`         | Container issues, logs, troubleshooting                        |
 | `/add-gmail`     | Add Gmail integration to a group                               |
 | `/add-parallel`  | Add Parallel AI integration                                    |
@@ -276,8 +285,14 @@ Requires `SUPERMEMORY_API_KEY`. When enabled, memories are also automatically re
 | `SUPERMEMORY_API_KEY`       | --                       | Supermemory long-term memory (preferred) |
 | `SUPERMEMORY_OPENCLAW_API_KEY` | --                    | Supermemory key alias (accepted fallback) |
 | `SUPERMEMORY_CC_API_KEY`    | --                       | Supermemory key alias (accepted fallback) |
-| `FREYA_TTS_ENABLED`         | `false`                  | Enable Freya TTS (`true` to enable)     |
-| `FREYA_API_KEY`             | --                       | Freya TTS voice synthesis               |
+| `QWEN_TTS_ENABLED`         | `false`                  | Enable Qwen3-TTS (`true`)               |
+| `QWEN_TTS_URL`             | --                       | TTS server URL (e.g. `http://100.x.x.x:8787`) |
+| `QWEN_TTS_API_KEY`         | --                       | TTS server Bearer token                 |
+| `QWEN_TTS_DEFAULT_LANGUAGE` | `English`                | Default TTS language                    |
+| `QWEN_TTS_DEFAULT_SPEAKER`  | `Vivian`                 | Default preset speaker                  |
+| `QWEN_TTS_RATE_LIMIT_PER_MIN`| `10`                   | Max TTS requests per minute             |
+| `FREYA_TTS_ENABLED`         | `false`                  | Enable Freya TTS fallback               |
+| `FREYA_API_KEY`             | --                       | Freya TTS voice synthesis (archived)    |
 | `FREYA_CHARACTER_ID`        | `Amika2`                 | Freya TTS character voice               |
 | `FREYA_LANGUAGE`            | `English`                | Freya TTS language                      |
 | `ASSISTANT_NAME`            | `Andy`                   | Bot trigger name (`@Name`)              |
@@ -342,6 +357,18 @@ bun dev                      # Run with hot reload (--watch)
 bun run build                # Compile TypeScript
 ./container/build.sh         # Rebuild agent container
 docker pull --platform linux/amd64 trycua/cua-xfce:latest # Pull/update CUA sandbox image
+bun run setup:tts            # Set up TTS server (uv sync)
+bun run dev:tts              # Run TTS server locally (uv run)
+./tts-server/deploy.sh user@host  # Deploy TTS to remote machine
+```
+
+### TTS Server (`tts-server/`)
+
+Python FastAPI server managed with [uv](https://docs.astral.sh/uv/). Uses `pyproject.toml` for dependencies — no manual venv management needed.
+
+```bash
+bun run setup:tts            # Equivalent to: cd tts-server && uv sync
+bun run dev:tts              # Equivalent to: cd tts-server && uv run server.py
 ```
 
 Service management (production via launchd):

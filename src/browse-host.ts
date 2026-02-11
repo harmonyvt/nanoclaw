@@ -315,6 +315,18 @@ export async function runCuaCommand(
   return payload;
 }
 
+/**
+ * Extract stdout string from a `run_command` CUA result.
+ * The CUA API returns {success, stdout, stderr, return_code} but
+ * runCuaCommand may return the full object when no `content`/`result` field exists.
+ */
+function cuaStdout(result: unknown): string {
+  if (result && typeof result === 'object' && 'stdout' in result) {
+    return String((result as Record<string, unknown>).stdout);
+  }
+  return String(result ?? '');
+}
+
 async function runCuaCommandWithFallback(
   attempts: Array<{ command: string; args?: Record<string, unknown> }>,
 ): Promise<unknown> {
@@ -1965,7 +1977,7 @@ async function processCuaRequest(
         const statResult = await runCuaCommand('run_command', {
           command: `stat -c '%s' ${shellSingleQuote(filePath)} 2>/dev/null || stat -f '%z' ${shellSingleQuote(filePath)} 2>/dev/null`,
         });
-        const sizeStr = String(statResult).trim().replace(/'/g, '');
+        const sizeStr = cuaStdout(statResult).trim().replace(/'/g, '');
         fileSize = parseInt(sizeStr, 10);
         if (isNaN(fileSize)) {
           return {
@@ -1993,7 +2005,7 @@ async function processCuaRequest(
         const result = await runCuaCommand('run_command', {
           command: `base64 -w0 ${shellSingleQuote(filePath)} 2>/dev/null || base64 ${shellSingleQuote(filePath)} 2>/dev/null | tr -d '\\n'`,
         });
-        base64Content = String(result).trim();
+        base64Content = cuaStdout(result).trim();
         if (!base64Content) {
           return {
             status: 'error',

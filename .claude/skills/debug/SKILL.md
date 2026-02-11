@@ -141,7 +141,38 @@ Check:
 - `data/registered_groups.json` has active chat
 - host logs for routing errors
 
-## 7. Rebuild + Redeploy
+## 7. Qwen3-TTS Debugging
+
+### Voice messages not working
+
+Check:
+
+- `QWEN_TTS_ENABLED=true` in `.env`
+- `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` set in `.env` (or `~/.modal.toml` exists)
+- Modal app is deployed: `modal app list` should show `qwen3-tts`
+- Voice profile exists: `cat groups/{group}/voice_profile.json`
+
+### Modal cold start timeout
+
+First call after 5+ min idle takes ~30-60s (model loading). Check host logs for timeout errors. If the container keeps scaling down too fast, increase `scaledown_window` in `modal/qwen3_tts_app.py`.
+
+### Test Modal directly
+
+```bash
+modal run modal/qwen3_tts_app.py
+# Should produce /tmp/test_custom_voice.ogg and /tmp/test_voice_design.ogg
+```
+
+### Voice profile issues
+
+```bash
+# Check if profile is valid JSON
+python3 -c "import json; json.load(open('groups/main/voice_profile.json'))"
+```
+
+The agent auto-generates `voice_profile.json` when SOUL.md exists but the profile doesn't. If broken, delete it and the agent will recreate on next message.
+
+## 8. Rebuild + Redeploy
 
 After code changes that affect runtime:
 

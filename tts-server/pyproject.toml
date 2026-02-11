@@ -1,0 +1,16 @@
+[project]
+name = "nanoclaw-tts"
+version = "0.1.0"
+description = "Self-hosted Qwen3-TTS inference server"
+requires-python = "==3.11.*"
+dependencies = [
+    "mlx-audio>=0.3.0",
+    "soundfile",
+    "numpy",
+    "fastapi",
+    "uvicorn[standard]",
+]
+
+[tool.uv]
+python-preference = "only-managed"
+prerelease = "allow"

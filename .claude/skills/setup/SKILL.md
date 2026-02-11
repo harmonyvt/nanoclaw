@@ -75,6 +75,27 @@ Optional provider settings:
 
 Per-group provider/model can also be configured later when registering groups (the `register_group` tool accepts optional `provider` and `model` params).
 
+### Qwen3-TTS Voice Synthesis (optional)
+
+Ask if they want voice messages enabled. If yes:
+
+1. Install system dependencies:
+   ```bash
+   # macOS
+   brew install ffmpeg sox
+   # Linux
+   sudo apt-get install -y ffmpeg sox
+   ```
+2. Install TTS Python dependencies: `bun run setup:tts`
+3. Set in `.env`:
+   - `QWEN_TTS_ENABLED=true`
+   - `QWEN_TTS_URL=http://localhost:8787` (for local) or `http://<tailscale-ip>:8787` (for remote)
+   - `QWEN_TTS_API_KEY=<key>` (optional for local, required for remote)
+
+The TTS server auto-starts with `bun dev` when URL points to localhost. For remote deployment, use `./tts-server/deploy.sh user@host`.
+
+Voice profiles are auto-generated when SOUL.md is created. Users can customize via `/design_voice` in Telegram.
+
 ### Optional CUA tuning
 
 - `CUA_SANDBOX_IMAGE`

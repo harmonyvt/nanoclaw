@@ -99,13 +99,26 @@ export const CUA_SANDBOX_PERSIST = process.env.CUA_SANDBOX_PERSIST !== 'false';
 export const CUA_SANDBOX_HOME_VOLUME =
   process.env.CUA_SANDBOX_HOME_VOLUME || 'nanoclaw-cua-home';
 
-// Freya TTS configuration (disabled by default, set FREYA_TTS_ENABLED=true to enable)
+// Freya TTS configuration (archived — kept as fallback, disabled by default)
 export const FREYA_TTS_ENABLED = process.env.FREYA_TTS_ENABLED === 'true';
 export const FREYA_API_KEY = process.env.FREYA_API_KEY || '';
 export const FREYA_CHARACTER_ID = process.env.FREYA_CHARACTER_ID || 'Amika2';
 export const FREYA_LANGUAGE = process.env.FREYA_LANGUAGE || 'English';
 export const FREYA_RATE_LIMIT_PER_MIN = parseInt(
   process.env.FREYA_RATE_LIMIT_PER_MIN || '8',
+  10,
+);
+
+// Qwen3-TTS self-hosted server
+export const QWEN_TTS_ENABLED = process.env.QWEN_TTS_ENABLED === 'true';
+export const QWEN_TTS_URL = process.env.QWEN_TTS_URL || '';
+export const QWEN_TTS_API_KEY = process.env.QWEN_TTS_API_KEY || '';
+export const QWEN_TTS_DEFAULT_LANGUAGE =
+  process.env.QWEN_TTS_DEFAULT_LANGUAGE || 'English';
+export const QWEN_TTS_DEFAULT_SPEAKER =
+  process.env.QWEN_TTS_DEFAULT_SPEAKER || 'Vivian';
+export const QWEN_TTS_RATE_LIMIT_PER_MIN = parseInt(
+  process.env.QWEN_TTS_RATE_LIMIT_PER_MIN || '10',
   10,
 );
 
