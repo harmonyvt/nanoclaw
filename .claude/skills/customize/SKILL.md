@@ -57,6 +57,17 @@ Use AskUserQuestion for ambiguous product decisions. Then implement directly in 
 - OpenAI provider: uses chat completions with function calling. IPC tools only (send_message, browse_*, firecrawl_*, memory_*, schedule_task, etc.).
 - Adding a new provider: implement `ProviderAdapter` interface in `container/agent-runner/src/adapters/`, register in `createAdapter()` factory.
 
+### TTS Voice Changes
+
+- **Provider config**: `QWEN_TTS_ENABLED` in `.env` / `src/config.ts`. Modal auth via `MODAL_TOKEN_ID`/`MODAL_TOKEN_SECRET`.
+- **Per-group voice**: Each group has `groups/{name}/voice_profile.json` controlling the voice. Two modes:
+  - `voice_design`: Natural language voice descriptions (e.g., "warm British female, mid-30s")
+  - `custom_voice`: 9 presets (Vivian, Serena, Uncle_Fu, Dylan, Eric, Ryan, Aiden, Ono_Anna, Sohee)
+- **Voice profile auto-generation**: When SOUL.md is created, agent auto-creates a matching voice profile.
+- **Telegram skill**: `/design_voice` lets users change voice via Telegram.
+- **Host TTS logic**: `src/tts-qwen.ts` (Qwen3-TTS via Modal SDK), `src/tts.ts` (Freya, archived fallback).
+- **Modal app**: `modal/qwen3_tts_app.py` — deploy with `modal deploy modal/qwen3_tts_app.py`.
+
 ### New Integrations/Tools
 
 - Add tool definitions in `container/agent-runner/src/tool-registry.ts` (provider-agnostic, Zod schemas).

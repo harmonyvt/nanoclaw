@@ -78,14 +78,19 @@ export function preparePrompt(input: ContainerInput): string {
 
   // Inject SOUL.md personality into prompt
   const soulPath = '/workspace/group/SOUL.md';
+  const voiceProfilePath = '/workspace/group/voice_profile.json';
   try {
     if (fs.existsSync(soulPath)) {
       const soulContent = fs.readFileSync(soulPath, 'utf-8').trim();
       if (soulContent) {
         prompt = `<soul>\n${soulContent}\n</soul>\n\n${prompt}`;
       }
+      // Auto-generate voice profile if SOUL exists but voice_profile.json doesn't
+      if (!fs.existsSync(voiceProfilePath) && !input.isScheduledTask) {
+        prompt += '\n<voice_setup>\nYou have a personality but no voice profile yet. Based on your SOUL.md personality, create /workspace/group/voice_profile.json with a voice that matches this personality. Use voice_design mode with a natural language description of how this personality should sound (age, gender, tone, accent, speaking style).\n\nFormat: {"provider":"qwen3-tts","mode":"voice_design","voice_design":{"description":"<describe the voice>","language":"English"},"created_at":"<ISO timestamp>","updated_at":"<ISO timestamp>"}\n\nDo this silently before responding to the user.\n</voice_setup>\n';
+      }
     } else if (!input.isScheduledTask) {
-      prompt = `<soul_setup>\nYou don't have a personality defined yet (no SOUL.md file). Introduce yourself briefly and ask the user if they'd like to give you a name and personality. If they do, create /workspace/group/SOUL.md with what they describe. Until then, be helpful and friendly.\n</soul_setup>\n\n${prompt}`;
+      prompt = `<soul_setup>\nYou don't have a personality defined yet (no SOUL.md file). Introduce yourself briefly and ask the user if they'd like to give you a name and personality. If they do:\n1. Create /workspace/group/SOUL.md with what they describe.\n2. Also create a matching voice profile at /workspace/group/voice_profile.json with a natural language description of how this personality should sound.\n\nVoice profile format: {"provider":"qwen3-tts","mode":"voice_design","voice_design":{"description":"<age, gender, tone, accent, style>","language":"English"},"created_at":"<ISO timestamp>","updated_at":"<ISO timestamp>"}\n\nUntil then, be helpful and friendly.\n</soul_setup>\n\n${prompt}`;
     }
   } catch (err) {
     log(`Failed to read SOUL.md: ${err instanceof Error ? err.message : String(err)}`);

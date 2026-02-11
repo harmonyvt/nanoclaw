@@ -75,6 +75,21 @@ Optional provider settings:
 
 Per-group provider/model can also be configured later when registering groups (the `register_group` tool accepts optional `provider` and `model` params).
 
+### Qwen3-TTS Voice Synthesis (optional)
+
+Ask if they want voice messages enabled. If yes:
+
+1. Verify Modal is set up: `modal profile current`
+2. Create HF token secret if needed: `modal secret create hf-token HF_TOKEN=hf_xxx`
+3. Deploy the TTS app: `modal deploy modal/qwen3_tts_app.py`
+4. Test it works: `modal run modal/qwen3_tts_app.py`
+5. Get Modal credentials from `~/.modal.toml` and set in `.env`:
+   - `QWEN_TTS_ENABLED=true`
+   - `MODAL_TOKEN_ID=ak-...`
+   - `MODAL_TOKEN_SECRET=as-...`
+
+Voice profiles are auto-generated when SOUL.md is created. Users can customize via `/design_voice` in Telegram.
+
 ### Optional CUA tuning
 
 - `CUA_SANDBOX_IMAGE`

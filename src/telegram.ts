@@ -263,6 +263,8 @@ type SlashCommandSpec = {
     | 'verbose'
     | 'thinking'
     | 'stop'
+    | 'mute'
+    | 'design_voice'
     | 'help'
     | 'skills';
   description: string;
@@ -329,6 +331,16 @@ const TELEGRAM_SLASH_COMMANDS: SlashCommandSpec[] = [
     command: 'stop',
     description: 'Interrupt the running agent',
     help: 'Stop the currently running agent operation',
+  },
+  {
+    command: 'mute',
+    description: 'Toggle TTS voice messages on/off',
+    help: 'Toggle TTS voice messages on/off (voice on by default)',
+  },
+  {
+    command: 'design_voice',
+    description: 'Design or change the AI TTS voice',
+    help: 'Design or change the TTS voice: /design_voice [description or "preset"]',
   },
   {
     command: 'help',
@@ -628,7 +640,9 @@ export async function connectTelegram(
     if (TELEGRAM_OWNER_ID) {
       const ownerChatId = Number(TELEGRAM_OWNER_ID);
       if (!Number.isNaN(ownerChatId)) {
-        await syncChatCommandsIfNeeded(ownerChatId);
+        const ownerJid = makeTelegramChatId(ownerChatId);
+        const ownerGroup = registeredGroups()[ownerJid];
+        await syncChatCommandsIfNeeded(ownerChatId, undefined, ownerGroup?.folder);
       }
     }
     logger.info({ module: 'telegram' }, 'Bot commands registered with Telegram');
@@ -683,9 +697,12 @@ export async function connectTelegram(
 
   bot.use(async (ctx, next) => {
     if (ctx.chat && shouldAccept({ chat: ctx.chat, from: ctx.from })) {
+      const chatJid = makeTelegramChatId(ctx.chat.id);
+      const group = registeredGroups()[chatJid];
       await syncChatCommandsIfNeeded(
         ctx.chat.id,
         toLanguageCode(ctx.from?.language_code),
+        group?.folder,
       );
     }
     await next();
