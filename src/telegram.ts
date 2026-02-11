@@ -123,6 +123,62 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+function markdownToTelegramHtml(text: string): string {
+  let result = text;
+
+  result = result.replace(/```(\w*)\n([\s\S]*?)```/g, (_, _lang, code) => {
+    return `<pre><code>${escapeHtml(code.trim())}</code></pre>`;
+  });
+
+  result = result.replace(/```([\s\S]*?)```/g, (_, code) => {
+    return `<pre><code>${escapeHtml(code.trim())}</code></pre>`;
+  });
+
+  result = result.replace(/`([^`\n]+)`/g, (_, code) => {
+    return `<code>${escapeHtml(code)}</code>`;
+  });
+
+  result = result.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, linkText, url) => {
+    return `<a href="${escapeHtml(url)}">${escapeHtml(linkText)}</a>`;
+  });
+
+  result = result.replace(/\*\*([^*\n]+?)\*\*/g, (_, t) => `<b>${escapeHtml(t)}</b>`);
+  result = result.replace(/__([^_\n]+?)__/g, (_, t) => `<b>${escapeHtml(t)}</b>`);
+
+  result = result.replace(/\*([^*\n]+?)\*/g, (_, t) => `<i>${escapeHtml(t)}</i>`);
+  result = result.replace(/_([^_\n]+?)_/g, (_, t) => `<i>${escapeHtml(t)}</i>`);
+
+  result = result.replace(/^### (.+)$/gm, (_, t) => `<b>${escapeHtml(t)}</b>`);
+  result = result.replace(/^## (.+)$/gm, (_, t) => `<b>${escapeHtml(t)}</b>`);
+  result = result.replace(/^# (.+)$/gm, (_, t) => `<b>${escapeHtml(t)}</b>`);
+
+  result = result.replace(/^[-*+] (.+)$/gm, '• $1');
+
+  const lines = result.split('\n');
+  const processedLines = lines.map((line) => {
+    if (
+      line.includes('<') &&
+      !line.startsWith('<b>') &&
+      !line.startsWith('<i>') &&
+      !line.startsWith('<code>') &&
+      !line.startsWith('<pre>') &&
+      !line.startsWith('<a ') &&
+      !line.includes('</')
+    ) {
+      return line;
+    }
+    if (!line.includes('<') && !line.includes('>')) {
+      return line
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
+    return line;
+  });
+
+  return processedLines.join('\n');
+}
+
 function formatTaskList(tasks: ScheduledTask[]): string {
   if (tasks.length === 0) return 'No tasks scheduled. Ask me to create one.';
 
@@ -219,7 +275,11 @@ const APP_VERSION: string = JSON.parse(
 ).version;
 const SELF_UPDATE_SCRIPT = path.join(PROJECT_ROOT, 'scripts', 'self-update.sh');
 const SELF_UPDATE_LOG = path.join(PROJECT_ROOT, 'logs', 'self-update.log');
-const SELF_UPDATE_MARKER = path.join(PROJECT_ROOT, 'data', 'self-update-pending.json');
+const SELF_UPDATE_MARKER = path.join(
+  PROJECT_ROOT,
+  'data',
+  'self-update-pending.json',
+);
 const SELF_UPDATE_CONFIRM_WINDOW_MS = 5 * 60 * 1000;
 const SELF_UPDATE_ENABLED = process.env.SELF_UPDATE_ENABLED !== 'false';
 const SELF_UPDATE_BRANCH = process.env.SELF_UPDATE_BRANCH || 'main';
@@ -418,7 +478,11 @@ async function checkForServiceUpdate(): Promise<{
   let containerChanged = false;
   if (behind > 0) {
     const containerDiff = await runGit([
-      'diff', '--name-only', `HEAD..${remoteRef}`, '--', 'container/',
+      'diff',
+      '--name-only',
+      `HEAD..${remoteRef}`,
+      '--',
+      'container/',
     ]);
     containerChanged = containerDiff.length > 0;
   }
@@ -433,7 +497,12 @@ async function checkForServiceUpdate(): Promise<{
 async function verifySelfUpdate(): Promise<void> {
   if (!fs.existsSync(SELF_UPDATE_MARKER)) return;
 
-  let marker: { expectedHead: string; chatId: string; timestamp: string; containerRebuilt: boolean };
+  let marker: {
+    expectedHead: string;
+    chatId: string;
+    timestamp: string;
+    containerRebuilt: boolean;
+  };
   try {
     marker = JSON.parse(fs.readFileSync(SELF_UPDATE_MARKER, 'utf-8'));
   } catch {
@@ -441,7 +510,11 @@ async function verifySelfUpdate(): Promise<void> {
     return;
   } finally {
     // Always clean up the marker so we don't re-report on every restart
-    try { fs.unlinkSync(SELF_UPDATE_MARKER); } catch { /* ignore */ }
+    try {
+      fs.unlinkSync(SELF_UPDATE_MARKER);
+    } catch {
+      /* ignore */
+    }
   }
 
   const numericChatId = Number(marker.chatId);
@@ -461,13 +534,19 @@ async function verifySelfUpdate(): Promise<void> {
           `Actual: ${currentHead.slice(0, 8)}`,
           `Check ${SELF_UPDATE_LOG} for details.`,
         ];
-    await sendTelegramMessage(makeTelegramChatId(numericChatId), lines.join('\n'));
+    await sendTelegramMessage(
+      makeTelegramChatId(numericChatId),
+      lines.join('\n'),
+    );
   } catch (err) {
     logger.error({ module: 'telegram', err }, 'Failed to verify self-update');
   }
 }
 
-function startSelfUpdateProcess(chatId: number, opts?: { rebuildOnly?: boolean }): void {
+function startSelfUpdateProcess(
+  chatId: number,
+  opts?: { rebuildOnly?: boolean },
+): void {
   if (!fs.existsSync(SELF_UPDATE_SCRIPT)) {
     throw new Error(`Self-update script is missing: ${SELF_UPDATE_SCRIPT}`);
   }
@@ -505,7 +584,10 @@ function startSelfUpdateProcess(chatId: number, opts?: { rebuildOnly?: boolean }
           'Self-update script finished successfully. Service restart may briefly interrupt this chat.',
         )
         .catch((err) =>
-          logger.error({ module: 'telegram', err }, 'Failed to send update success message'),
+          logger.error(
+            { module: 'telegram', err },
+            'Failed to send update success message',
+          ),
         );
       return;
     }
@@ -533,7 +615,12 @@ function startSelfUpdateProcess(chatId: number, opts?: { rebuildOnly?: boolean }
         chatId,
         `Self-update failed (exit code ${code}).\n\nLast log lines:\n${tail}`,
       )
-      .catch((err) => logger.error({ module: 'telegram', err }, 'Failed to send update failure message'));
+      .catch((err) =>
+        logger.error(
+          { module: 'telegram', err },
+          'Failed to send update failure message',
+        ),
+      );
   });
 
   child.unref();
@@ -562,7 +649,9 @@ export async function connectTelegram(
   }));
   const syncedCommandScopes = new Set<string>();
 
-  function getCommandsForGroup(groupFolder?: string): Array<{ command: string; description: string }> {
+  function getCommandsForGroup(
+    groupFolder?: string,
+  ): Array<{ command: string; description: string }> {
     if (!groupFolder) return builtinCommands;
     const skillCmds = getSkillCommandsForGroup(groupFolder);
     if (skillCmds.length === 0) return builtinCommands;
@@ -631,9 +720,15 @@ export async function connectTelegram(
         await syncChatCommandsIfNeeded(ownerChatId);
       }
     }
-    logger.info({ module: 'telegram' }, 'Bot commands registered with Telegram');
+    logger.info(
+      { module: 'telegram' },
+      'Bot commands registered with Telegram',
+    );
   } catch (err) {
-    logger.error({ module: 'telegram', err }, 'Failed to register bot commands');
+    logger.error(
+      { module: 'telegram', err },
+      'Failed to register bot commands',
+    );
   }
 
   // Set the persistent Menu Button (bottom-left "Open" button like BotFather)
@@ -648,9 +743,15 @@ export async function connectTelegram(
           web_app: { url: dashboardUrl + '/app' },
         },
       });
-      logger.info({ module: 'telegram', url: dashboardUrl }, 'Dashboard menu button set');
+      logger.info(
+        { module: 'telegram', url: dashboardUrl },
+        'Dashboard menu button set',
+      );
     } catch (err) {
-      logger.warn({ module: 'telegram', err }, 'Failed to set dashboard menu button');
+      logger.warn(
+        { module: 'telegram', err },
+        'Failed to set dashboard menu button',
+      );
     }
   }
 
@@ -673,7 +774,10 @@ export async function connectTelegram(
         added_at: new Date().toISOString(),
       };
       onRegisterGroup(chatId, newGroup);
-      logger.info({ module: 'telegram', chatId, name: senderName }, 'Auto-registered owner chat');
+      logger.info(
+        { module: 'telegram', chatId, name: senderName },
+        'Auto-registered owner chat',
+      );
       return newGroup;
     }
     return null;
@@ -697,7 +801,10 @@ export async function connectTelegram(
     if (sessionManager) {
       sessionManager.clearSession(chatId);
     }
-    logger.info({ module: 'telegram', chatId }, 'Session reset via /new command');
+    logger.info(
+      { module: 'telegram', chatId },
+      'Session reset via /new command',
+    );
     await ctx.reply('New thread started.');
   });
 
@@ -708,7 +815,10 @@ export async function connectTelegram(
     if (sessionManager) {
       sessionManager.clearSession(chatId);
     }
-    logger.info({ module: 'telegram', chatId, deleted }, 'History cleared via /clear command');
+    logger.info(
+      { module: 'telegram', chatId, deleted },
+      'History cleared via /clear command',
+    );
     await ctx.reply(
       `Cleared ${deleted} message${deleted === 1 ? '' : 's'} and reset session.`,
     );
@@ -760,7 +870,10 @@ export async function connectTelegram(
     try {
       await ensureSandbox();
     } catch (err) {
-      logger.error({ module: 'telegram', chatId, err }, 'Failed to start sandbox for /takeover');
+      logger.error(
+        { module: 'telegram', chatId, err },
+        'Failed to start sandbox for /takeover',
+      );
       await ctx.reply(
         'Failed to start CUA sandbox. Check Docker/sandbox logs.',
       );
@@ -839,7 +952,8 @@ export async function connectTelegram(
     let text = `<b>Stored Skills</b> (${skills.length})\n\n`;
     for (const s of skills) {
       text += `/<b>${escapeHtml(s.name)}</b> - ${escapeHtml(s.description)}`;
-      if (s.parameters) text += `\n  <i>Params: ${escapeHtml(s.parameters)}</i>`;
+      if (s.parameters)
+        text += `\n  <i>Params: ${escapeHtml(s.parameters)}</i>`;
       text += '\n';
     }
 
@@ -916,7 +1030,10 @@ export async function connectTelegram(
       try {
         startSelfUpdateProcess(ctx.chat.id);
       } catch (err) {
-        logger.error({ module: 'telegram', err }, 'Failed to start self-update process');
+        logger.error(
+          { module: 'telegram', err },
+          'Failed to start self-update process',
+        );
         await ctx.reply('Failed to start update. Check logs and try again.');
       }
       return;
@@ -940,8 +1057,13 @@ export async function connectTelegram(
     }
 
     try {
-      const { behind, localHead, remoteHead, localChangeCount, containerChanged } =
-        await checkForServiceUpdate();
+      const {
+        behind,
+        localHead,
+        remoteHead,
+        localChangeCount,
+        containerChanged,
+      } = await checkForServiceUpdate();
       if (behind <= 0) {
         pendingUpdatesByChat.delete(chatId);
         await ctx.reply(
@@ -1074,13 +1196,17 @@ export async function connectTelegram(
       // confirm
       const pending = pendingUpdatesByChat.get(chatId);
       if (!pending) {
-        await ctx.answerCallbackQuery({ text: 'No pending update. Run /update first.' });
+        await ctx.answerCallbackQuery({
+          text: 'No pending update. Run /update first.',
+        });
         return;
       }
       if (Date.now() > pending.expiresAt) {
         pendingUpdatesByChat.delete(chatId);
         await ctx.editMessageReplyMarkup({ reply_markup: undefined });
-        await ctx.answerCallbackQuery({ text: 'Confirmation expired. Run /update again.' });
+        await ctx.answerCallbackQuery({
+          text: 'Confirmation expired. Run /update again.',
+        });
         return;
       }
       pendingUpdatesByChat.delete(chatId);
@@ -1089,7 +1215,10 @@ export async function connectTelegram(
       try {
         startSelfUpdateProcess(ctx.chat.id);
       } catch (err) {
-        logger.error({ module: 'telegram', err }, 'Failed to start self-update process');
+        logger.error(
+          { module: 'telegram', err },
+          'Failed to start self-update process',
+        );
         await ctx.reply('Failed to start update. Check logs and try again.');
       }
       return;
@@ -1106,7 +1235,10 @@ export async function connectTelegram(
       try {
         startSelfUpdateProcess(ctx.chat.id, { rebuildOnly: true });
       } catch (err) {
-        logger.error({ module: 'telegram', err }, 'Failed to start rebuild process');
+        logger.error(
+          { module: 'telegram', err },
+          'Failed to start rebuild process',
+        );
         await ctx.reply('Failed to start rebuild. Check logs and try again.');
       }
       return;
@@ -1146,14 +1278,21 @@ export async function connectTelegram(
             msgId,
             skChatId,
             ctx.from.id.toString(),
-            ctx.from.first_name + (ctx.from.last_name ? ` ${ctx.from.last_name}` : ''),
+            ctx.from.first_name +
+              (ctx.from.last_name ? ` ${ctx.from.last_name}` : ''),
             `/${skName}`,
             new Date().toISOString(),
             false,
           );
         } catch (err) {
-          logger.error({ module: 'telegram', err, skill: skName }, 'Failed to queue skill run');
-          await bot!.api.sendMessage(numericId, `Failed to run skill: ${skName}`);
+          logger.error(
+            { module: 'telegram', err, skill: skName },
+            'Failed to queue skill run',
+          );
+          await bot!.api.sendMessage(
+            numericId,
+            `Failed to run skill: ${skName}`,
+          );
         }
         return;
       }
@@ -1184,9 +1323,10 @@ export async function connectTelegram(
         await syncChatCommandsIfNeeded(numericId, undefined, skGroup.folder);
         // Show updated skills list
         const skills = loadSkillsForGroup(skGroup.folder);
-        const text = skills.length > 0
-          ? `Skill deleted.\n\n<b>Remaining Skills</b> (${skills.length}):\n${skills.map((s) => `/${escapeHtml(s.name)} - ${escapeHtml(s.description)}`).join('\n')}`
-          : 'Skill deleted. No skills remaining.';
+        const text =
+          skills.length > 0
+            ? `Skill deleted.\n\n<b>Remaining Skills</b> (${skills.length}):\n${skills.map((s) => `/${escapeHtml(s.name)} - ${escapeHtml(s.description)}`).join('\n')}`
+            : 'Skill deleted. No skills remaining.';
         await ctx.editMessageText(text, { parse_mode: 'HTML' });
         await ctx.answerCallbackQuery({ text: 'Skill deleted' });
         return;
@@ -1206,7 +1346,10 @@ export async function connectTelegram(
             .text('Delete', `sk:del:${s.name}`)
             .row();
         }
-        await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
+        await ctx.editMessageText(text, {
+          parse_mode: 'HTML',
+          reply_markup: kb,
+        });
         return;
       }
 
@@ -1443,7 +1586,10 @@ export async function connectTelegram(
         localPath,
       );
     } catch (err) {
-      logger.error({ module: 'telegram', msgId, err }, 'Error processing voice message');
+      logger.error(
+        { module: 'telegram', msgId, err },
+        'Error processing voice message',
+      );
     }
   });
 
@@ -1489,7 +1635,10 @@ export async function connectTelegram(
         localPath,
       );
     } catch (err) {
-      logger.error({ module: 'telegram', msgId, err }, 'Error processing audio message');
+      logger.error(
+        { module: 'telegram', msgId, err },
+        'Error processing audio message',
+      );
     }
   });
 
@@ -1536,7 +1685,10 @@ export async function connectTelegram(
         localPath,
       );
     } catch (err) {
-      logger.error({ module: 'telegram', msgId, err }, 'Error processing photo message');
+      logger.error(
+        { module: 'telegram', msgId, err },
+        'Error processing photo message',
+      );
     }
   });
 
@@ -1577,7 +1729,10 @@ export async function connectTelegram(
         localPath,
       );
     } catch (err) {
-      logger.error({ module: 'telegram', msgId, err }, 'Error processing document message');
+      logger.error(
+        { module: 'telegram', msgId, err },
+        'Error processing document message',
+      );
     }
   });
 
@@ -1594,7 +1749,10 @@ export async function connectTelegram(
           const ownerChatId = makeTelegramChatId(Number(TELEGRAM_OWNER_ID));
           await sendTelegramMessage(ownerChatId, `Online v${APP_VERSION}`);
         } catch (err) {
-          logger.error({ module: 'telegram', err }, 'Failed to send startup message to owner');
+          logger.error(
+            { module: 'telegram', err },
+            'Failed to send startup message to owner',
+          );
         }
       }
 
@@ -1618,24 +1776,74 @@ export async function sendTelegramMessage(
   }
 
   const numericId = extractTelegramChatId(chatId);
+  const htmlText = markdownToTelegramHtml(text);
 
-  // Split into chunks if needed
+  const SELF_CLOSING = new Set(['br', 'hr', 'img']);
+  const getTagName = (tag: string): string => {
+    const match = tag.match(/<\/?(\w+)/);
+    return match ? match[1].toLowerCase() : '';
+  };
+
+  const getOpenTags = (str: string): string[] => {
+    const tags: string[] = [];
+    const tagRegex = /<\/?(\w+)[^>]*>/g;
+    let match;
+    while ((match = tagRegex.exec(str)) !== null) {
+      const tagName = match[1].toLowerCase();
+      if (match[0].startsWith('</')) {
+        const idx = tags.lastIndexOf(tagName);
+        if (idx !== -1) tags.splice(idx, 1);
+      } else if (!SELF_CLOSING.has(tagName) && !match[0].endsWith('/>')) {
+        tags.push(tagName);
+      }
+    }
+    return tags;
+  };
+
   const chunks: string[] = [];
-  let remaining = text;
+  let remaining = htmlText;
+  let pendingOpenTags: string[] = [];
+
   while (remaining.length > 0) {
     if (remaining.length <= TELEGRAM_MAX_LENGTH) {
-      chunks.push(remaining);
+      if (pendingOpenTags.length > 0) {
+        const reopenTags = pendingOpenTags
+          .map((t) => `<${t}>`)
+          .join('');
+        chunks.push(reopenTags + remaining);
+      } else {
+        chunks.push(remaining);
+      }
       break;
     }
-    // Try to split at a newline near the limit
+
     let splitAt = remaining.lastIndexOf('\n', TELEGRAM_MAX_LENGTH);
     if (splitAt <= 0) splitAt = TELEGRAM_MAX_LENGTH;
-    chunks.push(remaining.slice(0, splitAt));
-    remaining = remaining.slice(splitAt).trimStart();
+
+    const chunk = remaining.slice(0, splitAt);
+    const openTagsAtSplit = getOpenTags(chunk);
+
+    const closeTags = [...openTagsAtSplit]
+      .reverse()
+      .map((t) => `</${t}>`)
+      .join('');
+
+    const chunkWithCloses =
+      pendingOpenTags.map((t) => `<${t}>`).join('') + chunk + closeTags;
+
+    if (chunkWithCloses.length <= TELEGRAM_MAX_LENGTH) {
+      chunks.push(chunkWithCloses);
+      pendingOpenTags = openTagsAtSplit;
+      remaining = remaining.slice(splitAt).trimStart();
+    } else {
+      const fallbackSplit = Math.min(TELEGRAM_MAX_LENGTH, chunk.length);
+      chunks.push(chunk.slice(0, fallbackSplit));
+      remaining = remaining.slice(fallbackSplit);
+    }
   }
 
   for (const chunk of chunks) {
-    await bot.api.sendMessage(numericId, chunk);
+    await bot.api.sendMessage(numericId, chunk, { parse_mode: 'HTML' });
   }
 }
 
@@ -1650,12 +1858,19 @@ export async function sendTelegramStatusMessage(
   if (!bot) return null;
   const numericId = extractTelegramChatId(chatId);
   try {
-    const msg = await bot.api.sendMessage(numericId, `<i>${escapeHtml(text)}</i>`, {
-      parse_mode: 'HTML',
-    });
+    const msg = await bot.api.sendMessage(
+      numericId,
+      `<i>${escapeHtml(text)}</i>`,
+      {
+        parse_mode: 'HTML',
+      },
+    );
     return msg.message_id;
   } catch (err) {
-    logger.debug({ module: 'telegram', chatId, err }, 'Failed to send status message');
+    logger.debug(
+      { module: 'telegram', chatId, err },
+      'Failed to send status message',
+    );
     return null;
   }
 }
@@ -1671,13 +1886,21 @@ export async function editTelegramStatusMessage(
   if (!bot) return false;
   const numericId = extractTelegramChatId(chatId);
   try {
-    await bot.api.editMessageText(numericId, messageId, `<i>${escapeHtml(text)}</i>`, {
-      parse_mode: 'HTML',
-    });
+    await bot.api.editMessageText(
+      numericId,
+      messageId,
+      `<i>${escapeHtml(text)}</i>`,
+      {
+        parse_mode: 'HTML',
+      },
+    );
     return true;
   } catch (err) {
     // Telegram returns 400 if content is identical or message was deleted
-    logger.debug({ module: 'telegram', chatId, messageId, err }, 'Failed to edit status message');
+    logger.debug(
+      { module: 'telegram', chatId, messageId, err },
+      'Failed to edit status message',
+    );
     return false;
   }
 }
@@ -1694,7 +1917,10 @@ export async function deleteTelegramMessage(
   try {
     await bot.api.deleteMessage(numericId, messageId);
   } catch (err) {
-    logger.debug({ module: 'telegram', chatId, messageId, err }, 'Failed to delete status message');
+    logger.debug(
+      { module: 'telegram', chatId, messageId, err },
+      'Failed to delete status message',
+    );
   }
 }
 
@@ -1711,7 +1937,10 @@ export async function sendTelegramMessageWithId(
     const msg = await bot.api.sendMessage(numericId, text);
     return msg.message_id;
   } catch (err) {
-    logger.debug({ module: 'telegram', chatId, err }, 'Failed to send message with ID');
+    logger.debug(
+      { module: 'telegram', chatId, err },
+      'Failed to send message with ID',
+    );
     return null;
   }
 }
@@ -1730,7 +1959,10 @@ export async function editTelegramMessageText(
     await bot.api.editMessageText(numericId, messageId, text);
     return true;
   } catch (err) {
-    logger.debug({ module: 'telegram', chatId, messageId, err }, 'Failed to edit message text');
+    logger.debug(
+      { module: 'telegram', chatId, messageId, err },
+      'Failed to edit message text',
+    );
     return false;
   }
 }
@@ -1774,7 +2006,10 @@ export async function editTelegramPhoto(
     });
     return true;
   } catch (err) {
-    logger.debug({ module: 'telegram', chatId, messageId, err }, 'Failed to edit photo message');
+    logger.debug(
+      { module: 'telegram', chatId, messageId, err },
+      'Failed to edit photo message',
+    );
     return false;
   }
 }
@@ -1826,7 +2061,10 @@ export async function setTelegramTyping(chatId: string): Promise<void> {
   try {
     await bot.api.sendChatAction(extractTelegramChatId(chatId), 'typing');
   } catch (err) {
-    logger.debug({ module: 'telegram', chatId, err }, 'Failed to send Telegram typing action');
+    logger.debug(
+      { module: 'telegram', chatId, err },
+      'Failed to send Telegram typing action',
+    );
   }
 }
 
@@ -1855,7 +2093,12 @@ export async function refreshSkillCommands(
       scope: { type: 'chat', chat_id: numericId },
     });
     logger.info(
-      { module: 'telegram', chatJid, groupFolder, skillCount: skillCmds.length },
+      {
+        module: 'telegram',
+        chatJid,
+        groupFolder,
+        skillCount: skillCmds.length,
+      },
       'Skill commands refreshed',
     );
   } catch (err) {
