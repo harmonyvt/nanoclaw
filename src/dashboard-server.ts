@@ -697,7 +697,7 @@ function handleCuaStatus(): Response {
 }
 
 async function handleCuaFilesList(url: URL): Promise<Response> {
-  const cuaPath = url.searchParams.get('path') || '/root';
+  const cuaPath = url.searchParams.get('path') || '/home/cua';
 
   if (!validateCuaPath(cuaPath)) return jsonResponse({ error: 'invalid path' }, 400);
   if (!isSandboxRunning()) return jsonResponse({ error: 'sandbox not running', entries: [] });
@@ -757,7 +757,7 @@ async function handleCuaFileUpload(req: Request): Promise<Response> {
 
   try {
     const formData = await req.formData();
-    const cuaPath = String(formData.get('path') || '/root/Downloads');
+    const cuaPath = String(formData.get('path') || '/home/cua/Downloads');
     const file = formData.get('file');
 
     if (!file || !(file instanceof File)) return jsonResponse({ error: 'no file provided' }, 400);
@@ -851,7 +851,7 @@ async function handleCuaFileRename(req: Request): Promise<Response> {
 
 async function handleCuaFileSearch(url: URL): Promise<Response> {
   const query = url.searchParams.get('q') || '';
-  const cuaPath = url.searchParams.get('path') || '/root';
+  const cuaPath = url.searchParams.get('path') || '/home/cua';
 
   if (!query) return jsonResponse([]);
   if (!isSandboxRunning()) return jsonResponse({ error: 'sandbox not running' }, 400);
@@ -950,7 +950,7 @@ async function handleFileTransfer(req: Request): Promise<Response> {
       }
 
       const filename = path.basename(agentFile);
-      const cuaDest = destPath || `/root/Downloads/${filename}`;
+      const cuaDest = destPath || `/home/cua/Downloads/${filename}`;
       if (!validateCuaPath(cuaDest)) return jsonResponse({ error: 'invalid CUA destination' }, 400);
 
       const cuaDir = cuaDest.substring(0, cuaDest.lastIndexOf('/'));
@@ -962,7 +962,7 @@ async function handleFileTransfer(req: Request): Promise<Response> {
 
       if (base64Content.length <= CHUNK_SIZE) {
         await runCuaCommand('run_command', {
-          command: `echo '${base64Content}' | base64 -d > ${shellSingleQuote(cuaDest)}`,
+          command: `printf '%s' '${base64Content}' | base64 -d > ${shellSingleQuote(cuaDest)}`,
         });
       } else {
         const totalChunks = Math.ceil(base64Content.length / CHUNK_SIZE);
@@ -970,7 +970,7 @@ async function handleFileTransfer(req: Request): Promise<Response> {
           const chunk = base64Content.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
           const redirect = i === 0 ? '>' : '>>';
           await runCuaCommand('run_command', {
-            command: `echo '${chunk}' | base64 -d ${redirect} ${shellSingleQuote(cuaDest)}`,
+            command: `printf '%s' '${chunk}' | base64 -d ${redirect} ${shellSingleQuote(cuaDest)}`,
           });
         }
       }

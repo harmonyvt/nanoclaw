@@ -27,7 +27,7 @@ export function FilesPane() {
   const [filesPath, setFilesPath] = useState('.');
 
   // CUA state
-  const [cuaPath, setCuaPath] = useState('/root');
+  const [cuaPath, setCuaPath] = useState('/home/cua');
   const [cuaRunning, setCuaRunning] = useState(false);
   const [cuaStarting, setCuaStarting] = useState(false);
 
