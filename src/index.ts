@@ -613,6 +613,7 @@ Only include the relevant mode's config (voice_design or custom_voice), not both
       }
 
       if (voicePart) {
+        const ttsStatusId = await sendTelegramStatusMessage(msg.chat_jid, 'speaking');
         try {
           const mediaDir = path.join(GROUPS_DIR, group.folder, 'media');
           let oggPath: string;
@@ -630,6 +631,8 @@ Only include the relevant mode's config (voice_design or custom_voice), not both
           await sendTelegramVoice(msg.chat_jid, oggPath);
         } catch (err) {
           logger.error({ module: 'index', err }, 'Auto-TTS failed, sending as text');
+        } finally {
+          if (ttsStatusId) await deleteTelegramMessage(msg.chat_jid, ttsStatusId);
         }
       }
 
@@ -995,6 +998,7 @@ function startIpcWatcher(): void {
 
                   if (ipcQwenProfile) {
                     // Qwen3-TTS via Modal (primary)
+                    const ttsStatusId = await sendTelegramStatusMessage(data.chatJid, 'speaking');
                     try {
                       const mediaDir = path.join(GROUPS_DIR, sourceGroup, 'media');
                       const oggPath = await synthesizeQwenTTS(data.text, ipcQwenProfile, mediaDir);
@@ -1014,9 +1018,12 @@ function startIpcWatcher(): void {
                         'Qwen3-TTS failed, falling back to text',
                       );
                       await sendMessage(data.chatJid, data.text);
+                    } finally {
+                      if (ttsStatusId) await deleteTelegramMessage(data.chatJid, ttsStatusId);
                     }
                   } else if (isFreyaEnabled()) {
                     // Freya TTS (archived fallback)
+                    const ttsStatusId = await sendTelegramStatusMessage(data.chatJid, 'speaking');
                     try {
                       let emotion;
                       if (data.emotion) {
@@ -1052,6 +1059,8 @@ function startIpcWatcher(): void {
                         'Freya TTS failed, falling back to text',
                       );
                       await sendMessage(data.chatJid, data.text);
+                    } finally {
+                      if (ttsStatusId) await deleteTelegramMessage(data.chatJid, ttsStatusId);
                     }
                   } else {
                     logger.warn(
