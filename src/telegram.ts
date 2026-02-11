@@ -156,24 +156,20 @@ function markdownToTelegramHtml(text: string): string {
 
   const lines = result.split('\n');
   const processedLines = lines.map((line) => {
-    if (
-      line.includes('<') &&
-      !line.startsWith('<b>') &&
-      !line.startsWith('<i>') &&
-      !line.startsWith('<code>') &&
-      !line.startsWith('<pre>') &&
-      !line.startsWith('<a ') &&
-      !line.includes('</')
-    ) {
-      return line;
-    }
-    if (!line.includes('<') && !line.includes('>')) {
-      return line
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;');
-    }
-    return line;
+    // Split into [text, tag, text, tag, ...] and escape only text segments
+    const parts = line.split(/(<[^>]+>)/);
+    return parts
+      .map((part) => {
+        if (part.startsWith('<') && part.endsWith('>')) {
+          return part; // HTML tag, leave as-is
+        }
+        // Text segment: escape HTML entities (avoid double-escaping)
+        return part
+          .replace(/&(?!amp;|lt;|gt;)/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;');
+      })
+      .join('');
   });
 
   return processedLines.join('\n');
@@ -1779,10 +1775,6 @@ export async function sendTelegramMessage(
   const htmlText = markdownToTelegramHtml(text);
 
   const SELF_CLOSING = new Set(['br', 'hr', 'img']);
-  const getTagName = (tag: string): string => {
-    const match = tag.match(/<\/?(\w+)/);
-    return match ? match[1].toLowerCase() : '';
-  };
 
   const getOpenTags = (str: string): string[] => {
     const tags: string[] = [];
@@ -1836,9 +1828,10 @@ export async function sendTelegramMessage(
       pendingOpenTags = openTagsAtSplit;
       remaining = remaining.slice(splitAt).trimStart();
     } else {
-      const fallbackSplit = Math.min(TELEGRAM_MAX_LENGTH, chunk.length);
-      chunks.push(chunk.slice(0, fallbackSplit));
-      remaining = remaining.slice(fallbackSplit);
+      // Chunk + tag overhead exceeds limit; strip HTML and send as plain text
+      chunks.push(chunk.replace(/<\/?[^>]+>/g, ''));
+      pendingOpenTags = [];
+      remaining = remaining.slice(splitAt).trimStart();
     }
   }
 
