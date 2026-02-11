@@ -1,4 +1,10 @@
-import { useState, useRef, useCallback, useEffect } from 'preact/hooks';
+import {
+  useState,
+  useRef,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+} from 'preact/hooks';
 import { useSSE } from '../../shared/hooks.js';
 import { apiFetch } from '../../shared/api.js';
 import type { StructuredLog } from '../../shared/types.js';
@@ -12,9 +18,13 @@ interface LogsPaneProps {
 }
 
 export function LogsPane({ onConnectionChange }: LogsPaneProps) {
-  const [logs, setLogs] = useState<Array<StructuredLog & { extra?: Record<string, unknown> }>>([]);
+  const [logs, setLogs] = useState<
+    Array<StructuredLog & { extra?: Record<string, unknown> }>
+  >([]);
   const [isSearchMode, setIsSearchMode] = useState(false);
-  const [searchResults, setSearchResults] = useState<Array<StructuredLog & { extra?: Record<string, unknown> }> | null>(null);
+  const [searchResults, setSearchResults] = useState<Array<
+    StructuredLog & { extra?: Record<string, unknown> }
+  > | null>(null);
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
@@ -55,10 +65,14 @@ export function LogsPane({ onConnectionChange }: LogsPaneProps) {
     onConnectionChange(connected, reconnect);
   }, [connected, reconnect, onConnectionChange]);
 
-  // Auto-scroll when new logs arrive
-  useEffect(() => {
+  // Auto-scroll when new logs arrive (useLayoutEffect + rAF for instant, reliable scrolling)
+  useLayoutEffect(() => {
     if (autoScrollRef.current && containerRef.current) {
-      containerRef.current.scrollTop = containerRef.current.scrollHeight;
+      requestAnimationFrame(() => {
+        if (containerRef.current) {
+          containerRef.current.scrollTop = containerRef.current.scrollHeight;
+        }
+      });
     }
   }, [logs]);
 
@@ -124,28 +138,23 @@ export function LogsPane({ onConnectionChange }: LogsPaneProps) {
         isSearchMode={isSearchMode}
       />
       <div class="pane active">
-        <div
-          class="log-container"
-          ref={containerRef}
-          onScroll={handleScroll}
-        >
-          {searchLoading && (
-            <div class="loading">Searching...</div>
-          )}
-          {searchError && (
-            <div class="empty">{searchError}</div>
-          )}
-          {!searchLoading && !searchError && displayLogs && displayLogs.length === 0 && (
-            <div class="empty">
-              {isSearchMode ? 'No matching logs found' : 'Waiting for logs...'}
-            </div>
-          )}
+        <div class="log-container" ref={containerRef} onScroll={handleScroll}>
+          {searchLoading && <div class="loading">Searching...</div>}
+          {searchError && <div class="empty">{searchError}</div>}
           {!searchLoading &&
             !searchError &&
             displayLogs &&
-            displayLogs.map((log) => (
-              <LogEntry key={log.id} log={log} />
-            ))}
+            displayLogs.length === 0 && (
+              <div class="empty">
+                {isSearchMode
+                  ? 'No matching logs found'
+                  : 'Waiting for logs...'}
+              </div>
+            )}
+          {!searchLoading &&
+            !searchError &&
+            displayLogs &&
+            displayLogs.map((log) => <LogEntry key={log.id} log={log} />)}
         </div>
       </div>
       <button
