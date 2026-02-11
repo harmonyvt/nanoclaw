@@ -158,6 +158,7 @@ Per-group IPC directories prevent cross-group access. Non-main groups can only s
 - `send_message` -- Send message to current chat
 - `send_file` -- Send a file/document to current chat (path must be under /workspace/group/ or /workspace/global/)
 - `send_voice` -- Send a voice message using Qwen3-TTS (primary) or Freya TTS (fallback). Voice characteristics from per-group `voice_profile.json`
+- `transcribe_audio` -- Transcribe an audio file to text using OpenAI Whisper (requires OPENAI_API_KEY)
 
 ### Task Scheduling
 
@@ -241,7 +242,7 @@ Requires `SUPERMEMORY_API_KEY`. When enabled, memories are also automatically re
 | `/pr`            | Create a pull request (branches off main if needed)            |
 | `/restart`       | Restart the NanoClaw background service                        |
 | `/logs`          | View recent logs, errors, or follow live output                |
-| `/design_voice`  | Design or change the AI TTS voice for a chat group             |
+| `/voice`         | Configure TTS voice (design, preset, or clone from audio)      |
 | `/debug`         | Container issues, logs, troubleshooting                        |
 | `/add-gmail`     | Add Gmail integration to a group                               |
 | `/add-parallel`  | Add Parallel AI integration                                    |

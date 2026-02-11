@@ -264,7 +264,7 @@ type SlashCommandSpec = {
     | 'thinking'
     | 'stop'
     | 'mute'
-    | 'design_voice'
+    | 'voice'
     | 'help'
     | 'skills';
   description: string;
@@ -338,9 +338,9 @@ const TELEGRAM_SLASH_COMMANDS: SlashCommandSpec[] = [
     help: 'Toggle TTS voice messages on/off (voice on by default)',
   },
   {
-    command: 'design_voice',
-    description: 'Design or change the AI TTS voice',
-    help: 'Design or change the TTS voice: /design_voice [description or "preset"]',
+    command: 'voice',
+    description: 'Configure TTS voice (design, preset, clone)',
+    help: 'Configure TTS voice: /voice [design|preset|clone|reset]',
   },
   {
     command: 'help',

@@ -311,15 +311,15 @@ async function processMessage(msg: NewMessage): Promise<void> {
     return;
   }
 
-  // Handle /design_voice — routes to agent with voice design instructions
-  const designVoiceMatch = content.match(/^\/design_voice(?:\s+(.*))?$/i);
-  if (designVoiceMatch) {
-    const params = designVoiceMatch[1] || '';
-    const instructions = `Help the user design or change the TTS voice used for voice messages in this chat.
+  // Handle /voice — unified TTS voice configuration (design, preset, clone, reset)
+  const voiceMatch = content.match(/^\/voice(?:\s+(.*))?$/i);
+  if (voiceMatch) {
+    const params = voiceMatch[1] || '';
+    const instructions = `Help the user configure the TTS voice for this chat.
 
 First, read /workspace/group/voice_profile.json to show current settings (if it exists).
 
-Two options:
+Options:
 
 1. **Design a voice from description** — Ask the user to describe how they want the voice to sound. Examples: 'a warm, confident female voice with a slight British accent, mid-30s', 'a deep, calm male voice, authoritative but friendly'. Write voice_profile.json with mode: voice_design.
 
@@ -335,25 +335,40 @@ Two options:
    - Sohee (female, Korean)
    Write voice_profile.json with mode: custom_voice. Optional 'instruct' field for style direction.
 
+3. **Clone a voice from audio** — The user provides an audio source:
+   a. **URL** (YouTube, Twitch clip, direct audio link) — Download with yt-dlp:
+      yt-dlp -x --audio-format wav -o "/workspace/group/media/ref_voice_raw.%(ext)s" "URL"
+   b. **Telegram attachment** — Check recent messages for media files in /workspace/group/media/
+   c. **Direct file path** — Use as-is
+
+   Process the audio to proper format (24kHz mono WAV, max 10 seconds):
+   ffmpeg -i /workspace/group/media/ref_voice_raw.wav -ar 24000 -ac 1 -t 10 -y /workspace/group/media/voice_ref.wav
+
+   Get a transcript: use the transcribe_audio tool on the processed WAV file.
+   If transcribe_audio fails (no API key), ask the user for the transcript or leave ref_text empty (lower quality clone).
+
+   Write voice_profile.json with mode: voice_clone.
+
+4. **Reset to default** — Delete /workspace/group/voice_profile.json.
+
 Supported languages: Chinese, English, Japanese, Korean, German, French, Russian, Portuguese, Spanish, Italian.
 
-After updating the profile, send a test voice message using send_voice with a short greeting so the user can hear the result.
+After any voice change, send a test voice message using send_voice with a short greeting so the user can hear the result.
 
-Voice profile JSON format:
+Voice profile JSON format (include only the active mode's config, not all):
 {
   "provider": "qwen3-tts",
-  "mode": "voice_design" or "custom_voice",
+  "mode": "voice_design" or "custom_voice" or "voice_clone",
   "voice_design": { "description": "...", "language": "English" },
   "custom_voice": { "speaker": "...", "instruct": "...", "language": "English" },
+  "voice_clone": { "ref_audio_path": "media/voice_ref.wav", "ref_text": "transcript or empty", "language": "English" },
   "created_at": "<ISO timestamp>",
   "updated_at": "<ISO timestamp>"
-}
-
-Only include the relevant mode's config (voice_design or custom_voice), not both.`;
+}`;
 
     const escapeXml = (s: string) =>
       s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-    let skillXml = `<skill name="design_voice"`;
+    let skillXml = `<skill name="voice"`;
     if (params) skillXml += ` parameters="${escapeXml(params)}"`;
     skillXml += `>\n${escapeXml(instructions)}\n</skill>`;
 
@@ -620,7 +635,7 @@ Only include the relevant mode's config (voice_design or custom_voice), not both
 
           if (qwenProfile) {
             // Qwen3-TTS via Modal (primary)
-            oggPath = await synthesizeQwenTTS(voicePart, qwenProfile, mediaDir);
+            oggPath = await synthesizeQwenTTS(voicePart, qwenProfile, mediaDir, group.folder);
           } else {
             // Freya TTS (fallback)
             const emotion = detectEmotionFromText(voicePart);
@@ -1001,7 +1016,7 @@ function startIpcWatcher(): void {
                     const ttsStatusId = await sendTelegramStatusMessage(data.chatJid, 'speaking');
                     try {
                       const mediaDir = path.join(GROUPS_DIR, sourceGroup, 'media');
-                      const oggPath = await synthesizeQwenTTS(data.text, ipcQwenProfile, mediaDir);
+                      const oggPath = await synthesizeQwenTTS(data.text, ipcQwenProfile, mediaDir, sourceGroup);
                       await sendTelegramVoice(data.chatJid, oggPath);
                       logger.info(
                         {

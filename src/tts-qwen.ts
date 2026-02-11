@@ -26,11 +26,18 @@ export interface CustomVoiceConfig {
   language: string;
 }
 
+export interface VoiceCloneConfig {
+  ref_audio_path: string;   // relative to group dir, e.g. "media/voice_ref.wav"
+  ref_text?: string;        // transcript of reference audio
+  language: string;
+}
+
 export interface VoiceProfile {
   provider: 'qwen3-tts';
-  mode: 'voice_design' | 'custom_voice';
+  mode: 'voice_design' | 'custom_voice' | 'voice_clone';
   voice_design?: VoiceDesignConfig;
   custom_voice?: CustomVoiceConfig;
+  voice_clone?: VoiceCloneConfig;
   created_at: string;
   updated_at: string;
 }
@@ -98,7 +105,7 @@ export function loadVoiceProfile(groupFolder: string): VoiceProfile | null {
     if (
       typeof parsed !== 'object' || parsed === null ||
       (parsed as Record<string, unknown>).provider !== 'qwen3-tts' ||
-      !['voice_design', 'custom_voice'].includes(
+      !['voice_design', 'custom_voice', 'voice_clone'].includes(
         (parsed as Record<string, unknown>).mode as string,
       )
     ) {
@@ -110,7 +117,7 @@ export function loadVoiceProfile(groupFolder: string): VoiceProfile | null {
     }
 
     const obj = parsed as Record<string, unknown>;
-    const mode = obj.mode as 'voice_design' | 'custom_voice';
+    const mode = obj.mode as 'voice_design' | 'custom_voice' | 'voice_clone';
 
     const profile: VoiceProfile = {
       provider: 'qwen3-tts',
@@ -134,6 +141,15 @@ export function loadVoiceProfile(groupFolder: string): VoiceProfile | null {
         instruct: typeof cv.instruct === 'string' ? cv.instruct : '',
         language: typeof cv.language === 'string' ? cv.language : QWEN_TTS_DEFAULT_LANGUAGE,
       };
+    } else if (mode === 'voice_clone') {
+      const vc = typeof obj.voice_clone === 'object' && obj.voice_clone !== null
+        ? obj.voice_clone as Record<string, unknown>
+        : {};
+      profile.voice_clone = {
+        ref_audio_path: typeof vc.ref_audio_path === 'string' ? vc.ref_audio_path : '',
+        ref_text: typeof vc.ref_text === 'string' ? vc.ref_text : undefined,
+        language: typeof vc.language === 'string' ? vc.language : QWEN_TTS_DEFAULT_LANGUAGE,
+      };
     }
 
     return profile;
@@ -154,6 +170,7 @@ export async function synthesizeQwenTTS(
   text: string,
   voiceProfile: VoiceProfile,
   mediaDir: string,
+  groupFolder?: string,
 ): Promise<string> {
   if (!QWEN_TTS_URL) {
     throw new Error('QWEN_TTS_URL is not configured');
@@ -185,6 +202,19 @@ export async function synthesizeQwenTTS(
 
   if (voiceProfile.mode === 'voice_design' && voiceProfile.voice_design) {
     body.voice_description = voiceProfile.voice_design.description;
+  } else if (voiceProfile.mode === 'voice_clone' && voiceProfile.voice_clone) {
+    if (!groupFolder) {
+      throw new Error('groupFolder required for voice_clone mode');
+    }
+    const refPath = path.join(GROUPS_DIR, groupFolder, voiceProfile.voice_clone.ref_audio_path);
+    if (!fs.existsSync(refPath)) {
+      throw new Error(`Voice clone ref audio not found: ${refPath}`);
+    }
+    const audioBuffer = fs.readFileSync(refPath);
+    body.ref_audio_base64 = audioBuffer.toString('base64');
+    if (voiceProfile.voice_clone.ref_text) {
+      body.ref_text = voiceProfile.voice_clone.ref_text;
+    }
   } else if (voiceProfile.mode === 'custom_voice') {
     body.speaker = voiceProfile.custom_voice?.speaker || QWEN_TTS_DEFAULT_SPEAKER;
     body.instruct = voiceProfile.custom_voice?.instruct || '';

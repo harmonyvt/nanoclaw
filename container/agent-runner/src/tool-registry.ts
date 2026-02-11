@@ -1575,4 +1575,68 @@ If a skill with the same name already exists, it will be overwritten.`,
       };
     },
   },
+
+  // ── Audio Transcription ──────────────────────────────────────────────────
+  {
+    name: 'transcribe_audio',
+    description:
+      'Transcribe an audio file to text using OpenAI Whisper. Useful for getting ' +
+      'transcripts of voice recordings or reference audio for voice cloning. ' +
+      'Requires OPENAI_API_KEY to be configured.',
+    schema: z.object({
+      path: z
+        .string()
+        .describe(
+          'Absolute path to audio file (e.g., /workspace/group/media/voice_ref.wav)',
+        ),
+    }),
+    handler: async (args): Promise<ToolResult> => {
+      const apiKey = process.env.OPENAI_API_KEY;
+      if (!apiKey) {
+        return {
+          content:
+            'OPENAI_API_KEY not configured. Ask the user for a transcript instead.',
+          isError: true,
+        };
+      }
+
+      const filePath = (args as { path: string }).path;
+      if (!fs.existsSync(filePath)) {
+        return { content: `File not found: ${filePath}`, isError: true };
+      }
+
+      try {
+        const fileBuffer = fs.readFileSync(filePath);
+        const blob = new Blob([fileBuffer]);
+        const formData = new FormData();
+        formData.append('model', 'whisper-1');
+        formData.append('file', blob, path.basename(filePath));
+
+        const resp = await fetch(
+          'https://api.openai.com/v1/audio/transcriptions',
+          {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${apiKey}` },
+            body: formData,
+          },
+        );
+
+        if (!resp.ok) {
+          const detail = await resp.text().catch(() => '');
+          return {
+            content: `Whisper API error ${resp.status}: ${detail.slice(0, 200)}`,
+            isError: true,
+          };
+        }
+
+        const result = (await resp.json()) as { text: string };
+        return { content: result.text };
+      } catch (err) {
+        return {
+          content: `Transcription failed: ${err instanceof Error ? err.message : String(err)}`,
+          isError: true,
+        };
+      }
+    },
+  },
 ];

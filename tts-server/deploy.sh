@@ -8,10 +8,9 @@
 # What it does:
 #   1. Rsyncs tts-server/ to ~/nanoclaw-tts/ on the target
 #   2. Installs uv + deps
-#   3. Optionally installs flash-attn (CUDA only)
-#   4. Installs ffmpeg if missing
-#   5. Sets up launchd (macOS) or systemd (Linux) service
-#   6. Starts/restarts the service
+#   3. Installs ffmpeg if missing
+#   4. Sets up launchd (macOS) or systemd (Linux) service
+#   5. Starts/restarts the service
 #
 set -euo pipefail
 
@@ -69,13 +68,6 @@ fi
 
 echo "==> Installing Python dependencies via uv..."
 uv sync
-
-# Install flash-attn on CUDA systems
-if command -v nvidia-smi &>/dev/null; then
-  echo "==> NVIDIA GPU detected, installing flash-attn..."
-  uv pip install flash-attn --no-build-isolation 2>/dev/null || \
-    echo "    flash-attn install failed (non-critical, will use standard attention)"
-fi
 
 # Generate API key if not provided
 if [ -z "$API_KEY" ]; then
