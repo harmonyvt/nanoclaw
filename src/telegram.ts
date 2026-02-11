@@ -1393,12 +1393,20 @@ export async function connectTelegram(
 
   // --- Message handlers ---
 
+  // Commands handled by grammY bot.command() handlers above — skip in message:text
+  const grammyHandledCommands = new Set([
+    'new', 'clear', 'status', 'takeover', 'dashboard', 'help', 'skills',
+    'verbose', 'thinking', 'stop', 'update', 'rebuild', 'tasks', 'runtask',
+  ]);
+
   bot.on('message:text', (ctx) => {
     if (!shouldAccept(ctx)) return;
     const firstEntity = ctx.message.entities?.[0];
-    const isSlashCommand =
-      firstEntity?.type === 'bot_command' && firstEntity.offset === 0;
-    if (isSlashCommand) return;
+    if (firstEntity?.type === 'bot_command' && firstEntity.offset === 0) {
+      // Extract command name (strip leading / and optional @botname suffix)
+      const cmdText = ctx.message.text.slice(1, firstEntity.length).split('@')[0].toLowerCase();
+      if (grammyHandledCommands.has(cmdText)) return;
+    }
 
     const { chatId, timestamp, sender, senderName, msgId } = extractMeta(ctx);
     const content = ctx.message.text;

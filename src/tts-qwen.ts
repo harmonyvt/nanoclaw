@@ -72,7 +72,7 @@ function checkRateLimit(): boolean {
 // ---------------------------------------------------------------------------
 
 const MAX_TEXT_LENGTH = 2000;
-const TTS_TIMEOUT_MS = 120_000;
+const TTS_TIMEOUT_MS = 300_000; // 5 min — voice_clone can be slow on first model download + long text
 
 /** Check if Qwen3-TTS is enabled. */
 export function isQwenTTSEnabled(): boolean {

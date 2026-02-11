@@ -28,6 +28,7 @@ import {
 import {
   AvailableGroup,
   cleanupOrphanPersistentContainers,
+  consumeGroupInterrupted,
   ensureAgentImage,
   interruptContainer,
   killAllContainers,
@@ -336,13 +337,17 @@ Options:
    Write voice_profile.json with mode: custom_voice. Optional 'instruct' field for style direction.
 
 3. **Clone a voice from audio** — The user provides an audio source:
-   a. **URL** (YouTube, Twitch clip, direct audio link) — Download with yt-dlp:
-      yt-dlp -x --audio-format wav -o "/workspace/group/media/ref_voice_raw.%(ext)s" "URL"
-   b. **Telegram attachment** — Check recent messages for media files in /workspace/group/media/
-   c. **Direct file path** — Use as-is
 
-   Process the audio to proper format (24kHz mono WAV, max 10 seconds):
-   ffmpeg -i /workspace/group/media/ref_voice_raw.wav -ar 24000 -ac 1 -t 10 -y /workspace/group/media/voice_ref.wav
+   **Downloading from URLs:**
+   Use the download_audio tool directly — it uses yt-dlp and supports YouTube, Twitch, SoundCloud, and hundreds of other platforms:
+     download_audio({ url: "https://...", filename: "ref_voice_raw" })
+
+   **Other sources (non-URL):**
+   a. **Telegram attachment** — Check recent messages for media files in /workspace/group/media/
+   b. **Direct file path** — Use as-is
+
+   Process the audio to proper format (24kHz mono WAV, max 10 seconds) using the convert_audio tool:
+     convert_audio({ input_path: "/workspace/group/media/ref_voice_raw.wav", output_path: "/workspace/group/media/voice_ref.wav", sample_rate: 24000, mono: true, max_duration: 10 })
 
    Get a transcript: use the transcribe_audio tool on the processed WAV file.
    If transcribe_audio fails (no API key), ask the user for the transcript or leave ref_text empty (lower quality clone).
@@ -585,8 +590,11 @@ Voice profile JSON format (include only the active mode's config, not all):
     if (cuaEntry.screenshotMessageId) await deleteTelegramMessage(cuaEntry.chatJid, cuaEntry.screenshotMessageId);
   }
 
+  // Always advance the timestamp so failed/interrupted messages are not reprocessed
+  lastAgentTimestamp[msg.chat_jid] = msg.timestamp;
+  saveState();
+
   if (response) {
-    lastAgentTimestamp[msg.chat_jid] = msg.timestamp;
     let text = response;
     if (DEBUG_THREADS) {
       const threadId = sessions[group.folder];
@@ -724,6 +732,15 @@ async function runAgent(
 
   for (let attempt = 0; attempt <= MAX_AGENT_RETRIES; attempt++) {
     if (attempt > 0) {
+      // Check if group was interrupted before retrying
+      if (consumeGroupInterrupted(group.folder)) {
+        logger.info(
+          { module: 'index', group: group.name, attempt },
+          'Skipping retry — group was interrupted',
+        );
+        return null;
+      }
+
       logger.warn(
         { module: 'index', group: group.name, attempt, maxRetries: MAX_AGENT_RETRIES },
         `Retrying agent after error (attempt ${attempt + 1}/${MAX_AGENT_RETRIES + 1})`,
@@ -737,6 +754,15 @@ async function runAgent(
       if (output.newSessionId) {
         sessions[group.folder] = output.newSessionId;
         saveJson(path.join(DATA_DIR, 'sessions.json'), sessions);
+      }
+
+      // Interrupted: stop immediately, don't retry
+      if (output.status === 'interrupted') {
+        logger.info(
+          { module: 'index', group: group.name },
+          'Agent interrupted, skipping retries',
+        );
+        return null;
       }
 
       if (output.status === 'error') {

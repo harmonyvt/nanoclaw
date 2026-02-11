@@ -122,7 +122,7 @@ export interface ContainerInput {
 }
 
 export interface ContainerOutput {
-  status: 'success' | 'error';
+  status: 'success' | 'error' | 'interrupted';
   result: string | null;
   newSessionId?: string;
   error?: string;
@@ -159,6 +159,26 @@ interface ActiveRequest {
 }
 
 const activeRequests = new Map<string, ActiveRequest>();
+
+/**
+ * Groups that have been forcefully interrupted.
+ * Checked by the host-level retry loop to skip retries after kill/interrupt.
+ */
+const interruptedGroupsSet = new Set<string>();
+
+/** Mark a group as interrupted so host-level retry loop skips it. */
+export function markGroupInterrupted(groupFolder: string): void {
+  interruptedGroupsSet.add(groupFolder);
+}
+
+/** Check and clear the interrupted flag for a group. Returns true if it was interrupted. */
+export function consumeGroupInterrupted(groupFolder: string): boolean {
+  if (interruptedGroupsSet.has(groupFolder)) {
+    interruptedGroupsSet.delete(groupFolder);
+    return true;
+  }
+  return false;
+}
 
 function sanitizeDockerNamePart(input: string): string {
   const value = input.toLowerCase().replace(/[^a-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '');
@@ -1036,7 +1056,7 @@ async function waitForHeartbeat(groupFolder: string, containerId: string): Promi
 /**
  * Kill and clean up a persistent container.
  */
-function killContainer(groupFolder: string, reason: string): void {
+export function killContainer(groupFolder: string, reason: string): void {
   const entry = runningContainers.get(groupFolder);
   if (!entry) return;
 
@@ -1049,6 +1069,15 @@ function killContainer(groupFolder: string, reason: string): void {
     },
     'Killing persistent container',
   );
+
+  // Mark group as interrupted so host-level retry loop stops
+  markGroupInterrupted(groupFolder);
+
+  // Abort any active host-side polling loop for this group
+  const active = activeRequests.get(groupFolder);
+  if (active) {
+    active.abortController.abort();
+  }
 
   try {
     execSync(`docker kill ${entry.containerId} 2>/dev/null`, { timeout: 10000 });
@@ -1354,7 +1383,7 @@ async function sendToPersistentContainer(
       if (abortController.signal.aborted) {
         try { fs.unlinkSync(inputFile); } catch {}
         return {
-          status: 'error',
+          status: 'interrupted',
           result: null,
           error: 'Interrupted by user',
         };
@@ -1509,6 +1538,9 @@ export function interruptContainer(
   if (!active) {
     return { interrupted: false, message: 'No agent is currently running.' };
   }
+
+  // Mark group as interrupted so host-level retry loop stops
+  markGroupInterrupted(groupFolder);
 
   // 1. Write cancel file to IPC directory (cooperative signal to container)
   const cancelDir = path.join(DATA_DIR, 'ipc', groupFolder);

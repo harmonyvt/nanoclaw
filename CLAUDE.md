@@ -158,6 +158,11 @@ Per-group IPC directories prevent cross-group access. Non-main groups can only s
 - `send_message` -- Send message to current chat
 - `send_file` -- Send a file/document to current chat (path must be under /workspace/group/ or /workspace/global/)
 - `send_voice` -- Send a voice message using Qwen3-TTS (primary) or Freya TTS (fallback). Voice characteristics from per-group `voice_profile.json`
+
+### Audio Processing
+
+- `download_audio` -- Download audio from URL via yt-dlp (YouTube, Twitch, SoundCloud, etc.). Returns path to downloaded WAV file.
+- `convert_audio` -- Convert audio with ffmpeg (format, sample rate, mono, trim duration). Ideal for preparing voice clone reference audio (24kHz mono WAV, max 10s).
 - `transcribe_audio` -- Transcribe an audio file to text using OpenAI Whisper (requires OPENAI_API_KEY)
 
 ### Task Scheduling

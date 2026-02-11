@@ -11,6 +11,26 @@ import Supermemory from 'supermemory';
 import type { NanoTool, IpcMcpContext, ToolResult } from './types.js';
 import { isCancelled } from './cancel.js';
 
+/** Spawn a command with Bun.spawn(), capture stdout/stderr, respect timeout. */
+async function runCommand(
+  cmd: string[],
+  timeoutMs = 120000,
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  const proc = Bun.spawn(cmd, {
+    stdout: 'pipe',
+    stderr: 'pipe',
+    timeout: timeoutMs,
+  });
+
+  const [exitCode, stdout, stderr] = await Promise.all([
+    proc.exited,
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+
+  return { stdout, stderr, exitCode: exitCode ?? 1 };
+}
+
 // ─── IPC Constants ──────────────────────────────────────────────────────────
 
 export const IPC_DIR = '/workspace/ipc';
@@ -1573,6 +1593,197 @@ If a skill with the same name already exists, it will be overwritten.`,
       return {
         content: `File uploaded: ${res.result}`,
       };
+    },
+  },
+
+  // ── Audio Download & Processing ─────────────────────────────────────────
+
+  {
+    name: 'download_audio',
+    description:
+      'Download audio from a URL using yt-dlp. Supports YouTube, Twitch, SoundCloud, ' +
+      'and hundreds of other platforms. Returns the path to the downloaded audio file ' +
+      'in /workspace/group/media/. Use convert_audio afterwards to change format, ' +
+      'sample rate, or trim duration.',
+    schema: z.object({
+      url: z
+        .string()
+        .describe('URL to download audio from (YouTube, Twitch, SoundCloud, etc.)'),
+      filename: z
+        .string()
+        .optional()
+        .describe(
+          'Output filename without extension (default: "downloaded_audio"). ' +
+          'File will be saved as /workspace/group/media/{filename}.wav',
+        ),
+    }),
+    handler: async (args): Promise<ToolResult> => {
+      const url = (args.url as string).trim();
+      if (!url) {
+        return { content: 'URL is required', isError: true };
+      }
+
+      const filename = ((args.filename as string) || 'downloaded_audio').replace(
+        /[^a-zA-Z0-9_-]/g,
+        '_',
+      );
+      const mediaDir = '/workspace/group/media';
+      fs.mkdirSync(mediaDir, { recursive: true });
+
+      // yt-dlp output template — extract audio as WAV
+      const outputTemplate = path.join(mediaDir, `${filename}.%(ext)s`);
+      const expectedOutput = path.join(mediaDir, `${filename}.wav`);
+
+      try {
+        const { stdout, stderr, exitCode } = await runCommand(
+          [
+            'yt-dlp',
+            '-x',
+            '--audio-format', 'wav',
+            '--no-playlist',
+            '--no-warnings',
+            '-o', outputTemplate,
+            url,
+          ],
+          120000,
+        );
+
+        if (exitCode !== 0) {
+          return {
+            content: `yt-dlp failed (exit ${exitCode}): ${stderr.slice(0, 500)}`,
+            isError: true,
+          };
+        }
+
+        // yt-dlp may produce a slightly different filename, find it
+        if (fs.existsSync(expectedOutput)) {
+          const stat = fs.statSync(expectedOutput);
+          return {
+            content: `Downloaded audio to: ${expectedOutput} (${(stat.size / 1024).toFixed(1)}KB)`,
+          };
+        }
+
+        // Fallback: look for any file matching the filename pattern
+        const files = fs.readdirSync(mediaDir).filter((f) => f.startsWith(filename));
+        if (files.length > 0) {
+          const found = path.join(mediaDir, files[files.length - 1]);
+          const stat = fs.statSync(found);
+          return {
+            content: `Downloaded audio to: ${found} (${(stat.size / 1024).toFixed(1)}KB)`,
+          };
+        }
+
+        return {
+          content: `yt-dlp completed but output file not found. stderr: ${stderr.slice(0, 300)}`,
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: `Download failed: ${err instanceof Error ? err.message : String(err)}`,
+          isError: true,
+        };
+      }
+    },
+  },
+
+  {
+    name: 'convert_audio',
+    description:
+      'Convert or process audio files using ffmpeg. Supports format conversion, ' +
+      'sample rate changes, mono/stereo conversion, and duration trimming. ' +
+      'Ideal for preparing audio for voice cloning (24kHz mono WAV, max 10s).',
+    schema: z.object({
+      input_path: z
+        .string()
+        .describe('Path to input audio file (e.g., /workspace/group/media/downloaded_audio.wav)'),
+      output_path: z
+        .string()
+        .optional()
+        .describe(
+          'Output path (default: /workspace/group/media/converted_audio.wav). ' +
+          'Extension determines format if format is not specified.',
+        ),
+      sample_rate: z
+        .number()
+        .optional()
+        .describe('Target sample rate in Hz (e.g., 24000 for voice cloning, 44100 for music)'),
+      mono: z
+        .boolean()
+        .optional()
+        .describe('Convert to mono (single channel). Recommended for voice cloning.'),
+      max_duration: z
+        .number()
+        .optional()
+        .describe('Maximum duration in seconds. Audio will be trimmed to this length.'),
+      format: z
+        .enum(['wav', 'mp3', 'ogg', 'flac', 'opus'])
+        .optional()
+        .describe('Output audio format (default: inferred from output_path extension, or wav)'),
+    }),
+    handler: async (args): Promise<ToolResult> => {
+      const inputPath = (args.input_path as string).trim();
+      if (!inputPath) {
+        return { content: 'input_path is required', isError: true };
+      }
+      if (!fs.existsSync(inputPath)) {
+        return { content: `Input file not found: ${inputPath}`, isError: true };
+      }
+
+      const format = (args.format as string) || undefined;
+      const defaultExt = format ? `.${format}` : '.wav';
+      const outputPath =
+        ((args.output_path as string) || '').trim() ||
+        path.join(
+          path.dirname(inputPath),
+          `converted_audio${defaultExt}`,
+        );
+
+      // Build ffmpeg args
+      const ffmpegArgs = ['-i', inputPath];
+
+      if (args.sample_rate) {
+        ffmpegArgs.push('-ar', String(args.sample_rate));
+      }
+      if (args.mono) {
+        ffmpegArgs.push('-ac', '1');
+      }
+      if (args.max_duration) {
+        ffmpegArgs.push('-t', String(args.max_duration));
+      }
+
+      // Overwrite output
+      ffmpegArgs.push('-y', outputPath);
+
+      try {
+        const { stderr, exitCode } = await runCommand(
+          ['ffmpeg', ...ffmpegArgs],
+          60000,
+        );
+
+        if (exitCode !== 0) {
+          return {
+            content: `ffmpeg failed (exit ${exitCode}): ${stderr.slice(0, 500)}`,
+            isError: true,
+          };
+        }
+
+        if (!fs.existsSync(outputPath)) {
+          return {
+            content: `ffmpeg completed but output file not found: ${outputPath}`,
+            isError: true,
+          };
+        }
+
+        const stat = fs.statSync(outputPath);
+        return {
+          content: `Converted audio saved to: ${outputPath} (${(stat.size / 1024).toFixed(1)}KB)`,
+        };
+      } catch (err) {
+        return {
+          content: `Conversion failed: ${err instanceof Error ? err.message : String(err)}`,
+          isError: true,
+        };
+      }
     },
   },
 
