@@ -206,7 +206,11 @@ export async function synthesizeQwenTTS(
     if (!groupFolder) {
       throw new Error('groupFolder required for voice_clone mode');
     }
-    const refPath = path.join(GROUPS_DIR, groupFolder, voiceProfile.voice_clone.ref_audio_path);
+    const refPath = path.resolve(GROUPS_DIR, groupFolder, voiceProfile.voice_clone.ref_audio_path);
+    const groupBase = path.resolve(GROUPS_DIR, groupFolder);
+    if (!refPath.startsWith(groupBase + path.sep)) {
+      throw new Error('Invalid ref_audio_path: must be within group directory');
+    }
     if (!fs.existsSync(refPath)) {
       throw new Error(`Voice clone ref audio not found: ${refPath}`);
     }

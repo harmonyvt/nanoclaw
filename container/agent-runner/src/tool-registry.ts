@@ -1622,11 +1622,13 @@ If a skill with the same name already exists, it will be overwritten.`,
       if (!url) {
         return { content: 'URL is required', isError: true };
       }
+      if (!url.startsWith('http://') && !url.startsWith('https://')) {
+        return { content: 'Only HTTP/HTTPS URLs are allowed', isError: true };
+      }
 
-      const filename = ((args.filename as string) || 'downloaded_audio').replace(
-        /[^a-zA-Z0-9_-]/g,
-        '_',
-      );
+      const filename = ((args.filename as string) || 'downloaded_audio')
+        .replace(/[^a-zA-Z0-9_-]/g, '_')
+        .slice(0, 100) || 'downloaded_audio';
       const mediaDir = '/workspace/group/media';
       fs.mkdirSync(mediaDir, { recursive: true });
 

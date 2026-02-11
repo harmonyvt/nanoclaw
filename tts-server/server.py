@@ -186,7 +186,9 @@ async def synthesize(req: SynthesizeRequest, request: Request):
                 detail="voice_clone mode requires ref_audio_base64",
             )
 
-        # Decode base64 reference audio to temp WAV
+        # Validate and decode base64 reference audio to temp WAV
+        if len(req.ref_audio_base64) > 10_000_000:  # ~7.5MB decoded
+            raise HTTPException(status_code=400, detail="ref_audio_base64 too large (max ~7.5MB)")
         audio_bytes = base64.b64decode(req.ref_audio_base64)
         ref_tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
         try:
@@ -237,7 +239,7 @@ async def synthesize(req: SynthesizeRequest, request: Request):
         if result.returncode != 0:
             raise HTTPException(
                 status_code=500,
-                detail=f"ffmpeg conversion failed: {result.stderr.decode()[:500]}",
+                detail="ffmpeg audio conversion failed",
             )
         return Response(content=result.stdout, media_type="audio/ogg")
 
