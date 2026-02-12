@@ -350,9 +350,7 @@ async function processMessage(msg: NewMessage): Promise<void> {
     fs.writeFileSync(tmpPath, reportJson);
 
     try {
-      const stats = (report as Record<string, unknown>).stats as Record<string, unknown>;
-      const eventCount = ((report as Record<string, unknown>).events as unknown[]).length;
-      const caption = `Debug events: ${stats.total} total, exported ${eventCount}`;
+      const caption = `Debug events: ${report.stats.total} total, exported ${report.events.length}`;
       await sendTelegramDocument(msg.chat_jid, tmpPath, caption);
     } finally {
       try { fs.unlinkSync(tmpPath); } catch {}

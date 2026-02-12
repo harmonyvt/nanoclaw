@@ -15,6 +15,27 @@ export type DebugEventCategory =
   | 'browse'
   | 'ipc';
 
+export interface DebugReport {
+  version: number;
+  exportedAt: string;
+  filter: { since: string | null; group: string | null; limit: number };
+  stats: {
+    total: number;
+    byCategory: Record<string, number>;
+    oldestTimestamp: number | null;
+    newestTimestamp: number | null;
+  };
+  events: Array<{
+    id: number;
+    timestamp: number;
+    timestampISO: string;
+    category: string;
+    event_type: string;
+    group_folder: string | null;
+    metadata: Record<string, unknown>;
+  }>;
+}
+
 /**
  * Log a structured debug event. Fire-and-forget — errors are swallowed.
  */
@@ -41,7 +62,7 @@ export function exportDebugReport(opts?: {
   since?: number;
   group?: string;
   limit?: number;
-}): object {
+}): DebugReport {
   const events = exportDebugEvents(opts || {});
   const stats = getDebugEventStats();
 
