@@ -719,6 +719,7 @@ async function runAgent(
 
   const provider = group.providerConfig?.provider || DEFAULT_PROVIDER;
   const model = group.providerConfig?.model || DEFAULT_MODEL || undefined;
+  const baseUrl = group.providerConfig?.baseUrl || undefined;
 
   const input = {
     prompt,
@@ -730,6 +731,7 @@ async function runAgent(
     assistantName: ASSISTANT_NAME,
     provider,
     model,
+    baseUrl,
   };
 
   for (let attempt = 0; attempt <= MAX_AGENT_RETRIES; attempt++) {

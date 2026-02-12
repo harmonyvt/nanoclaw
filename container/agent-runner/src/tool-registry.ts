@@ -479,6 +479,12 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
         .describe(
           'Model to use for this group (e.g., "gpt-4o", "claude-sonnet-4-20250514"). Defaults to the provider default.',
         ),
+      base_url: z
+        .string()
+        .optional()
+        .describe(
+          'Custom API base URL for this group (e.g., "https://my-proxy.example.com/v1"). Defaults to the provider\'s standard endpoint.',
+        ),
     }),
     handler: async (args, ctx): Promise<ToolResult> => {
       if (!ctx.isMain) {
@@ -498,10 +504,11 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
       };
 
       // Include provider config if specified
-      if (args.provider || args.model) {
+      if (args.provider || args.model || args.base_url) {
         data.providerConfig = {
           ...(args.provider ? { provider: args.provider as string } : {}),
           ...(args.model ? { model: args.model as string } : {}),
+          ...(args.base_url ? { baseUrl: args.base_url as string } : {}),
         };
       }
 

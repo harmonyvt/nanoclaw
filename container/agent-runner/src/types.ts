@@ -46,6 +46,7 @@ export interface AdapterInput {
   prompt: string;
   sessionId?: string;
   model?: string;
+  baseUrl?: string;
   groupFolder: string;
   isMain: boolean;
   isScheduledTask?: boolean;
@@ -72,6 +73,7 @@ export interface ContainerInput {
   assistantName?: string;
   provider?: string;
   model?: string;
+  baseUrl?: string;
 }
 
 /** JSON output returned from the agent container (to host) */

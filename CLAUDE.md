@@ -173,7 +173,7 @@ Per-group IPC directories prevent cross-group access. Non-main groups can only s
 
 ### Group Management
 
-- `register_group` -- Register new Telegram chat (main only). Accepts optional `provider` (`anthropic`/`openai`) and `model` params for per-group AI configuration.
+- `register_group` -- Register new Telegram chat (main only). Accepts optional `provider` (`anthropic`/`openai`), `model`, and `base_url` params for per-group AI configuration.
 
 ### Skills (Reusable Workflows)
 
@@ -281,6 +281,8 @@ Requires `SUPERMEMORY_API_KEY`. When enabled, memories are also automatically re
 | Variable                    | Default                  | Purpose                                         |
 | --------------------------- | ------------------------ | ------------------------------------------------ |
 | `OPENAI_API_KEY`            | --                       | Whisper transcription + OpenAI provider API key  |
+| `OPENAI_BASE_URL`           | --                       | Custom OpenAI-compatible API endpoint            |
+| `ANTHROPIC_BASE_URL`        | --                       | Custom Anthropic-compatible API endpoint         |
 | `FIRECRAWL_API_KEY`         | --                       | Firecrawl web scraping                  |
 | `SUPERMEMORY_API_KEY`       | --                       | Supermemory long-term memory (preferred) |
 | `SUPERMEMORY_OPENCLAW_API_KEY` | --                    | Supermemory key alias (accepted fallback) |
