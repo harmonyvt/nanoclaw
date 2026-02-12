@@ -19,6 +19,7 @@ import {
   GROUPS_DIR,
 } from './config.js';
 import { logger } from './logger.js';
+import { logDebugEvent } from './debug-log.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
@@ -870,6 +871,12 @@ async function runOneShotContainer(
 
       fs.writeFileSync(logFile, logLines.join('\n'));
       logger.debug({ module: 'container', logFile, verbose: isVerbose }, 'Container log written');
+      logDebugEvent('sdk', 'container_complete', group.folder, {
+        duration,
+        status: code === 0 ? 'success' : 'error',
+        mode: 'one-shot',
+        exitCode: code,
+      });
 
       if (code !== 0) {
         logger.error(
@@ -1505,6 +1512,12 @@ async function runPersistentContainer(
 
   fs.writeFileSync(logFile, logLines.join('\n'));
 
+  logDebugEvent('sdk', 'container_complete', group.folder, {
+    duration,
+    status: output.status,
+    mode: 'persistent',
+  });
+
   logger.info(
     {
       module: 'container',
@@ -1584,6 +1597,13 @@ export async function runContainerAgent(
   group: RegisteredGroup,
   input: ContainerInput,
 ): Promise<ContainerOutput> {
+  logDebugEvent('sdk', 'container_start', group.folder, {
+    provider: input.provider || null,
+    model: input.model || null,
+    isMain: input.isMain,
+    isScheduledTask: input.isScheduledTask || false,
+    mode: FORCE_ONESHOT ? 'one-shot' : 'persistent',
+  });
   const run = FORCE_ONESHOT ? runOneShotContainer : runPersistentContainer;
   const result = await run(group, input);
 

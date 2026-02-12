@@ -122,6 +122,7 @@ import {
 } from './tailscale-serve.js';
 import { emitCuaActivity } from './cua-activity.js';
 import { initTrajectoryPersistence } from './cua-trajectory.js';
+import { logDebugEvent, exportDebugReport, pruneDebugEventEntries } from './debug-log.js';
 
 let lastTimestamp = '';
 let sessions: Session = {};
@@ -265,6 +266,14 @@ async function processMessage(msg: NewMessage): Promise<void> {
   const content = msg.content.trim();
   const isMainGroup = group.folder === MAIN_GROUP_FOLDER;
 
+  logDebugEvent('telegram', 'message_received', group.folder, {
+    chatJid: msg.chat_jid,
+    contentLength: content.length,
+    hasMedia: !!(msg.media_type),
+    mediaType: msg.media_type || null,
+    senderName: msg.sender_name,
+  });
+
   // Check if user is saying "continue" to unblock a browse_wait_for_user request.
   // Supports both: "continue" and "continue <requestId>".
   const continueMatch = content.match(/^continue(?:\s+(\S+))?$/i);
@@ -309,6 +318,44 @@ async function processMessage(msg: NewMessage): Promise<void> {
       fs.writeFileSync(mutePath, '');
       await sendMessage(msg.chat_jid, 'TTS muted — text only.');
     }
+    logDebugEvent('telegram', 'command_invoked', group.folder, { command: 'mute', wasMuted });
+    return;
+  }
+
+  // Handle /debug — export debug event log (host-level, no agent needed)
+  const debugMatch = content.match(/^\/debug(?:\s+(.*))?$/i);
+  if (debugMatch) {
+    const params = (debugMatch[1] || '').trim();
+
+    let since: number | undefined;
+    const durationMatch = params.match(/^(\d+)([hdm])$/);
+    if (durationMatch) {
+      const val = parseInt(durationMatch[1], 10);
+      const unit = durationMatch[2];
+      const multipliers: Record<string, number> = { h: 3600000, d: 86400000, m: 60000 };
+      since = Date.now() - val * multipliers[unit];
+    } else if (!params) {
+      since = Date.now() - 24 * 60 * 60 * 1000; // Default: last 24h
+    }
+
+    const report = exportDebugReport({
+      since,
+      group: isMainGroup ? undefined : group.folder,
+    });
+    const reportJson = JSON.stringify(report, null, 2);
+
+    const mediaDir = path.join(GROUPS_DIR, group.folder, 'media');
+    fs.mkdirSync(mediaDir, { recursive: true });
+    const tmpPath = path.join(mediaDir, `debug-${Date.now()}.json`);
+    fs.writeFileSync(tmpPath, reportJson);
+
+    try {
+      const caption = `Debug events: ${report.stats.total} total, exported ${report.events.length}`;
+      await sendTelegramDocument(msg.chat_jid, tmpPath, caption);
+    } finally {
+      try { fs.unlinkSync(tmpPath); } catch {}
+    }
+    logDebugEvent('telegram', 'command_invoked', group.folder, { command: 'debug', params });
     return;
   }
 
@@ -552,6 +599,16 @@ Voice profile JSON format (include only the active mode's config, not all):
     'Processing message',
   );
 
+  const agentProvider = group.providerConfig?.provider || DEFAULT_PROVIDER;
+  const agentModel = group.providerConfig?.model || DEFAULT_MODEL || undefined;
+  logDebugEvent('sdk', 'agent_start', group.folder, {
+    provider: agentProvider,
+    model: agentModel || null,
+    promptLength: prompt.length,
+    messageCount: missedMessages.length,
+    isSkillInvocation: false,
+  });
+
   await setTyping(msg.chat_jid, true);
 
   // Send italic thinking status message if enabled for this chat
@@ -569,6 +626,11 @@ Voice profile JSON format (include only the active mode's config, not all):
   }
 
   const response = await runAgent(group, prompt, msg.chat_jid);
+
+  logDebugEvent('sdk', 'agent_complete', group.folder, {
+    hasResult: !!response,
+    responseLength: response?.length || 0,
+  });
 
   await setTyping(msg.chat_jid, false);
 
@@ -654,8 +716,19 @@ Voice profile JSON format (include only the active mode's config, not all):
 
           await sendTelegramVoice(msg.chat_jid, oggPath);
           voiceSent = true;
+          logDebugEvent('tts', 'auto_tts_attempt', group.folder, {
+            provider: qwenProfile ? 'qwen' : 'freya',
+            voicePartLength: voicePart.length,
+            success: true,
+          });
         } catch (err) {
           logger.error({ module: 'index', err }, 'Auto-TTS failed, sending as text');
+          logDebugEvent('tts', 'auto_tts_attempt', group.folder, {
+            provider: qwenProfile ? 'qwen' : 'freya',
+            voicePartLength: voicePart.length,
+            success: false,
+            error: String(err),
+          });
         } finally {
           if (ttsStatusId) await deleteTelegramMessage(msg.chat_jid, ttsStatusId);
         }
@@ -745,6 +818,10 @@ async function runAgent(
         return null;
       }
 
+      logDebugEvent('sdk', 'agent_retry', group.folder, {
+        attempt,
+        maxRetries: MAX_AGENT_RETRIES,
+      });
       logger.warn(
         { module: 'index', group: group.name, attempt, maxRetries: MAX_AGENT_RETRIES },
         `Retrying agent after error (attempt ${attempt + 1}/${MAX_AGENT_RETRIES + 1})`,
@@ -755,6 +832,15 @@ async function runAgent(
     try {
       const output = await runContainerAgent(group, input);
 
+      logDebugEvent('sdk', 'container_result', group.folder, {
+        status: output.status,
+        hasResult: !!output.result,
+        resultLength: output.result?.length || 0,
+        hasNewSession: !!output.newSessionId,
+        provider,
+        model: model || null,
+      });
+
       if (output.newSessionId) {
         sessions[group.folder] = output.newSessionId;
         saveJson(path.join(DATA_DIR, 'sessions.json'), sessions);
@@ -762,6 +848,7 @@ async function runAgent(
 
       // Interrupted: stop immediately, don't retry
       if (output.status === 'interrupted') {
+        logDebugEvent('sdk', 'agent_interrupted', group.folder, {});
         logger.info(
           { module: 'index', group: group.name },
           'Agent interrupted, skipping retries',
@@ -771,6 +858,10 @@ async function runAgent(
 
       if (output.status === 'error') {
         if (attempt < MAX_AGENT_RETRIES) continue;
+        logDebugEvent('sdk', 'agent_error', group.folder, {
+          error: output.error,
+          attempts: attempt + 1,
+        });
         logger.error(
           { module: 'index', group: group.name, error: output.error, attempts: attempt + 1 },
           'Container agent error (retries exhausted)',
@@ -781,6 +872,10 @@ async function runAgent(
       return output.result;
     } catch (err) {
       if (attempt < MAX_AGENT_RETRIES) continue;
+      logDebugEvent('sdk', 'agent_exception', group.folder, {
+        error: String(err),
+        attempts: attempt + 1,
+      });
       logger.error(
         { module: 'index', group: group.name, err, attempts: attempt + 1 },
         'Agent error (retries exhausted)',
@@ -796,8 +891,10 @@ async function sendMessage(jid: string, text: string): Promise<void> {
   try {
     await sendTelegramMessage(jid, text);
     logger.info({ module: 'index', jid, length: text.length }, 'Message sent');
+    logDebugEvent('telegram', 'message_sent', null, { chatJid: jid, textLength: text.length });
   } catch (err) {
     logger.error({ module: 'index', jid, err }, 'Failed to send message');
+    logDebugEvent('telegram', 'message_send_error', null, { chatJid: jid, error: String(err) });
   }
 }
 
@@ -1016,6 +1113,7 @@ function startIpcWatcher(): void {
                   (targetGroup && targetGroup.folder === sourceGroup)
                 ) {
                   await sendMessage(data.chatJid, data.text);
+                  logDebugEvent('ipc', 'message_sent', sourceGroup, { chatJid: data.chatJid });
                   logger.info(
                     { module: 'index', chatJid: data.chatJid, sourceGroup },
                     'IPC message sent',
@@ -1048,6 +1146,7 @@ function startIpcWatcher(): void {
                       const mediaDir = path.join(GROUPS_DIR, sourceGroup, 'media');
                       const oggPath = await synthesizeQwenTTS(data.text, ipcQwenProfile, mediaDir, sourceGroup);
                       await sendTelegramVoice(data.chatJid, oggPath);
+                      logDebugEvent('ipc', 'voice_sent', sourceGroup, { chatJid: data.chatJid, provider: 'qwen' });
                       logger.info(
                         {
                           module: 'index',
@@ -1089,6 +1188,7 @@ function startIpcWatcher(): void {
                       const mediaDir = path.join(GROUPS_DIR, sourceGroup, 'media');
                       const oggPath = await synthesizeSpeech(markedText, mediaDir);
                       await sendTelegramVoice(data.chatJid, oggPath);
+                      logDebugEvent('ipc', 'voice_sent', sourceGroup, { chatJid: data.chatJid, provider: 'freya' });
                       logger.info(
                         {
                           module: 'index',
@@ -1161,6 +1261,7 @@ function startIpcWatcher(): void {
                         hostFilePath,
                         data.caption || undefined,
                       );
+                      logDebugEvent('ipc', 'file_sent', sourceGroup, { chatJid: data.chatJid, file: hostFilePath });
                       logger.info(
                         {
                           module: 'index',
@@ -1322,6 +1423,15 @@ function startIpcWatcher(): void {
               );
               const browseDurationMs = Date.now() - browseStartMs;
               const usage = updateCuaUsage(sourceGroup, action, result.status);
+              logDebugEvent('browse', 'action_complete', sourceGroup, {
+                action,
+                requestId,
+                status: result.status,
+                durationMs: browseDurationMs,
+                total: usage.total,
+                ok: usage.ok,
+                failed: usage.failed,
+              });
 
               // Emit activity end event for trajectory
               if (action !== 'wait_for_user') {
@@ -1455,6 +1565,12 @@ function startIpcWatcher(): void {
                   { module: 'claude-cli', group_folder: sourceGroup },
                   `[stderr] ${evt.message}`,
                 );
+              }
+              if (evt.type === 'tool_start') {
+                logDebugEvent('sdk', 'tool_call', sourceGroup, {
+                  toolName: evt.tool_name,
+                  preview: String(evt.preview || '').slice(0, 200),
+                });
               }
             }
 
@@ -1993,6 +2109,7 @@ async function main(): Promise<void> {
   initTrajectoryPersistence();
   initLogSync();
   pruneOldLogEntries();
+  pruneDebugEventEntries();
   loadState();
   // Clean up old media files on startup (7 day retention)
   for (const group of Object.values(registeredGroups)) {

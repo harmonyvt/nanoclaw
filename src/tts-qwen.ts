@@ -10,6 +10,7 @@ import {
   GROUPS_DIR,
 } from './config.js';
 import { logger } from './logger.js';
+import { logDebugEvent } from './debug-log.js';
 
 // ---------------------------------------------------------------------------
 // Voice profile types
@@ -220,6 +221,7 @@ export async function synthesizeQwenTTS(
     body.instruct = voiceProfile.custom_voice?.instruct || '';
   }
 
+  const ttsStartMs = Date.now();
   logger.info(
     {
       module: 'tts-qwen',
@@ -257,6 +259,13 @@ export async function synthesizeQwenTTS(
   const filename = `tts-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.ogg`;
   const filePath = path.join(mediaDir, filename);
   fs.writeFileSync(filePath, Buffer.from(audioBytes));
+
+  const ttsDurationMs = Date.now() - ttsStartMs;
+  logDebugEvent('tts', 'synthesis_complete', groupFolder || null, {
+    mode: voiceProfile.mode,
+    textLength: inputText.length,
+    durationMs: ttsDurationMs,
+  });
 
   logger.info(
     {
