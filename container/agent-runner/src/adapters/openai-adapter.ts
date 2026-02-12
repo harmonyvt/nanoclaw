@@ -143,7 +143,9 @@ export function buildSystemPrompt(input: AdapterInput): string {
 
 export class OpenAIAdapter implements ProviderAdapter {
   async *run(input: AdapterInput): AsyncGenerator<AgentEvent> {
-    const client = new OpenAI(); // reads OPENAI_API_KEY from env
+    const client = new OpenAI({
+      baseURL: input.baseUrl || process.env.OPENAI_BASE_URL || undefined,
+    });
     const model = input.model || 'gpt-4o';
 
     yield { type: 'session_init', sessionId: `openai-${Date.now()}` };

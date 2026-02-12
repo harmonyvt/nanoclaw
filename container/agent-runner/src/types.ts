@@ -45,6 +45,7 @@ export type AgentEvent =
 export interface AdapterInput {
   prompt: string;
   model?: string;
+  baseUrl?: string;
   groupFolder: string;
   isMain: boolean;
   isScheduledTask?: boolean;
@@ -71,6 +72,7 @@ export interface ContainerInput {
   assistantName?: string;
   provider?: string;
   model?: string;
+  baseUrl?: string;
   enableThinking?: boolean;
 }
 

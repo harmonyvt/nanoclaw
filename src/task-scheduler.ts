@@ -21,6 +21,7 @@ import {
   updateTaskAfterRun,
 } from './db.js';
 import { logger } from './logger.js';
+import { logDebugEvent } from './debug-log.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
 
 export interface SchedulerDependencies {
@@ -36,6 +37,10 @@ async function runTask(
   const groupDir = path.join(GROUPS_DIR, task.group_folder);
   fs.mkdirSync(groupDir, { recursive: true });
 
+  logDebugEvent('sdk', 'task_run_start', task.group_folder, {
+    taskId: task.id,
+    scheduleType: task.schedule_type,
+  });
   logger.info(
     { module: 'scheduler', taskId: task.id, group: task.group_folder },
     'Running scheduled task',
@@ -115,6 +120,11 @@ async function runTask(
 
   const durationMs = Date.now() - startTime;
 
+  logDebugEvent('sdk', 'task_run_complete', task.group_folder, {
+    taskId: task.id,
+    durationMs,
+    status: error ? 'error' : 'success',
+  });
   logTaskRun({
     task_id: task.id,
     run_at: new Date().toISOString(),

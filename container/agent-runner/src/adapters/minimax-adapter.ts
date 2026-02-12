@@ -63,7 +63,7 @@ export class MinimaxAdapter implements ProviderAdapter {
   async *run(input: AdapterInput): AsyncGenerator<AgentEvent> {
     const client = new Anthropic({
       apiKey: process.env.MINIMAX_API_KEY,
-      baseURL: 'https://api.minimax.io/anthropic',
+      baseURL: input.baseUrl || 'https://api.minimax.io/anthropic',
     });
 
     const model = input.model || 'MiniMax-M2.1';

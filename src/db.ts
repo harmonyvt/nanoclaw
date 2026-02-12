@@ -116,6 +116,18 @@ export function initDatabase(): void {
       indexed_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_container_logs_group ON container_logs(group_folder);
+
+    CREATE TABLE IF NOT EXISTS debug_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp INTEGER NOT NULL,
+      category TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      group_folder TEXT,
+      metadata TEXT NOT NULL DEFAULT '{}'
+    );
+    CREATE INDEX IF NOT EXISTS idx_debug_events_ts ON debug_events(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_debug_events_cat ON debug_events(category, event_type);
+    CREATE INDEX IF NOT EXISTS idx_debug_events_group ON debug_events(group_folder);
   `);
 }
 
@@ -751,4 +763,100 @@ export function getAllTaskRunLogs(
     group_folder: string;
     schedule_type: string;
   })[];
+}
+
+// ── Debug event functions ──────────────────────────────────────────────
+
+export interface DebugEventEntry {
+  id: number;
+  timestamp: number;
+  category: string;
+  event_type: string;
+  group_folder: string | null;
+  metadata: string;
+}
+
+export function insertDebugEvent(
+  category: string,
+  eventType: string,
+  groupFolder: string | null,
+  metadata: Record<string, unknown>,
+): void {
+  db.prepare(`
+    INSERT INTO debug_events (timestamp, category, event_type, group_folder, metadata)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(Date.now(), category, eventType, groupFolder, JSON.stringify(metadata));
+}
+
+export function exportDebugEvents(opts: {
+  since?: number;
+  group?: string;
+  limit?: number;
+}): DebugEventEntry[] {
+  const conditions: string[] = [];
+  const values: (string | number)[] = [];
+
+  if (opts.since !== undefined) {
+    conditions.push('timestamp >= ?');
+    values.push(opts.since);
+  }
+  if (opts.group) {
+    conditions.push('group_folder = ?');
+    values.push(opts.group);
+  }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const limit = opts.limit || 10000;
+
+  return db
+    .prepare(
+      `SELECT id, timestamp, category, event_type, group_folder, metadata
+       FROM debug_events ${where}
+       ORDER BY timestamp ASC
+       LIMIT ?`,
+    )
+    .all(...values, limit) as DebugEventEntry[];
+}
+
+export function pruneDebugEvents(retentionMs: number): number {
+  const cutoff = Date.now() - retentionMs;
+  const result = db
+    .prepare('DELETE FROM debug_events WHERE timestamp < ?')
+    .run(cutoff);
+  return result.changes;
+}
+
+export function getDebugEventStats(): {
+  total: number;
+  byCategory: Record<string, number>;
+  oldestTimestamp: number | null;
+  newestTimestamp: number | null;
+} {
+  const total = (
+    db.prepare('SELECT COUNT(*) as count FROM debug_events').get() as {
+      count: number;
+    }
+  ).count;
+
+  const cats = db
+    .prepare(
+      'SELECT category, COUNT(*) as count FROM debug_events GROUP BY category',
+    )
+    .all() as { category: string; count: number }[];
+
+  const byCategory: Record<string, number> = {};
+  for (const row of cats) byCategory[row.category] = row.count;
+
+  const times = db
+    .prepare(
+      'SELECT MIN(timestamp) as oldest, MAX(timestamp) as newest FROM debug_events',
+    )
+    .get() as { oldest: number | null; newest: number | null };
+
+  return {
+    total,
+    byCategory,
+    oldestTimestamp: times.oldest,
+    newestTimestamp: times.newest,
+  };
 }

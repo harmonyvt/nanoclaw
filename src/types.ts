@@ -36,6 +36,7 @@ export interface ContainerConfig {
 export interface ProviderConfig {
   provider: 'anthropic' | 'openai' | 'minimax';
   model?: string; // e.g. "gpt-4o", "claude-sonnet-4-5-20250929"
+  baseUrl?: string; // Custom API endpoint (defaults to provider's standard URL)
 }
 
 export interface RegisteredGroup {
