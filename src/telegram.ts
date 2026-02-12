@@ -37,6 +37,7 @@ import { createSessionForOwner } from './dashboard-auth.js';
 import { getDashboardUrl } from './dashboard-server.js';
 import { downloadTelegramFile, transcribeAudio } from './media.js';
 import { logger } from './logger.js';
+import { logDebugEvent } from './debug-log.js';
 import { ensureSandbox } from './sandbox-manager.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
 import {
@@ -319,6 +320,7 @@ type SlashCommandSpec = {
     | 'verbose'
     | 'thinking'
     | 'stop'
+    | 'debug'
     | 'mute'
     | 'voice'
     | 'help'
@@ -387,6 +389,11 @@ const TELEGRAM_SLASH_COMMANDS: SlashCommandSpec[] = [
     command: 'stop',
     description: 'Interrupt the running agent',
     help: 'Stop the currently running agent operation',
+  },
+  {
+    command: 'debug',
+    description: 'Export debug event log as JSON',
+    help: 'Export debug events: /debug [24h|7d|1h]',
   },
   {
     command: 'mute',
@@ -1863,6 +1870,11 @@ export async function sendTelegramMessage(
   for (const chunk of chunks) {
     await bot.api.sendMessage(numericId, chunk, { parse_mode: 'HTML' });
   }
+  logDebugEvent('telegram', 'api_send_message', null, {
+    chatId,
+    chunkCount: chunks.length,
+    totalLength: htmlText.length,
+  });
 }
 
 /**
@@ -2002,6 +2014,7 @@ export async function sendTelegramPhoto(
   const msg = await bot.api.sendPhoto(numericId, new InputFile(filePath), {
     caption,
   });
+  logDebugEvent('telegram', 'api_send_photo', null, { chatId });
   return msg.message_id;
 }
 
@@ -2050,6 +2063,7 @@ export async function sendTelegramVoice(
   await bot.api.sendVoice(numericId, new InputFile(filePath), {
     caption,
   });
+  logDebugEvent('telegram', 'api_send_voice', null, { chatId });
 }
 
 /**
@@ -2069,6 +2083,7 @@ export async function sendTelegramDocument(
   await bot.api.sendDocument(numericId, new InputFile(filePath), {
     caption,
   });
+  logDebugEvent('telegram', 'api_send_document', null, { chatId, filePath });
 }
 
 /**

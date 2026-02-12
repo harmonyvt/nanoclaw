@@ -564,7 +564,7 @@ If a skill with the same name already exists, it will be overwritten.`,
       const RESERVED = new Set([
         'tasks', 'runtask', 'new', 'clear', 'status', 'update', 'rebuild',
         'takeover', 'dashboard', 'follow', 'verbose', 'stop', 'help', 'skills',
-        'start', 'settings', 'cancel', 'menu',
+        'start', 'settings', 'cancel', 'menu', 'debug',
       ]);
       if (RESERVED.has(name)) {
         return {
