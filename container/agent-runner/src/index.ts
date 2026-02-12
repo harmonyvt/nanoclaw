@@ -116,6 +116,7 @@ async function runQuery(input: ContainerInput): Promise<ContainerOutput> {
     prompt,
     sessionId: input.sessionId,
     model: input.model,
+    baseUrl: input.baseUrl,
     groupFolder: input.groupFolder,
     isMain: input.isMain,
     isScheduledTask: input.isScheduledTask,

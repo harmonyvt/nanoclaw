@@ -210,6 +210,12 @@ export class ClaudeAdapter implements ProviderAdapter {
 
     const maxThinkingTokens = parseInt(process.env.MAX_THINKING_TOKENS || '10000', 10);
 
+    // Set custom base URL if configured (Claude Agent SDK reads ANTHROPIC_BASE_URL from env)
+    const baseUrl = input.baseUrl || process.env.ANTHROPIC_BASE_URL;
+    if (baseUrl) {
+      process.env.ANTHROPIC_BASE_URL = baseUrl;
+    }
+
     for await (const message of query({
       prompt: input.prompt,
       options: {
