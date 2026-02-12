@@ -25,6 +25,10 @@ export class Semaphore {
   }
 
   release(): void {
+    if (this.current <= 0) {
+      logger.warn({ module: 'concurrency' }, 'release() called without matching acquire()');
+      return;
+    }
     this.current--;
     const next = this.queue.shift();
     if (next) next();
