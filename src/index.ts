@@ -9,13 +9,11 @@ import {
   CUA_SANDBOX_IMAGE_IS_LEGACY,
   CUA_SANDBOX_PLATFORM,
   DATA_DIR,
-  DEBUG_THREADS,
   DEFAULT_MODEL,
   DEFAULT_PROVIDER,
   GROUPS_DIR,
   IPC_POLL_INTERVAL,
   MAIN_GROUP_FOLDER,
-  POLL_INTERVAL,
   TELEGRAM_BOT_TOKEN,
   TELEGRAM_OWNER_ID,
   TIMEZONE,
@@ -40,15 +38,18 @@ import {
 import {
   getAllChats,
   getAllTasks,
-  getMessagesSince,
+  getConversationHistory,
   getNewMessages,
   initDatabase,
+  storeAssistantMessage,
 } from './db.js';
 import { runTaskNow, startSchedulerLoop } from './task-scheduler.js';
 import {
   connectTelegram,
   isVerbose,
   isThinkingEnabled,
+  addThinkingDisabled,
+  removeThinkingDisabled,
   sendTelegramDocument,
   sendTelegramMessage,
   sendTelegramPhoto,
@@ -62,8 +63,8 @@ import {
   setTelegramTyping,
   stopTelegram,
 } from './telegram.js';
-import type { SessionManager, TaskActionHandler, InterruptHandler } from './telegram.js';
-import { NewMessage, RegisteredGroup, Session } from './types.js';
+import type { OnMessageStored, TaskActionHandler, InterruptHandler } from './telegram.js';
+import { NewMessage, RegisteredGroup } from './types.js';
 import {
   detectEmotionFromText,
   formatFreyaText,
@@ -122,11 +123,11 @@ import {
 } from './tailscale-serve.js';
 import { emitCuaActivity } from './cua-activity.js';
 import { initTrajectoryPersistence } from './cua-trajectory.js';
+import { agentSemaphore } from './concurrency.js';
+import { MAX_CONVERSATION_MESSAGES } from './config.js';
 
 let lastTimestamp = '';
-let sessions: Session = {};
 let registeredGroups: Record<string, RegisteredGroup> = {};
-let lastAgentTimestamp: Record<string, string> = {};
 type CuaUsageStats = {
   total: number;
   ok: number;
@@ -143,6 +144,7 @@ interface ActiveStatusMessage {
   extraMessageIds: number[];
   currentText: string;
   lastEditTime: number;
+  hadThinkingContent: boolean;
 }
 
 /** Active italic status messages keyed by group folder */
@@ -199,19 +201,59 @@ async function setTyping(jid: string, isTyping: boolean): Promise<void> {
   if (isTyping) await setTelegramTyping(jid);
 }
 
+// ─── Conversation History Helper ─────────────────────────────────────────────
+
+const escapeXml = (s: string) =>
+  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+/**
+ * Build the <messages> XML block from DB conversation history.
+ * Returns { messagesXml, latestContent } for use in prompts and memory retrieval.
+ */
+function buildConversationXml(chatJid: string, groupFolder: string): {
+  messagesXml: string;
+  latestContent: string;
+  messageCount: number;
+} {
+  const history = getConversationHistory(chatJid, MAX_CONVERSATION_MESSAGES);
+
+  const lines = history.map((m) => {
+    let mediaAttrs = '';
+    if (m.media_type && m.media_path) {
+      const groupDir = path.join(GROUPS_DIR, groupFolder);
+      const containerPath = m.media_path.startsWith(groupDir)
+        ? '/workspace/group' + m.media_path.slice(groupDir.length)
+        : m.media_path;
+      mediaAttrs = ` media_type="${escapeXml(m.media_type)}" media_path="${escapeXml(containerPath)}"`;
+    }
+    return `<message role="${m.role}" sender="${escapeXml(m.sender_name)}" time="${m.timestamp}"${mediaAttrs}>${escapeXml(m.content)}</message>`;
+  });
+
+  return {
+    messagesXml: `<messages>\n${lines.join('\n')}\n</messages>`,
+    latestContent: history[history.length - 1]?.content || '',
+    messageCount: history.length,
+  };
+}
+
 function loadState(): void {
   const statePath = path.join(DATA_DIR, 'router_state.json');
   const state = loadJson<{
     last_timestamp?: string;
-    last_agent_timestamp?: Record<string, string>;
   }>(statePath, {});
   lastTimestamp = state.last_timestamp || '';
-  lastAgentTimestamp = state.last_agent_timestamp || {};
-  sessions = loadJson(path.join(DATA_DIR, 'sessions.json'), {});
   registeredGroups = loadJson(
     path.join(DATA_DIR, 'registered_groups.json'),
     {},
   );
+
+  // Load persisted thinking state from .thinking_disabled files
+  for (const [chatJid, group] of Object.entries(registeredGroups)) {
+    if (fs.existsSync(path.join(GROUPS_DIR, group.folder, '.thinking_disabled'))) {
+      addThinkingDisabled(chatJid);
+    }
+  }
+
   logger.info(
     { module: 'index', groupCount: Object.keys(registeredGroups).length },
     'State loaded',
@@ -221,9 +263,7 @@ function loadState(): void {
 function saveState(): void {
   saveJson(path.join(DATA_DIR, 'router_state.json'), {
     last_timestamp: lastTimestamp,
-    last_agent_timestamp: lastAgentTimestamp,
   });
-  saveJson(path.join(DATA_DIR, 'sessions.json'), sessions);
 }
 
 function registerGroup(jid: string, group: RegisteredGroup): void {
@@ -312,6 +352,22 @@ async function processMessage(msg: NewMessage): Promise<void> {
     return;
   }
 
+  // Handle /thinking toggle (host-level, no agent needed)
+  if (/^\/thinking$/i.test(content)) {
+    const thinkingPath = path.join(GROUPS_DIR, group.folder, '.thinking_disabled');
+    const wasDisabled = fs.existsSync(thinkingPath);
+    if (wasDisabled) {
+      fs.unlinkSync(thinkingPath);
+      removeThinkingDisabled(msg.chat_jid);
+      await sendMessage(msg.chat_jid, 'Extended thinking enabled — reasoning will be shown.');
+    } else {
+      fs.writeFileSync(thinkingPath, '');
+      addThinkingDisabled(msg.chat_jid);
+      await sendMessage(msg.chat_jid, 'Extended thinking disabled — faster responses.');
+    }
+    return;
+  }
+
   // Handle /voice — unified TTS voice configuration (design, preset, clone, reset)
   const voiceMatch = content.match(/^\/voice(?:\s+(.*))?$/i);
   if (voiceMatch) {
@@ -371,34 +427,17 @@ Voice profile JSON format (include only the active mode's config, not all):
   "updated_at": "<ISO timestamp>"
 }`;
 
-    const escapeXml = (s: string) =>
-      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     let skillXml = `<skill name="voice"`;
     if (params) skillXml += ` parameters="${escapeXml(params)}"`;
     skillXml += `>\n${escapeXml(instructions)}\n</skill>`;
 
-    const sinceTimestamp = lastAgentTimestamp[msg.chat_jid] || '';
-    const missedMessages = getMessagesSince(msg.chat_jid, sinceTimestamp, ASSISTANT_NAME);
+    const { messagesXml, latestContent } = buildConversationXml(msg.chat_jid, group.folder);
 
     let memoryXml = '';
     if (isSupermemoryEnabled()) {
-      const latestMessage = missedMessages[missedMessages.length - 1]?.content || '';
-      const memories = await retrieveMemories(group.folder, latestMessage);
+      const memories = await retrieveMemories(group.folder, latestContent);
       if (memories) memoryXml = formatMemoryContext(memories);
     }
-
-    const lines = missedMessages.map((m) => {
-      let mediaAttrs = '';
-      if (m.media_type && m.media_path) {
-        const groupDir = path.join(GROUPS_DIR, group.folder);
-        const containerPath = m.media_path.startsWith(groupDir)
-          ? '/workspace/group' + m.media_path.slice(groupDir.length)
-          : m.media_path;
-        mediaAttrs = ` media_type="${escapeXml(m.media_type)}" media_path="${escapeXml(containerPath)}"`;
-      }
-      return `<message sender="${escapeXml(m.sender_name)}" time="${m.timestamp}"${mediaAttrs}>${escapeXml(m.content)}</message>`;
-    });
-    const messagesXml = `<messages>\n${lines.join('\n')}\n</messages>`;
 
     const prompt = [memoryXml, skillXml, messagesXml].filter(Boolean).join('\n\n');
 
@@ -407,8 +446,7 @@ Voice profile JSON format (include only the active mode's config, not all):
     await setTyping(msg.chat_jid, false);
 
     if (response) {
-      lastAgentTimestamp[msg.chat_jid] = msg.timestamp;
-      saveState();
+      storeAssistantMessage(msg.chat_jid, response, new Date().toISOString(), ASSISTANT_NAME);
       const voiceSep = '---voice---';
       const sepIdx = response.indexOf(voiceSep);
       const cleanText = sepIdx !== -1 ? response.replace(voiceSep, '').trim() : response;
@@ -431,50 +469,27 @@ Voice profile JSON format (include only the active mode's config, not all):
       );
 
       // Build prompt with skill instructions injected
-      const escapeXml = (s: string) =>
-        s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
       let skillXml = `<skill name="${skillName}"`;
       if (skillParams) skillXml += ` parameters="${escapeXml(skillParams)}"`;
       if (skill.parameters) skillXml += ` accepts="${escapeXml(skill.parameters)}"`;
       skillXml += `>\n${escapeXml(skill.instructions)}\n</skill>`;
 
-      // Get messages for context (same as normal flow)
-      const sinceTimestamp = lastAgentTimestamp[msg.chat_jid] || '';
-      const missedMessages = getMessagesSince(msg.chat_jid, sinceTimestamp, ASSISTANT_NAME);
+      const { messagesXml, latestContent } = buildConversationXml(msg.chat_jid, group.folder);
 
       let memoryXml = '';
       if (isSupermemoryEnabled()) {
-        const latestMessage = missedMessages[missedMessages.length - 1]?.content || '';
-        const memories = await retrieveMemories(group.folder, latestMessage);
+        const memories = await retrieveMemories(group.folder, latestContent);
         if (memories) memoryXml = formatMemoryContext(memories);
       }
 
-      const lines = missedMessages.map((m) => {
-        const escapeXml = (s: string) =>
-          s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-        let mediaAttrs = '';
-        if (m.media_type && m.media_path) {
-          const groupDir = path.join(GROUPS_DIR, group.folder);
-          const containerPath = m.media_path.startsWith(groupDir)
-            ? '/workspace/group' + m.media_path.slice(groupDir.length)
-            : m.media_path;
-          mediaAttrs = ` media_type="${escapeXml(m.media_type)}" media_path="${escapeXml(containerPath)}"`;
-        }
-        return `<message sender="${escapeXml(m.sender_name)}" time="${m.timestamp}"${mediaAttrs}>${escapeXml(m.content)}</message>`;
-      });
-      const messagesXml = `<messages>\n${lines.join('\n')}\n</messages>`;
-
-      // Compose: memory + skill + messages
-      const parts = [memoryXml, skillXml, messagesXml].filter(Boolean);
-      const prompt = parts.join('\n\n');
+      const prompt = [memoryXml, skillXml, messagesXml].filter(Boolean).join('\n\n');
 
       await setTyping(msg.chat_jid, true);
       const response = await runAgent(group, prompt, msg.chat_jid, { isSkillInvocation: true });
       await setTyping(msg.chat_jid, false);
 
       if (response) {
-        lastAgentTimestamp[msg.chat_jid] = msg.timestamp;
-        saveState();
+        storeAssistantMessage(msg.chat_jid, response, new Date().toISOString(), ASSISTANT_NAME);
 
         // Strip voice separator if present (skill responses are typically text)
         const voiceSep = '---voice---';
@@ -488,7 +503,6 @@ Voice profile JSON format (include only the active mode's config, not all):
 
         if (isSupermemoryEnabled()) {
           void storeInteraction(group.folder, messagesXml, response, {
-            threadId: sessions[group.folder],
             timestamp: msg.timestamp,
             groupName: group.name,
           });
@@ -501,46 +515,16 @@ Voice profile JSON format (include only the active mode's config, not all):
   // Main group responds to all messages; other groups require trigger prefix
   if (!isMainGroup && !TRIGGER_PATTERN.test(content)) return;
 
-  // Get all messages since last agent interaction so the session has full context
-  const sinceTimestamp = lastAgentTimestamp[msg.chat_jid] || '';
-  const missedMessages = getMessagesSince(
-    msg.chat_jid,
-    sinceTimestamp,
-    ASSISTANT_NAME,
-  );
+  // Build conversation context from DB (single source of truth)
+  const { messagesXml, latestContent, messageCount } = buildConversationXml(msg.chat_jid, group.folder);
 
   // Retrieve relevant memories from Supermemory (non-blocking)
   let memoryXml = '';
   if (isSupermemoryEnabled()) {
-    const latestMessage =
-      missedMessages[missedMessages.length - 1]?.content || '';
-    const memories = await retrieveMemories(group.folder, latestMessage);
+    const memories = await retrieveMemories(group.folder, latestContent);
     if (memories) memoryXml = formatMemoryContext(memories);
   }
 
-  const lines = missedMessages.map((m) => {
-    // Escape XML special characters in content
-    const escapeXml = (s: string) =>
-      s
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
-
-    // Build optional media attributes
-    let mediaAttrs = '';
-    if (m.media_type && m.media_path) {
-      // Translate host path to container path: groups/{folder}/media/file -> /workspace/group/media/file
-      const groupDir = path.join(GROUPS_DIR, group.folder);
-      const containerPath = m.media_path.startsWith(groupDir)
-        ? '/workspace/group' + m.media_path.slice(groupDir.length)
-        : m.media_path;
-      mediaAttrs = ` media_type="${escapeXml(m.media_type)}" media_path="${escapeXml(containerPath)}"`;
-    }
-
-    return `<message sender="${escapeXml(m.sender_name)}" time="${m.timestamp}"${mediaAttrs}>${escapeXml(m.content)}</message>`;
-  });
-  const messagesXml = `<messages>\n${lines.join('\n')}\n</messages>`;
   const prompt = memoryXml
     ? `${memoryXml}\n${messagesXml}`
     : messagesXml;
@@ -548,7 +532,7 @@ Voice profile JSON format (include only the active mode's config, not all):
   if (!prompt) return;
 
   logger.info(
-    { module: 'index', group: group.name, messageCount: missedMessages.length },
+    { module: 'index', group: group.name, messageCount },
     'Processing message',
   );
 
@@ -564,6 +548,7 @@ Voice profile JSON format (include only the active mode's config, not all):
         extraMessageIds: [],
         currentText: 'thinking',
         lastEditTime: Date.now(),
+        hadThinkingContent: false,
       });
     }
   }
@@ -576,9 +561,13 @@ Voice profile JSON format (include only the active mode's config, not all):
   const statusEntry = activeStatusMessages.get(group.folder);
   if (statusEntry) {
     activeStatusMessages.delete(group.folder);
-    await deleteTelegramMessage(statusEntry.chatJid, statusEntry.messageId);
-    for (const extraId of statusEntry.extraMessageIds) {
-      await deleteTelegramMessage(statusEntry.chatJid, extraId);
+    if (statusEntry.hadThinkingContent && isThinkingEnabled(msg.chat_jid)) {
+      // Keep reasoning visible — don't delete
+    } else {
+      await deleteTelegramMessage(statusEntry.chatJid, statusEntry.messageId);
+      for (const extraId of statusEntry.extraMessageIds) {
+        await deleteTelegramMessage(statusEntry.chatJid, extraId);
+      }
     }
   }
 
@@ -590,18 +579,11 @@ Voice profile JSON format (include only the active mode's config, not all):
     if (cuaEntry.screenshotMessageId) await deleteTelegramMessage(cuaEntry.chatJid, cuaEntry.screenshotMessageId);
   }
 
-  // Always advance the timestamp so failed/interrupted messages are not reprocessed
-  lastAgentTimestamp[msg.chat_jid] = msg.timestamp;
-  saveState();
-
   if (response) {
-    let text = response;
-    if (DEBUG_THREADS) {
-      const threadId = sessions[group.folder];
-      if (threadId) {
-        text += `\n[thread: ${threadId.slice(0, 8)}]`;
-      }
-    }
+    // Store assistant response in DB (single source of truth for conversation history)
+    storeAssistantMessage(msg.chat_jid, response, new Date().toISOString(), ASSISTANT_NAME);
+
+    const text = response;
 
     // Auto-TTS: voice-first with text transcription
     // Mute state: groups/{folder}/.tts_muted file presence = muted (default: not muted)
@@ -675,7 +657,6 @@ Voice profile JSON format (include only the active mode's config, not all):
     // Store interaction to Supermemory (non-blocking)
     if (isSupermemoryEnabled()) {
       void storeInteraction(group.folder, messagesXml, response, {
-        threadId: sessions[group.folder],
         timestamp: msg.timestamp,
         groupName: group.name,
       });
@@ -690,7 +671,6 @@ async function runAgent(
   opts?: { isSkillInvocation?: boolean },
 ): Promise<string | null> {
   const isMain = group.folder === MAIN_GROUP_FOLDER;
-  const sessionId = sessions[group.folder];
 
   // Update tasks snapshot for container to read (filtered by group)
   const tasks = getAllTasks();
@@ -722,7 +702,6 @@ async function runAgent(
 
   const input = {
     prompt,
-    sessionId,
     groupFolder: group.folder,
     chatJid,
     isMain,
@@ -730,6 +709,7 @@ async function runAgent(
     assistantName: ASSISTANT_NAME,
     provider,
     model,
+    enableThinking: isThinkingEnabled(chatJid),
   };
 
   for (let attempt = 0; attempt <= MAX_AGENT_RETRIES; attempt++) {
@@ -752,11 +732,6 @@ async function runAgent(
 
     try {
       const output = await runContainerAgent(group, input);
-
-      if (output.newSessionId) {
-        sessions[group.folder] = output.newSessionId;
-        saveJson(path.join(DATA_DIR, 'sessions.json'), sessions);
-      }
 
       // Interrupted: stop immediately, don't retry
       if (output.status === 'interrupted') {
@@ -1466,6 +1441,7 @@ function startIpcWatcher(): void {
               let newText: string | undefined;
               if (lastThinking) {
                 newText = String(lastThinking.content);
+                statusEntry.hadThinkingContent = true;
               } else if (lastToolStart) {
                 const toolName = String(lastToolStart.tool_name || '').replace(/^mcp__nanoclaw__/, '');
                 if (!HIDDEN_TOOLS.has(toolName)) {
@@ -1796,35 +1772,51 @@ async function processTaskIpc(
   }
 }
 
-async function startMessageLoop(): Promise<void> {
-  logger.info({ module: 'index' }, `NanoClaw running (trigger: @${ASSISTANT_NAME})`);
+/**
+ * Handle a single message with concurrency limiting.
+ * Called directly from grammY runner handlers (no polling).
+ */
+async function handleMessage(msg: NewMessage): Promise<void> {
+  await agentSemaphore.acquire();
+  try {
+    await processMessage(msg);
+  } catch (err) {
+    logger.error(
+      { module: 'index', err, msg: msg.id },
+      'Error processing message',
+    );
+  } finally {
+    agentSemaphore.release();
+  }
+}
 
-  while (true) {
-    try {
-      const jids = Object.keys(registeredGroups);
-      const { messages } = getNewMessages(jids, lastTimestamp, ASSISTANT_NAME);
+/**
+ * Process any messages that arrived while the bot was offline.
+ * Runs once at startup, then hands off to grammY runner for real-time processing.
+ */
+async function catchUpMissedMessages(): Promise<void> {
+  try {
+    const jids = Object.keys(registeredGroups);
+    const { messages } = getNewMessages(jids, lastTimestamp, ASSISTANT_NAME);
 
-      if (messages.length > 0)
-        logger.info({ module: 'index', count: messages.length }, 'New messages');
+    if (messages.length > 0) {
+      logger.info({ module: 'index', count: messages.length }, 'Catching up missed messages');
       for (const msg of messages) {
         try {
           await processMessage(msg);
-          // Only advance timestamp after successful processing for at-least-once delivery
           lastTimestamp = msg.timestamp;
           saveState();
         } catch (err) {
           logger.error(
             { module: 'index', err, msg: msg.id },
-            'Error processing message, will retry',
+            'Error processing catch-up message',
           );
-          // Stop processing this batch - failed message will be retried next loop
           break;
         }
       }
-    } catch (err) {
-      logger.error({ module: 'index', err }, 'Error in message loop');
     }
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
+  } catch (err) {
+    logger.error({ module: 'index', err }, 'Error catching up missed messages');
   }
 }
 
@@ -1997,25 +1989,9 @@ async function main(): Promise<void> {
     cleanupOldMedia(path.join(GROUPS_DIR, group.folder, 'media'), 7);
   }
 
-  const sessionManager: SessionManager = {
-    getSession(chatJid: string): string | undefined {
-      const group = registeredGroups[chatJid];
-      if (!group) return undefined;
-      return sessions[group.folder];
-    },
-    clearSession(chatJid: string): void {
-      const group = registeredGroups[chatJid];
-      if (group && sessions[group.folder]) {
-        delete sessions[group.folder];
-        saveJson(path.join(DATA_DIR, 'sessions.json'), sessions);
-      }
-    },
-  };
-
   const schedulerDeps = {
     sendMessage,
     registeredGroups: () => registeredGroups,
-    getSessions: () => sessions,
   };
 
   const taskActions: TaskActionHandler = {
@@ -2038,25 +2014,47 @@ async function main(): Promise<void> {
     },
   };
 
-  await connectTelegram(
+  // Catch up any messages that arrived while bot was offline
+  await catchUpMissedMessages();
+
+  // Connect Telegram with grammY runner for concurrent processing.
+  // The onMessageStored callback triggers agent processing directly from handlers.
+  const onMessageStored: OnMessageStored = async (msg) => {
+    // Advance lastTimestamp for catch-up tracking
+    if (msg.timestamp > lastTimestamp) {
+      lastTimestamp = msg.timestamp;
+      saveState();
+    }
+    // Process the message with concurrency limiting
+    void handleMessage(msg);
+  };
+
+  const runnerHandle = await connectTelegram(
     () => registeredGroups,
     registerGroup,
-    sessionManager,
     taskActions,
     interruptHandler,
+    onMessageStored,
   );
   startSchedulerLoop(schedulerDeps);
   startIpcWatcher();
   startIdleWatcher();
   startContainerIdleCleanup();
-  startMessageLoop();
+
+  logger.info({ module: 'index' }, `NanoClaw running (trigger: @${ASSISTANT_NAME})`);
+
+  // Keep the process alive via the runner handle
+  await runnerHandle.task();
 }
 
 // Graceful shutdown
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.on(signal, async () => {
     logger.info({ module: 'index', signal }, 'Shutting down');
-    stopTelegram();
+    // Stop accepting new updates, wait for in-flight handlers (30s timeout)
+    const stopPromise = stopTelegram();
+    const timeout = new Promise<void>((resolve) => setTimeout(resolve, 30000));
+    await Promise.race([stopPromise, timeout]);
     killAllContainers();
     await disconnectBrowser();
     stopTtsServer();

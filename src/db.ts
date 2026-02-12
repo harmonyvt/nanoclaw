@@ -227,6 +227,97 @@ export function storeMediaMessage(
   );
 }
 
+/**
+ * Store an assistant (bot) response message.
+ * Uses is_from_me=1 to distinguish from user messages.
+ */
+export function storeAssistantMessage(
+  chatJid: string,
+  content: string,
+  timestamp: string,
+  senderName: string,
+): void {
+  const msgId = `bot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  db.prepare(
+    `INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(msgId, chatJid, 'assistant', senderName, content, timestamp, 1);
+}
+
+/** Conversation reset marker content — used by /new to boundary conversation history */
+export const CONVERSATION_RESET_MARKER = '[conversation reset]';
+
+/**
+ * Insert a conversation reset marker. getConversationHistory() only returns
+ * messages after the most recent reset marker for a chat.
+ */
+export function insertConversationReset(chatJid: string): void {
+  const msgId = `reset-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const timestamp = new Date().toISOString();
+  db.prepare(
+    `INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(msgId, chatJid, 'system', 'system', CONVERSATION_RESET_MARKER, timestamp, 0);
+}
+
+export interface ConversationMessage {
+  role: 'user' | 'assistant';
+  sender_name: string;
+  content: string;
+  timestamp: string;
+  media_type?: string;
+  media_path?: string;
+}
+
+/**
+ * Get conversation history for a chat (both user and assistant messages).
+ * Returns the last `limit` messages, respecting conversation reset markers
+ * (only returns messages after the most recent reset).
+ */
+export function getConversationHistory(
+  chatJid: string,
+  limit: number,
+): ConversationMessage[] {
+  // First, find the most recent reset marker timestamp (if any)
+  const resetRow = db
+    .prepare(
+      `SELECT timestamp FROM messages
+       WHERE chat_jid = ? AND content = ? AND sender = 'system'
+       ORDER BY timestamp DESC LIMIT 1`,
+    )
+    .get(chatJid, CONVERSATION_RESET_MARKER) as { timestamp: string } | undefined;
+
+  const sinceTimestamp = resetRow?.timestamp || '';
+
+  // Get last N messages (both user and assistant) after the reset boundary
+  const sql = `
+    SELECT sender_name, content, timestamp, is_from_me, media_type, media_path
+    FROM messages
+    WHERE chat_jid = ? AND timestamp > ? AND content != ? AND sender != 'system'
+    ORDER BY timestamp DESC
+    LIMIT ?
+  `;
+
+  const rows = db
+    .prepare(sql)
+    .all(chatJid, sinceTimestamp, CONVERSATION_RESET_MARKER, limit) as Array<{
+    sender_name: string;
+    content: string;
+    timestamp: string;
+    is_from_me: number;
+    media_type: string | null;
+    media_path: string | null;
+  }>;
+
+  // Reverse to chronological order (query was DESC for LIMIT, we want ASC)
+  return rows.reverse().map((row) => ({
+    role: row.is_from_me ? 'assistant' as const : 'user' as const,
+    sender_name: row.sender_name,
+    content: row.content,
+    timestamp: row.timestamp,
+    media_type: row.media_type || undefined,
+    media_path: row.media_path || undefined,
+  }));
+}
+
 export function getNewMessages(
   jids: string[],
   lastTimestamp: string,

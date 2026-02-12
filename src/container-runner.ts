@@ -110,7 +110,6 @@ export async function ensureAgentImage(): Promise<boolean> {
 
 export interface ContainerInput {
   prompt: string;
-  sessionId?: string;
   groupFolder: string;
   chatJid: string;
   isMain: boolean;
@@ -119,12 +118,12 @@ export interface ContainerInput {
   assistantName?: string;
   provider?: string;
   model?: string;
+  enableThinking?: boolean;
 }
 
 export interface ContainerOutput {
   status: 'success' | 'error' | 'interrupted';
   result: string | null;
-  newSessionId?: string;
   error?: string;
 }
 
@@ -599,21 +598,6 @@ function buildVolumeMounts(
     }
   }
 
-  // Per-group Claude sessions directory (isolated from other groups)
-  // Each group gets their own .claude/ to prevent cross-group session access
-  const groupSessionsDir = path.join(
-    DATA_DIR,
-    'sessions',
-    group.folder,
-    '.claude',
-  );
-  fs.mkdirSync(groupSessionsDir, { recursive: true });
-  mounts.push({
-    hostPath: groupSessionsDir,
-    containerPath: '/home/bun/.claude',
-    readonly: false,
-  });
-
   // Per-group IPC namespace: each group gets its own IPC directory
   // This prevents cross-group privilege escalation via IPC
   const groupIpcDir = path.join(DATA_DIR, 'ipc', group.folder);
@@ -848,7 +832,6 @@ async function runOneShotContainer(
         logLines.push(
           `=== Input Summary ===`,
           `Prompt length: ${input.prompt.length} chars`,
-          `Session ID: ${input.sessionId || 'new'}`,
           ``,
           `=== Mounts ===`,
           mounts
@@ -1492,7 +1475,6 @@ async function runPersistentContainer(
     logLines.push(
       `=== Input Summary ===`,
       `Prompt length: ${input.prompt.length} chars`,
-      `Session ID: ${input.sessionId || 'new'}`,
       ``,
     );
   }

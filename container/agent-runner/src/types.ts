@@ -44,12 +44,12 @@ export type AgentEvent =
 /** Input passed to a provider adapter's run() method */
 export interface AdapterInput {
   prompt: string;
-  sessionId?: string;
   model?: string;
   groupFolder: string;
   isMain: boolean;
   isScheduledTask?: boolean;
   assistantName?: string;
+  enableThinking?: boolean;
   ipcContext: IpcMcpContext;
 }
 
@@ -63,7 +63,6 @@ export interface ProviderAdapter {
 /** JSON input sent to the agent container (from host) */
 export interface ContainerInput {
   prompt: string;
-  sessionId?: string;
   groupFolder: string;
   chatJid: string;
   isMain: boolean;
@@ -72,12 +71,12 @@ export interface ContainerInput {
   assistantName?: string;
   provider?: string;
   model?: string;
+  enableThinking?: boolean;
 }
 
 /** JSON output returned from the agent container (to host) */
 export interface ContainerOutput {
   status: 'success' | 'error';
   result: string | null;
-  newSessionId?: string;
   error?: string;
 }

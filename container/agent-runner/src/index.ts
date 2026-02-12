@@ -111,7 +111,6 @@ export function preparePrompt(input: ContainerInput): string {
 
 async function runQuery(input: ContainerInput): Promise<ContainerOutput> {
   let result: string | null = null;
-  let newSessionId: string | undefined;
 
   const prompt = preparePrompt(input);
   const provider = input.provider || 'anthropic';
@@ -119,12 +118,12 @@ async function runQuery(input: ContainerInput): Promise<ContainerOutput> {
 
   const adapterInput: AdapterInput = {
     prompt,
-    sessionId: input.sessionId,
     model: input.model,
     groupFolder: input.groupFolder,
     isMain: input.isMain,
     isScheduledTask: input.isScheduledTask,
     assistantName: input.assistantName,
+    enableThinking: input.enableThinking,
     ipcContext: {
       chatJid: input.chatJid,
       groupFolder: input.groupFolder,
@@ -140,13 +139,12 @@ async function runQuery(input: ContainerInput): Promise<ContainerOutput> {
       if (isCancelled()) {
         log('Cancel file detected, aborting query');
         clearCancelFile();
-        return { status: 'success', result: result || '[Interrupted by user]', newSessionId };
+        return { status: 'success', result: result || '[Interrupted by user]' };
       }
 
       switch (event.type) {
         case 'session_init':
-          newSessionId = event.sessionId;
-          log(`Session initialized: ${newSessionId}`);
+          log(`Session initialized: ${event.sessionId}`);
           break;
         case 'result':
           result = event.result;
@@ -167,11 +165,11 @@ async function runQuery(input: ContainerInput): Promise<ContainerOutput> {
     }
 
     log('Agent query completed successfully');
-    return { status: 'success', result, newSessionId };
+    return { status: 'success', result };
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
     log(`Agent error: ${errorMessage}`);
-    return { status: 'error', result: null, newSessionId, error: errorMessage };
+    return { status: 'error', result: null, error: errorMessage };
   }
 }
 

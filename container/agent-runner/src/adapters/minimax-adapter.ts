@@ -5,8 +5,10 @@
  * (https://api.minimax.io/anthropic) with MiniMax-M2.1. Implements an agentic
  * loop with tool calling, reusing the NanoClaw tool registry.
  *
- * Pattern mirrors the OpenAI adapter: system prompt, tool-calling loop,
- * session persistence via openai-session.ts.
+ * Pattern mirrors the OpenAI adapter: system prompt, tool-calling loop.
+ * Stateless: conversation history is provided in the prompt (built from SQLite
+ * on the host side as XML). This adapter parses the XML into proper role-based
+ * messages for better model quality.
  */
 
 import Anthropic from '@anthropic-ai/sdk';
@@ -20,13 +22,8 @@ import type {
 } from '@anthropic-ai/sdk/resources/messages';
 import { z } from 'zod';
 import type { ProviderAdapter, AdapterInput, AgentEvent } from '../types.js';
-import { buildSystemPrompt } from './openai-adapter.js';
+import { buildSystemPrompt, parseConversationXml } from './openai-adapter.js';
 import { executeNanoTool } from './openai-tools.js';
-import {
-  loadHistory,
-  saveHistory,
-  type SessionMessage,
-} from './openai-session.js';
 import { NANOCLAW_TOOLS } from '../tool-registry.js';
 import { isCancelled } from '../cancel.js';
 
@@ -60,44 +57,6 @@ function buildAnthropicTools(): Tool[] {
   });
 }
 
-// ─── Session Helpers ────────────────────────────────────────────────────────
-
-const SESSIONS_DIR = '/workspace/group/.minimax-sessions';
-
-function generateSessionId(): string {
-  const timestamp = Date.now();
-  const random = Math.random().toString(36).slice(2, 8);
-  return `${timestamp}-${random}`;
-}
-
-/**
- * Convert stored session messages back to Anthropic MessageParam[].
- * Only restores user/assistant messages with compatible content shapes.
- */
-function sessionToMessages(history: SessionMessage[]): MessageParam[] {
-  const messages: MessageParam[] = [];
-  for (const msg of history) {
-    if (msg.role === 'system') continue;
-    if (msg.role === 'user' || msg.role === 'assistant') {
-      messages.push({
-        role: msg.role,
-        content: msg.content as MessageParam['content'],
-      });
-    }
-  }
-  return messages;
-}
-
-/**
- * Convert Anthropic MessageParam[] to generic session messages for persistence.
- */
-function messagesToSession(messages: MessageParam[]): SessionMessage[] {
-  return messages.map((msg) => ({
-    role: msg.role,
-    content: msg.content as SessionMessage['content'],
-  }));
-}
-
 // ─── Adapter ────────────────────────────────────────────────────────────────
 
 export class MinimaxAdapter implements ProviderAdapter {
@@ -108,21 +67,30 @@ export class MinimaxAdapter implements ProviderAdapter {
     });
 
     const model = input.model || 'MiniMax-M2.1';
-    const sessionId = input.sessionId || generateSessionId();
-    yield { type: 'session_init', sessionId };
+    yield { type: 'session_init', sessionId: `minimax-${Date.now()}` };
 
-    const history = loadHistory(sessionId, SESSIONS_DIR);
+    // Parse conversation history from the prompt XML into proper role-based messages
+    const { conversationMessages, remainingPrompt } = parseConversationXml(input.prompt);
+
     const systemPrompt = buildSystemPrompt(input);
     const tools = buildAnthropicTools();
 
-    // Restore previous messages (excluding system, we pass it separately)
-    const restoredHistory = sessionToMessages(history);
+    // Build messages array from parsed conversation history
+    const messages: MessageParam[] = [];
 
-    // Build messages array: history + new user message
-    const messages: MessageParam[] = [
-      ...restoredHistory,
-      { role: 'user', content: input.prompt },
-    ];
+    for (const msg of conversationMessages) {
+      if (msg.role === 'assistant') {
+        messages.push({ role: 'assistant', content: msg.content });
+      } else {
+        const prefix = msg.senderName ? `${msg.senderName}: ` : '';
+        messages.push({ role: 'user', content: `${prefix}${msg.content}` });
+      }
+    }
+
+    // Add any remaining prompt content (e.g., <soul>, <skill>, <memory> blocks)
+    if (remainingPrompt) {
+      messages.push({ role: 'user', content: remainingPrompt });
+    }
 
     let iterations = 0;
     let finalResult: string | null = null;
@@ -216,8 +184,5 @@ export class MinimaxAdapter implements ProviderAdapter {
     if (iterations >= MAX_ITERATIONS) {
       log(`Hit max iterations (${MAX_ITERATIONS}), stopping`);
     }
-
-    // Save conversation history
-    saveHistory(sessionId, messagesToSession(messages), SESSIONS_DIR);
   }
 }

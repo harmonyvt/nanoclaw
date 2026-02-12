@@ -6,7 +6,9 @@
  * executes any tool calls via the NanoClaw tool registry, feeds results back,
  * and repeats until the model produces a final text response (no tool calls).
  *
- * Conversation history is persisted between invocations via openai-session.ts.
+ * Stateless: conversation history is provided in the prompt (built from SQLite
+ * on the host side as XML). This adapter parses the XML into proper role-based
+ * messages for better OpenAI model quality.
  */
 
 import OpenAI from 'openai';
@@ -19,22 +21,66 @@ interface ChatCompletionMessageWithReasoning extends ChatCompletionMessage {
   reasoning_content?: string;
 }
 import { buildOpenAITools, executeNanoTool } from './openai-tools.js';
-import {
-  loadHistory,
-  saveHistory,
-  generateSessionId,
-  type SessionMessage,
-} from './openai-session.js';
 import { NANOCLAW_TOOLS } from '../tool-registry.js';
 import { isCancelled } from '../cancel.js';
-
-// ─── Constants ──────────────────────────────────────────────────────────────
-
 
 // ─── Logging ────────────────────────────────────────────────────────────────
 
 function log(message: string): void {
   console.error(`[openai-adapter] ${message}`);
+}
+
+// ─── XML Conversation Parser ────────────────────────────────────────────────
+
+export interface ParsedConversationMessage {
+  role: 'user' | 'assistant';
+  senderName: string;
+  content: string;
+}
+
+/**
+ * Parse the <messages> XML block from the prompt into structured messages.
+ * Expected format: <message role="user|assistant" sender="Name" time="...">content</message>
+ * Also handles legacy format without role attribute (all treated as user).
+ */
+export function parseConversationXml(prompt: string): {
+  conversationMessages: ParsedConversationMessage[];
+  remainingPrompt: string;
+} {
+  const messagesMatch = prompt.match(/<messages>\n?([\s\S]*?)\n?<\/messages>/);
+  if (!messagesMatch) {
+    return { conversationMessages: [], remainingPrompt: prompt };
+  }
+
+  const messagesBlock = messagesMatch[1];
+  const remainingPrompt = prompt.replace(/<messages>[\s\S]*?<\/messages>/, '').trim();
+
+  const conversationMessages: ParsedConversationMessage[] = [];
+  const messageRegex = /<message\s+([^>]*)>([\s\S]*?)<\/message>/g;
+  let match;
+
+  while ((match = messageRegex.exec(messagesBlock)) !== null) {
+    const attrs = match[1];
+    const content = match[2];
+
+    // Parse attributes
+    const roleMatch = attrs.match(/role="([^"]*)"/);
+    const senderMatch = attrs.match(/sender="([^"]*)"/);
+
+    const role = roleMatch?.[1] === 'assistant' ? 'assistant' as const : 'user' as const;
+    const senderName = senderMatch?.[1] || 'User';
+
+    // Unescape XML entities
+    const unescaped = content
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"');
+
+    conversationMessages.push({ role, senderName, content: unescaped });
+  }
+
+  return { conversationMessages, remainingPrompt };
 }
 
 // ─── System Prompt Builder ──────────────────────────────────────────────────
@@ -100,25 +146,34 @@ export class OpenAIAdapter implements ProviderAdapter {
     const client = new OpenAI(); // reads OPENAI_API_KEY from env
     const model = input.model || 'gpt-4o';
 
-    const sessionId = input.sessionId || generateSessionId();
-    yield { type: 'session_init', sessionId };
+    yield { type: 'session_init', sessionId: `openai-${Date.now()}` };
 
-    const history = loadHistory(input.sessionId);
+    // Parse conversation history from the prompt XML into proper role-based messages
+    const { conversationMessages, remainingPrompt } = parseConversationXml(input.prompt);
 
     const systemPrompt = buildSystemPrompt(input);
     const tools = buildOpenAITools();
 
-    // History messages are stored as SessionMessage (loose types for serialization).
-    // Cast to ChatCompletionMessageParam -- the shapes are compatible at runtime.
-    const restoredHistory = history.filter(
-      (m) => m.role !== 'system',
-    ) as unknown as OpenAI.ChatCompletionMessageParam[];
-
     const messages: OpenAI.ChatCompletionMessageParam[] = [
       { role: 'system', content: systemPrompt },
-      ...restoredHistory,
-      { role: 'user', content: input.prompt },
     ];
+
+    // Add conversation history as proper role-based messages
+    for (const msg of conversationMessages) {
+      if (msg.role === 'assistant') {
+        messages.push({ role: 'assistant', content: msg.content });
+      } else {
+        const prefix = msg.senderName ? `${msg.senderName}: ` : '';
+        messages.push({ role: 'user', content: `${prefix}${msg.content}` });
+      }
+    }
+
+    // Add any remaining prompt content (e.g., <soul>, <skill>, <memory> blocks)
+    if (remainingPrompt) {
+      messages.push({ role: 'user', content: remainingPrompt });
+    }
+
+    log(`Starting with ${messages.length} messages (${conversationMessages.length} from history)`);
 
     let iterations = 0;
     while (true) {
@@ -148,7 +203,7 @@ export class OpenAIAdapter implements ProviderAdapter {
 
       // Capture reasoning content from o-series models (o1, o3, etc.)
       const { reasoning_content: reasoning } = assistantMessage as ChatCompletionMessageWithReasoning;
-      if (reasoning) {
+      if (reasoning && input.enableThinking !== false) {
         const snippet = reasoning.slice(-4000);
         yield { type: 'thinking', content: snippet };
       }
@@ -186,11 +241,5 @@ export class OpenAIAdapter implements ProviderAdapter {
         });
       }
     }
-
-
-    // Save conversation history (exclude system prompt, we rebuild it each time).
-    // Cast to SessionMessage[] -- the session layer uses loose types for serialization.
-    const toSave = messages.filter((m) => m.role !== 'system') as unknown as SessionMessage[];
-    saveHistory(sessionId, toSave);
   }
 }
