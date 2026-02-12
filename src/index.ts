@@ -635,6 +635,7 @@ Voice profile JSON format (include only the active mode's config, not all):
         textPart = text;
       }
 
+      let voiceSent = false;
       if (voicePart) {
         const ttsStatusId = await sendTelegramStatusMessage(msg.chat_jid, 'speaking');
         try {
@@ -652,6 +653,7 @@ Voice profile JSON format (include only the active mode's config, not all):
           }
 
           await sendTelegramVoice(msg.chat_jid, oggPath);
+          voiceSent = true;
         } catch (err) {
           logger.error({ module: 'index', err }, 'Auto-TTS failed, sending as text');
         } finally {
@@ -659,8 +661,8 @@ Voice profile JSON format (include only the active mode's config, not all):
         }
       }
 
-      // Always send text transcription after voice
-      if (textPart) {
+      // Send text only if voice failed or text has content beyond what was voiced
+      if (textPart && (!voiceSent || textPart !== voicePart)) {
         await sendMessage(msg.chat_jid, textPart);
       }
     } else {
