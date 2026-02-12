@@ -1414,6 +1414,44 @@ function formatAnalysisSummary(
   return lines.join('\n');
 }
 
+function formatSnapshotSummary(analysis: ScreenshotAnalysis): string {
+  const lines: string[] = [];
+  lines.push(
+    `Screen: ${analysis.grid.width}x${analysis.grid.height}`,
+  );
+  lines.push(
+    `Grid: ${analysis.grid.cols}x${analysis.grid.rows}`,
+  );
+  lines.push(
+    `Detected elements: ${analysis.elementCount}${analysis.truncated ? ` (showing ${analysis.elements.length})` : ''}`,
+  );
+
+  if (analysis.elements.length > 0) {
+    lines.push('Elements:');
+    for (const element of analysis.elements) {
+      const rolePart = element.role ? ` role=${element.role}` : '';
+      lines.push(
+        `${element.id}. [${element.grid.key}] "${element.label}"${rolePart} center=(${element.center.x},${element.center.y})`,
+      );
+    }
+  } else {
+    lines.push(
+      'Elements: none detected (accessibility tree did not expose element bounds).',
+    );
+    lines.push(
+      'Use browse_screenshot and visually inspect the image, then use browse_click_xy with pixel coordinates.',
+    );
+  }
+
+  if (analysis.elements.length > 0) {
+    lines.push(
+      'Tip: Use browse_click with the label text, or browse_click_xy with the center coordinates above.',
+    );
+  }
+
+  return lines.join('\n');
+}
+
 export function buildScreenshotAnalysis(
   snapshot: unknown,
   imageDimensions: { width: number; height: number },
@@ -1578,10 +1616,13 @@ async function processCuaRequest(
     }
     case 'snapshot': {
       const snapshot = await runCuaCommand('get_accessibility_tree');
+      const screenSize =
+        (await getScreenSizeSafe()) || { width: 1024, height: 768 };
+      const analysis = buildScreenshotAnalysis(snapshot, screenSize);
+      const summary = formatSnapshotSummary(analysis);
       return {
         status: 'ok',
-        result:
-          typeof snapshot === 'string' ? snapshot : JSON.stringify(snapshot),
+        result: summary,
       };
     }
     case 'click': {
