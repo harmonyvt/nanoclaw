@@ -4,6 +4,7 @@ import { randomBytes } from 'crypto';
 import { GROUPS_DIR, DATA_DIR } from './config.js';
 import { CuaClient } from './cua-client.js';
 import { logger } from './logger.js';
+import { resolveMediaOpenAIConfig, type MediaOpenAIConfig } from './media-ai-config.js';
 import { ensureSandbox, resetIdleTimer, rotateSandboxVncPassword } from './sandbox-manager.js';
 
 type PendingWaitForUser = {
@@ -644,23 +645,22 @@ async function findElementViaAnthropicVision(
 /** Call OpenAI Chat Completions API for vision-based element finding. */
 async function findElementViaOpenAIVision(
   description: string,
-  apiKey: string,
+  config: Pick<MediaOpenAIConfig, 'apiKey' | 'baseUrl' | 'visionModel'>,
   screenshot: { base64: string; dimensions: { width: number; height: number } },
 ): Promise<LocatedElement | null> {
   const { base64, dimensions } = screenshot;
   const prompt = `This screenshot is ${dimensions.width}x${dimensions.height} pixels. Find the UI element matching this description: "${description}". Return ONLY a JSON object with the center pixel coordinates: {"x": number, "y": number}. If not found, return {"x": null, "y": null}. No other text.`;
-  const baseUrl = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
 
   logger.info({ description }, 'Vision fallback: calling OpenAI Chat Completions API');
 
-  const response = await fetch(`${baseUrl}/chat/completions`, {
+  const response = await fetch(`${config.baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
+      'Authorization': `Bearer ${config.apiKey}`,
     },
     body: JSON.stringify({
-      model: 'gpt-4o',
+      model: config.visionModel,
       max_tokens: 256,
       messages: [{
         role: 'user',
@@ -708,6 +708,25 @@ async function findElementViaVision(
     // Record the call for rate limiting
     visionCallTimestamps.push(Date.now());
 
+    const mediaConfig = resolveMediaOpenAIConfig();
+    if (mediaConfig.compositeEnabled) {
+      if (!mediaConfig.apiKey) {
+        logger.debug(
+          'Vision fallback skipped: COMPOSITE_AI_ENABLED=true but OPENAI_MEDIA_API_KEY/OPENAI_API_KEY is missing',
+        );
+        return null;
+      }
+      const result = await findElementViaOpenAIVision(description, mediaConfig, screenshot);
+      if (result) {
+        logger.info(
+          { description, ...result.coords },
+          'Element found via composite OpenAI media vision',
+        );
+        return result;
+      }
+      return null;
+    }
+
     // Try Anthropic first
     const anthropicKey = resolveApiKeyForVision();
     if (anthropicKey) {
@@ -719,16 +738,15 @@ async function findElementViaVision(
     }
 
     // Fall back to OpenAI
-    const openaiKey = process.env.OPENAI_API_KEY;
-    if (openaiKey) {
-      const result = await findElementViaOpenAIVision(description, openaiKey, screenshot);
+    if (mediaConfig.apiKey) {
+      const result = await findElementViaOpenAIVision(description, mediaConfig, screenshot);
       if (result) {
         logger.info({ description, ...result.coords }, 'Element found via OpenAI vision');
         return result;
       }
     }
 
-    if (!anthropicKey && !openaiKey) {
+    if (!anthropicKey && !mediaConfig.apiKey) {
       logger.debug('Vision fallback skipped: no API key available (ANTHROPIC_API_KEY or OPENAI_API_KEY)');
     }
     return null;

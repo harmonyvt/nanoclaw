@@ -3,6 +3,7 @@ import path from 'path';
 import { Bot } from 'grammy';
 
 import { logger } from './logger.js';
+import { resolveMediaOpenAIConfig } from './media-ai-config.js';
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB Telegram limit
 
@@ -62,9 +63,17 @@ export async function downloadTelegramFile(
  * Returns the transcription text.
  */
 export async function transcribeAudio(filePath: string): Promise<string> {
-  const apiKey = process.env.OPENAI_API_KEY;
+  const mediaConfig = resolveMediaOpenAIConfig();
+  const useCompositeMedia = mediaConfig.compositeEnabled;
+  const apiKey = useCompositeMedia
+    ? mediaConfig.apiKey
+    : process.env.OPENAI_API_KEY || '';
   if (!apiKey) {
-    logger.warn('OPENAI_API_KEY not set, cannot transcribe audio');
+    logger.warn(
+      useCompositeMedia
+        ? 'OPENAI_MEDIA_API_KEY/OPENAI_API_KEY not set, cannot transcribe audio'
+        : 'OPENAI_API_KEY not set, cannot transcribe audio',
+    );
     return '[transcription unavailable]';
   }
 
@@ -72,19 +81,23 @@ export async function transcribeAudio(filePath: string): Promise<string> {
   const fileName = path.basename(filePath);
 
   const formData = new FormData();
-  formData.append('model', 'whisper-1');
+  formData.append(
+    'model',
+    useCompositeMedia ? mediaConfig.audioModel : 'whisper-1',
+  );
   formData.append('file', new Blob([fileBuffer]), fileName);
 
-  const response = await fetch(
-    'https://api.openai.com/v1/audio/transcriptions',
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: formData,
+  const transcriptionEndpoint = useCompositeMedia
+    ? `${mediaConfig.baseUrl}/audio/transcriptions`
+    : 'https://api.openai.com/v1/audio/transcriptions';
+
+  const response = await fetch(transcriptionEndpoint, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
     },
-  );
+    body: formData,
+  });
 
   if (!response.ok) {
     const errorText = await response.text();
