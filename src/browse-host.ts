@@ -533,111 +533,205 @@ function isVisionRateLimited(): boolean {
   return visionCallTimestamps.length >= VISION_RATE_LIMIT_MAX;
 }
 
-async function findElementViaVision(
-  description: string,
-): Promise<LocatedElement | null> {
-  const apiKey = resolveApiKeyForVision();
-  if (!apiKey) {
-    logger.debug('Vision fallback skipped: no ANTHROPIC_API_KEY available');
+/**
+ * Capture and cache a screenshot for vision fallback.
+ * Returns base64 PNG data and screen dimensions, or null on failure.
+ */
+async function getVisionScreenshot(): Promise<{
+  base64: string;
+  dimensions: { width: number; height: number };
+} | null> {
+  let base64: string | null = null;
+  if (cachedVisionScreenshot && Date.now() - cachedVisionScreenshot.timestamp < VISION_SCREENSHOT_CACHE_MS) {
+    base64 = cachedVisionScreenshot.base64;
+  } else {
+    const screenshotContent = await runCuaCommand('screenshot');
+    base64 = extractBase64Png(screenshotContent);
+    if (base64) {
+      cachedVisionScreenshot = { base64, timestamp: Date.now() };
+    }
+  }
+
+  if (!base64) {
+    logger.warn('Vision fallback: could not capture screenshot');
     return null;
   }
 
+  const screenshotBytes = Buffer.from(base64, 'base64');
+  const dimensions = getImageDimensionsFromBytes(screenshotBytes)
+    || (await getScreenSizeSafe())
+    || { width: 1024, height: 768 };
+
+  return { base64, dimensions };
+}
+
+/** Parse vision API response text into coordinates. */
+function parseVisionCoordinates(
+  responseText: string,
+  dimensions: { width: number; height: number },
+  description: string,
+): LocatedElement | null {
+  const jsonMatch = responseText.match(/\{[^}]+\}/);
+  if (!jsonMatch) {
+    logger.warn({ text: responseText.slice(0, 200) }, 'Vision fallback: no JSON in response');
+    return null;
+  }
+
+  const parsed = JSON.parse(jsonMatch[0]) as { x: number | null; y: number | null };
+  if (parsed.x == null || parsed.y == null) {
+    logger.info({ description }, 'Vision fallback: element not found in screenshot');
+    return null;
+  }
+
+  const x = Math.round(parsed.x);
+  const y = Math.round(parsed.y);
+  if (x < 0 || x >= dimensions.width || y < 0 || y >= dimensions.height) {
+    logger.warn({ x, y, dimensions }, 'Vision fallback: coordinates out of bounds');
+    return null;
+  }
+
+  return { coords: { x, y }, matchedQuery: `vision:${description}` };
+}
+
+/** Call Anthropic Messages API for vision-based element finding. */
+async function findElementViaAnthropicVision(
+  description: string,
+  apiKey: string,
+  screenshot: { base64: string; dimensions: { width: number; height: number } },
+): Promise<LocatedElement | null> {
+  const { base64, dimensions } = screenshot;
+  const prompt = `This screenshot is ${dimensions.width}x${dimensions.height} pixels. Find the UI element matching this description: "${description}". Return ONLY a JSON object with the center pixel coordinates: {"x": number, "y": number}. If not found, return {"x": null, "y": null}. No other text.`;
+
+  logger.info({ description }, 'Vision fallback: calling Anthropic Messages API');
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: VISION_MODEL,
+      max_tokens: 256,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: base64 } },
+          { type: 'text', text: prompt },
+        ],
+      }],
+    }),
+  });
+
+  if (!response.ok) {
+    logger.warn({ status: response.status }, 'Vision fallback (Anthropic): API call failed');
+    return null;
+  }
+
+  const result = await response.json() as {
+    content?: Array<{ type: string; text?: string }>;
+  };
+  const textBlock = result.content?.find((b) => b.type === 'text');
+  if (!textBlock?.text) {
+    logger.warn('Vision fallback (Anthropic): no text in API response');
+    return null;
+  }
+
+  return parseVisionCoordinates(textBlock.text, dimensions, description);
+}
+
+/** Call OpenAI Chat Completions API for vision-based element finding. */
+async function findElementViaOpenAIVision(
+  description: string,
+  apiKey: string,
+  screenshot: { base64: string; dimensions: { width: number; height: number } },
+): Promise<LocatedElement | null> {
+  const { base64, dimensions } = screenshot;
+  const prompt = `This screenshot is ${dimensions.width}x${dimensions.height} pixels. Find the UI element matching this description: "${description}". Return ONLY a JSON object with the center pixel coordinates: {"x": number, "y": number}. If not found, return {"x": null, "y": null}. No other text.`;
+  const baseUrl = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
+
+  logger.info({ description }, 'Vision fallback: calling OpenAI Chat Completions API');
+
+  const response = await fetch(`${baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: 'gpt-4o',
+      max_tokens: 256,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image_url', image_url: { url: `data:image/png;base64,${base64}`, detail: 'low' } },
+          { type: 'text', text: prompt },
+        ],
+      }],
+    }),
+  });
+
+  if (!response.ok) {
+    logger.warn({ status: response.status }, 'Vision fallback (OpenAI): API call failed');
+    return null;
+  }
+
+  const result = await response.json() as {
+    choices?: Array<{ message?: { content?: string } }>;
+  };
+  const text = result.choices?.[0]?.message?.content;
+  if (!text) {
+    logger.warn('Vision fallback (OpenAI): no text in API response');
+    return null;
+  }
+
+  return parseVisionCoordinates(text, dimensions, description);
+}
+
+/**
+ * Find an element via vision API as a last resort.
+ * Tries Anthropic first (if key available), then falls back to OpenAI.
+ */
+async function findElementViaVision(
+  description: string,
+): Promise<LocatedElement | null> {
   if (isVisionRateLimited()) {
     logger.debug('Vision fallback skipped: rate limited');
     return null;
   }
 
   try {
-    // Get screenshot (use cache if recent)
-    let base64: string | null = null;
-    if (cachedVisionScreenshot && Date.now() - cachedVisionScreenshot.timestamp < VISION_SCREENSHOT_CACHE_MS) {
-      base64 = cachedVisionScreenshot.base64;
-    } else {
-      const screenshotContent = await runCuaCommand('screenshot');
-      base64 = extractBase64Png(screenshotContent);
-      if (base64) {
-        cachedVisionScreenshot = { base64, timestamp: Date.now() };
-      }
-    }
-
-    if (!base64) {
-      logger.warn('Vision fallback: could not capture screenshot');
-      return null;
-    }
-
-    const screenshotBytes = Buffer.from(base64, 'base64');
-    const dimensions = getImageDimensionsFromBytes(screenshotBytes)
-      || (await getScreenSizeSafe())
-      || { width: 1024, height: 768 };
+    const screenshot = await getVisionScreenshot();
+    if (!screenshot) return null;
 
     // Record the call for rate limiting
     visionCallTimestamps.push(Date.now());
 
-    logger.info({ description }, 'Vision fallback: calling Anthropic Messages API');
-
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: VISION_MODEL,
-        max_tokens: 256,
-        messages: [{
-          role: 'user',
-          content: [
-            {
-              type: 'image',
-              source: { type: 'base64', media_type: 'image/png', data: base64 },
-            },
-            {
-              type: 'text',
-              text: `This screenshot is ${dimensions.width}x${dimensions.height} pixels. Find the UI element matching this description: "${description}". Return ONLY a JSON object with the center pixel coordinates: {"x": number, "y": number}. If not found, return {"x": null, "y": null}. No other text.`,
-            },
-          ],
-        }],
-      }),
-    });
-
-    if (!response.ok) {
-      logger.warn({ status: response.status }, 'Vision fallback: API call failed');
-      return null;
+    // Try Anthropic first
+    const anthropicKey = resolveApiKeyForVision();
+    if (anthropicKey) {
+      const result = await findElementViaAnthropicVision(description, anthropicKey, screenshot);
+      if (result) {
+        logger.info({ description, ...result.coords }, 'Element found via Anthropic vision');
+        return result;
+      }
     }
 
-    const result = await response.json() as {
-      content?: Array<{ type: string; text?: string }>;
-    };
-    const textBlock = result.content?.find((b) => b.type === 'text');
-    if (!textBlock?.text) {
-      logger.warn('Vision fallback: no text in API response');
-      return null;
+    // Fall back to OpenAI
+    const openaiKey = process.env.OPENAI_API_KEY;
+    if (openaiKey) {
+      const result = await findElementViaOpenAIVision(description, openaiKey, screenshot);
+      if (result) {
+        logger.info({ description, ...result.coords }, 'Element found via OpenAI vision');
+        return result;
+      }
     }
 
-    // Extract JSON from the response (may be wrapped in markdown code block)
-    const jsonMatch = textBlock.text.match(/\{[^}]+\}/);
-    if (!jsonMatch) {
-      logger.warn({ text: textBlock.text.slice(0, 200) }, 'Vision fallback: no JSON in response');
-      return null;
+    if (!anthropicKey && !openaiKey) {
+      logger.debug('Vision fallback skipped: no API key available (ANTHROPIC_API_KEY or OPENAI_API_KEY)');
     }
-
-    const parsed = JSON.parse(jsonMatch[0]) as { x: number | null; y: number | null };
-    if (parsed.x == null || parsed.y == null) {
-      logger.info({ description }, 'Vision fallback: element not found in screenshot');
-      return null;
-    }
-
-    // Validate coordinates are within screen bounds
-    const x = Math.round(parsed.x);
-    const y = Math.round(parsed.y);
-    if (x < 0 || x >= dimensions.width || y < 0 || y >= dimensions.height) {
-      logger.warn({ x, y, dimensions }, 'Vision fallback: coordinates out of bounds');
-      return null;
-    }
-
-    logger.info({ description, x, y }, 'Element found via vision fallback');
-    return { coords: { x, y }, matchedQuery: `vision:${description}` };
+    return null;
   } catch (err) {
     logger.warn(
       { err: err instanceof Error ? err.message : String(err) },

@@ -6,7 +6,7 @@
 
 import { z } from 'zod';
 import { NANOCLAW_TOOLS } from '../tool-registry.js';
-import type { IpcMcpContext } from '../types.js';
+import type { IpcMcpContext, ToolResult } from '../types.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -62,15 +62,30 @@ export async function executeNanoTool(
   args: Record<string, unknown>,
   ctx: IpcMcpContext,
 ): Promise<string> {
+  const result = await executeNanoToolFull(toolName, args, ctx);
+  return result.content;
+}
+
+/**
+ * Execute a NanoClaw tool and return the full ToolResult (including optional image data).
+ * Used by adapters that support vision (OpenAI with image_url content).
+ */
+export async function executeNanoToolFull(
+  toolName: string,
+  args: Record<string, unknown>,
+  ctx: IpcMcpContext,
+): Promise<ToolResult> {
   const tool = NANOCLAW_TOOLS.find((t) => t.name === toolName);
   if (!tool) {
-    return JSON.stringify({ error: `Unknown tool: ${toolName}` });
+    return { content: JSON.stringify({ error: `Unknown tool: ${toolName}` }), isError: true };
   }
 
   try {
-    const result = await tool.handler(args, ctx);
-    return result.content;
+    return await tool.handler(args, ctx);
   } catch (err) {
-    return `Tool execution error: ${err instanceof Error ? err.message : String(err)}`;
+    return {
+      content: `Tool execution error: ${err instanceof Error ? err.message : String(err)}`,
+      isError: true,
+    };
   }
 }

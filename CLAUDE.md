@@ -282,6 +282,7 @@ Requires `SUPERMEMORY_API_KEY`. When enabled, memories are also automatically re
 | --------------------------- | ------------------------ | ------------------------------------------------ |
 | `OPENAI_API_KEY`            | --                       | Whisper transcription + OpenAI provider API key  |
 | `OPENAI_BASE_URL`           | --                       | Custom OpenAI-compatible API endpoint            |
+| `OPENAI_REASONING_EFFORT`   | `medium`                 | Reasoning effort for OpenAI reasoning models (`low`, `medium`, `high`) |
 | `ANTHROPIC_BASE_URL`        | --                       | Custom Anthropic-compatible API endpoint         |
 | `FIRECRAWL_API_KEY`         | --                       | Firecrawl web scraping                  |
 | `SUPERMEMORY_API_KEY`       | --                       | Supermemory long-term memory (preferred) |

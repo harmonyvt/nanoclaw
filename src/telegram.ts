@@ -3,27 +3,33 @@ import fs from 'fs';
 import path from 'path';
 import { promisify } from 'util';
 import { Bot, InlineKeyboard, InputFile } from 'grammy';
+import { run, sequentialize } from '@grammyjs/runner';
+import type { RunnerHandle } from '@grammyjs/runner';
 import type { LanguageCode } from 'grammy/types';
 
 import {
+  ASSISTANT_NAME,
   GROUPS_DIR,
   TELEGRAM_BOT_TOKEN,
   TELEGRAM_OWNER_ID,
   makeTelegramChatId,
   extractTelegramChatId,
   DEFAULT_PROVIDER,
+  MAX_CONVERSATION_MESSAGES,
 } from './config.js';
 
 import {
   clearMessages,
+  getConversationHistory,
+  getConversationStatus,
   getAllTasks,
-  getMessageCount,
   getTaskById,
   getTaskByShortId,
   getTaskRunLogs,
   getTasksForGroup,
   updateTask,
   deleteTask,
+  insertConversationReset,
   storeChatMetadata,
   storeMediaMessage,
   storeTextMessage,
@@ -46,17 +52,23 @@ import {
   deleteSkill as deleteSkillFromDisk,
   getSkillCommandsForGroup,
 } from './skills.js';
+import { resolveAssistantIdentity } from './soul.js';
 
 /**
- * Interface for managing sessions from telegram command handlers.
- * Passed in by the host (index.ts) so telegram.ts doesn't need direct access to session state.
+ * Callback invoked after a message is stored in the DB.
+ * The host (index.ts) provides this to trigger agent processing directly
+ * from the grammY handler pipeline (instead of polling).
  */
-export interface SessionManager {
-  /** Get the current sessionId for a chat's group folder, or undefined if none. */
-  getSession(chatJid: string): string | undefined;
-  /** Clear (delete) the sessionId for a chat's group folder so the next message starts fresh. */
-  clearSession(chatJid: string): void;
-}
+export type OnMessageStored = (msg: {
+  id: string;
+  chat_jid: string;
+  sender: string;
+  sender_name: string;
+  content: string;
+  timestamp: string;
+  media_type?: string;
+  media_path?: string;
+}) => Promise<void>;
 
 /**
  * Interface for triggering task actions from telegram command handlers.
@@ -293,6 +305,7 @@ type PendingUpdate = {
 const pendingUpdatesByChat = new Map<string, PendingUpdate>();
 
 let bot: Bot | undefined;
+let runnerHandle: RunnerHandle | undefined;
 
 const verboseChats = new Set<string>();
 export function isVerbose(chatJid: string): boolean {
@@ -302,6 +315,12 @@ export function isVerbose(chatJid: string): boolean {
 const thinkingDisabledChats = new Set<string>();
 export function isThinkingEnabled(chatJid: string): boolean {
   return !thinkingDisabledChats.has(chatJid);
+}
+export function addThinkingDisabled(chatJid: string): void {
+  thinkingDisabledChats.add(chatJid);
+}
+export function removeThinkingDisabled(chatJid: string): void {
+  thinkingDisabledChats.delete(chatJid);
 }
 
 const TELEGRAM_MAX_LENGTH = 4096;
@@ -323,6 +342,7 @@ type SlashCommandSpec = {
     | 'debug'
     | 'mute'
     | 'voice'
+    | 'soul'
     | 'help'
     | 'skills';
   description: string;
@@ -353,7 +373,7 @@ const TELEGRAM_SLASH_COMMANDS: SlashCommandSpec[] = [
   {
     command: 'status',
     description: 'Show session info',
-    help: 'Show session info, message count, uptime',
+    help: 'Show session info, identity, thread history, uptime',
   },
   {
     command: 'update',
@@ -382,8 +402,8 @@ const TELEGRAM_SLASH_COMMANDS: SlashCommandSpec[] = [
   },
   {
     command: 'thinking',
-    description: 'Toggle thinking status display',
-    help: 'Toggle italic thinking/tool status in chat (on by default)',
+    description: 'Toggle extended thinking on/off',
+    help: 'Toggle extended thinking (reasoning visible when on, faster when off)',
   },
   {
     command: 'stop',
@@ -404,6 +424,11 @@ const TELEGRAM_SLASH_COMMANDS: SlashCommandSpec[] = [
     command: 'voice',
     description: 'Configure TTS voice (design, preset, clone)',
     help: 'Configure TTS voice: /voice [design|preset|clone|reset]',
+  },
+  {
+    command: 'soul',
+    description: 'View or edit SOUL.md persona',
+    help: 'Manage persona: /soul [show|reset|<change request>]',
   },
   {
     command: 'help',
@@ -653,11 +678,19 @@ const startTime = Date.now();
 export async function connectTelegram(
   registeredGroups: () => Record<string, RegisteredGroup>,
   onRegisterGroup?: (jid: string, group: RegisteredGroup) => void,
-  sessionManager?: SessionManager,
   taskActions?: TaskActionHandler,
   interruptHandler?: InterruptHandler,
-): Promise<void> {
+  onMessageStored?: OnMessageStored,
+): Promise<RunnerHandle> {
   bot = new Bot(TELEGRAM_BOT_TOKEN);
+
+  // Per-chat sequential ordering: messages from the same chat process in order,
+  // different chats process concurrently (enabled by grammY runner).
+  bot.use(sequentialize((ctx) => {
+    const chatId = ctx.chat?.id.toString();
+    return chatId ? [chatId] : [];
+  }));
+
   const builtinCommands = TELEGRAM_SLASH_COMMANDS.map((c) => ({
     command: c.command,
     description: c.description,
@@ -815,32 +848,43 @@ export async function connectTelegram(
     await next();
   });
 
+  const handleConversationReset = async (
+    ctx: { chat: { id: number } },
+    command: 'new' | 'reset',
+  ) => {
+    const chatId = makeTelegramChatId(ctx.chat.id);
+
+    // Prevent stale replies from an in-flight run started before the reset.
+    if (interruptHandler) interruptHandler.interrupt(chatId);
+
+    insertConversationReset(chatId);
+    logger.info(
+      { module: 'telegram', chatId, command },
+      'Conversation reset command received',
+    );
+  };
+
   bot.command('new', async (ctx) => {
     if (!shouldAccept(ctx)) return;
-    const chatId = makeTelegramChatId(ctx.chat.id);
-    if (sessionManager) {
-      sessionManager.clearSession(chatId);
-    }
-    logger.info(
-      { module: 'telegram', chatId },
-      'Session reset via /new command',
-    );
-    await ctx.reply('New thread started.');
+    await handleConversationReset(ctx, 'new');
+  });
+
+  // Alias for users who expect /reset semantics from other bots.
+  bot.command('reset', async (ctx) => {
+    if (!shouldAccept(ctx)) return;
+    await handleConversationReset(ctx, 'reset');
   });
 
   bot.command('clear', async (ctx) => {
     if (!shouldAccept(ctx)) return;
     const chatId = makeTelegramChatId(ctx.chat.id);
     const deleted = clearMessages(chatId);
-    if (sessionManager) {
-      sessionManager.clearSession(chatId);
-    }
     logger.info(
       { module: 'telegram', chatId, deleted },
       'History cleared via /clear command',
     );
     await ctx.reply(
-      `Cleared ${deleted} message${deleted === 1 ? '' : 's'} and reset session.`,
+      `Cleared ${deleted} message${deleted === 1 ? '' : 's'}.`,
     );
   });
 
@@ -849,29 +893,46 @@ export async function connectTelegram(
     const chatId = makeTelegramChatId(ctx.chat.id);
     const group = registeredGroups()[chatId];
 
-    const sessionId = sessionManager
-      ? sessionManager.getSession(chatId)
-      : undefined;
-    const messageCount = getMessageCount(chatId);
+    const convoStatus = getConversationStatus(chatId);
+    const messageCount = convoStatus.totalMessageCount;
+    const historyWindowCount = getConversationHistory(
+      chatId,
+      MAX_CONVERSATION_MESSAGES,
+    ).length;
     const uptimeMs = Date.now() - startTime;
     const uptimeHours = Math.floor(uptimeMs / 3600000);
     const uptimeMinutes = Math.floor((uptimeMs % 3600000) / 60000);
 
     const provider = group?.providerConfig?.provider || DEFAULT_PROVIDER;
     const model = group?.providerConfig?.model || '(default)';
+    const assistantIdentity = group
+      ? resolveAssistantIdentity(group.folder, ASSISTANT_NAME)
+      : ASSISTANT_NAME;
+    const resetAt = convoStatus.resetAt
+      ? `${convoStatus.resetAt} (${formatRelativeTime(convoStatus.resetAt)})`
+      : 'never';
+    const threadStarted = convoStatus.threadStartedAt
+      ? `${convoStatus.threadStartedAt} (${formatRelativeTime(convoStatus.threadStartedAt)})`
+      : '--';
+    const threadLatest = convoStatus.threadLatestAt
+      ? `${convoStatus.threadLatestAt} (${formatRelativeTime(convoStatus.threadLatestAt)})`
+      : '--';
 
     const lines = [
-      `Session: ${sessionId ? 'active' : 'none'}`,
       `Group: ${group ? group.name : 'unregistered'}`,
+      `Identity: ${assistantIdentity}`,
+      `Chat: ${chatId}`,
       `Provider: ${provider}`,
       `Model: ${model}`,
-      `Messages: ${messageCount}`,
+      `Messages (all): ${messageCount}`,
+      `Thread messages (since /new): ${convoStatus.threadMessageCount}`,
+      `History sent to model: ${historyWindowCount}/${MAX_CONVERSATION_MESSAGES}`,
+      `Thread reset at: ${resetAt}`,
+      `Thread started at: ${threadStarted}`,
+      `Thread last activity: ${threadLatest}`,
       `Uptime: ${uptimeHours}h ${uptimeMinutes}m`,
       `Version: v${APP_VERSION}`,
     ];
-    if (sessionId) {
-      lines.push(`Thread: ${sessionId.slice(0, 8)}`);
-    }
     await ctx.reply(lines.join('\n'));
   });
 
@@ -999,17 +1060,7 @@ export async function connectTelegram(
     }
   });
 
-  bot.command('thinking', async (ctx) => {
-    if (!shouldAccept(ctx)) return;
-    const chatId = makeTelegramChatId(ctx.chat.id);
-    if (thinkingDisabledChats.has(chatId)) {
-      thinkingDisabledChats.delete(chatId);
-      await ctx.reply('Thinking status on');
-    } else {
-      thinkingDisabledChats.add(chatId);
-      await ctx.reply('Thinking status off');
-    }
-  });
+  // /thinking is handled inline in index.ts (like /mute) for persistence
 
   bot.command('stop', async (ctx) => {
     if (!shouldAccept(ctx)) return;
@@ -1288,22 +1339,28 @@ export async function connectTelegram(
 
       if (skAction === 'run') {
         await ctx.answerCallbackQuery({ text: `Running /${skName}...` });
-        // Store as a text message so processMessage picks it up
         const numericId = extractTelegramChatId(skChatId);
         try {
-          // Send the skill command as a regular message from the user
-          // The message handler in index.ts will detect it as a skill invocation
           const msgId = `sk-${Date.now()}`;
+          const timestamp = new Date().toISOString();
+          const senderName = ctx.from.first_name +
+            (ctx.from.last_name ? ` ${ctx.from.last_name}` : '');
           storeTextMessage(
             msgId,
             skChatId,
             ctx.from.id.toString(),
-            ctx.from.first_name +
-              (ctx.from.last_name ? ` ${ctx.from.last_name}` : ''),
+            senderName,
             `/${skName}`,
-            new Date().toISOString(),
+            timestamp,
             false,
           );
+
+          if (onMessageStored) {
+            await onMessageStored({
+              id: msgId, chat_jid: skChatId, sender: ctx.from.id.toString(),
+              sender_name: senderName, content: `/${skName}`, timestamp,
+            });
+          }
         } catch (err) {
           logger.error(
             { module: 'telegram', err, skill: skName },
@@ -1543,9 +1600,10 @@ export async function connectTelegram(
   const grammyHandledCommands = new Set([
     'new', 'clear', 'status', 'takeover', 'dashboard', 'help', 'skills',
     'verbose', 'thinking', 'stop', 'update', 'rebuild', 'tasks', 'runtask',
+    'reset',
   ]);
 
-  bot.on('message:text', (ctx) => {
+  bot.on('message:text', async (ctx) => {
     if (!shouldAccept(ctx)) return;
     const firstEntity = ctx.message.entities?.[0];
     if (firstEntity?.type === 'bot_command' && firstEntity.offset === 0) {
@@ -1569,6 +1627,13 @@ export async function connectTelegram(
         timestamp,
         false,
       );
+
+      if (onMessageStored) {
+        await onMessageStored({
+          id: msgId, chat_jid: chatId, sender, sender_name: senderName,
+          content, timestamp,
+        });
+      }
     }
   });
 
@@ -1613,6 +1678,13 @@ export async function connectTelegram(
         'voice',
         localPath,
       );
+
+      if (onMessageStored) {
+        await onMessageStored({
+          id: msgId, chat_jid: chatId, sender, sender_name: senderName,
+          content, timestamp, media_type: 'voice', media_path: localPath,
+        });
+      }
     } catch (err) {
       logger.error(
         { module: 'telegram', msgId, err },
@@ -1662,6 +1734,13 @@ export async function connectTelegram(
         'audio',
         localPath,
       );
+
+      if (onMessageStored) {
+        await onMessageStored({
+          id: msgId, chat_jid: chatId, sender, sender_name: senderName,
+          content, timestamp, media_type: 'audio', media_path: localPath,
+        });
+      }
     } catch (err) {
       logger.error(
         { module: 'telegram', msgId, err },
@@ -1712,6 +1791,13 @@ export async function connectTelegram(
         'photo',
         localPath,
       );
+
+      if (onMessageStored) {
+        await onMessageStored({
+          id: msgId, chat_jid: chatId, sender, sender_name: senderName,
+          content, timestamp, media_type: 'photo', media_path: localPath,
+        });
+      }
     } catch (err) {
       logger.error(
         { module: 'telegram', msgId, err },
@@ -1756,6 +1842,13 @@ export async function connectTelegram(
         'document',
         localPath,
       );
+
+      if (onMessageStored) {
+        await onMessageStored({
+          id: msgId, chat_jid: chatId, sender, sender_name: senderName,
+          content, timestamp, media_type: 'document', media_path: localPath,
+        });
+      }
     } catch (err) {
       logger.error(
         { module: 'telegram', msgId, err },
@@ -1768,26 +1861,28 @@ export async function connectTelegram(
     logger.error({ module: 'telegram', err: err.error }, 'Telegram bot error');
   });
 
-  bot.start({
-    onStart: async () => {
-      logger.info({ module: 'telegram' }, 'Connected to Telegram');
+  // Start concurrent polling via grammY runner (non-blocking)
+  const handle = run(bot);
+  runnerHandle = handle;
 
-      if (TELEGRAM_OWNER_ID) {
-        try {
-          const ownerChatId = makeTelegramChatId(Number(TELEGRAM_OWNER_ID));
-          await sendTelegramMessage(ownerChatId, `Online v${APP_VERSION}`);
-        } catch (err) {
-          logger.error(
-            { module: 'telegram', err },
-            'Failed to send startup message to owner',
-          );
-        }
-      }
+  logger.info({ module: 'telegram' }, 'Connected to Telegram (runner mode)');
 
-      // After a self-update restart, verify and report back
-      await verifySelfUpdate();
-    },
-  });
+  if (TELEGRAM_OWNER_ID) {
+    try {
+      const ownerChatId = makeTelegramChatId(Number(TELEGRAM_OWNER_ID));
+      await sendTelegramMessage(ownerChatId, `Online v${APP_VERSION}`);
+    } catch (err) {
+      logger.error(
+        { module: 'telegram', err },
+        'Failed to send startup message to owner',
+      );
+    }
+  }
+
+  // After a self-update restart, verify and report back
+  await verifySelfUpdate();
+
+  return handle;
 }
 
 /**
@@ -2144,10 +2239,14 @@ export async function refreshSkillCommands(
 
 /**
  * Gracefully stop the Telegram bot.
+ * Waits for in-flight handlers to complete before returning.
  */
-export function stopTelegram(): void {
-  if (bot) {
-    bot.stop();
+export async function stopTelegram(): Promise<void> {
+  if (runnerHandle) {
+    if (runnerHandle.isRunning()) {
+      await runnerHandle.stop();
+    }
+    runnerHandle = undefined;
     logger.info({ module: 'telegram' }, 'Telegram bot stopped');
   }
 }

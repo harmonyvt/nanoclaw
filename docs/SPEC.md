@@ -39,8 +39,8 @@ A personal AI assistant accessible via Telegram, with persistent memory per conv
 │  └──────────────┘   store/send        └─────────┬──────────┘          │
 │                                                  │                     │
 │  ┌──────────────────┐  ┌──────────────────┐  ┌───────────────┐       │
-│  │  Message Loop    │  │  Scheduler Loop  │  │  IPC Watcher  │       │
-│  │  (polls SQLite)  │  │  (checks tasks)  │  │  (file-based) │       │
+│  │  Message Router  │  │  Scheduler Loop  │  │  IPC Watcher  │       │
+│  │  (event-driven)  │  │  (checks tasks)  │  │  (fallback)   │       │
 │  └────────┬─────────┘  └────────┬─────────┘  └───────┬───────┘       │
 │           │                     │                     │                │
 │  ┌────────┴─────────────────────┴─────────────────────┘               │
@@ -124,6 +124,7 @@ nanoclaw/
 │   ├── telegram.ts                # grammY bot: text, voice, photo, document handlers
 │   ├── media.ts                   # Telegram file download, Whisper transcription
 │   ├── container-runner.ts        # Docker container spawning, credentials, mounts
+│   ├── host-rpc-router.ts         # Typed host RPC method routing + authorization
 │   ├── task-scheduler.ts          # Polls for due tasks, runs in containers
 │   ├── mount-security.ts          # External allowlist validation for mounts
 │   ├── supermemory.ts             # Long-term memory retrieval/storage
@@ -218,6 +219,7 @@ nanoclaw/
 │       ├── messages/              # Outgoing message queue
 │       ├── tasks/                 # Task scheduling requests
 │       ├── browse/                # Browser request/response files
+│       ├── agent.sock             # Persistent mode Unix socket RPC
 │       ├── agent-input/           # Persistent mode input
 │       ├── agent-output/          # Persistent mode output
 │       ├── status/                # Status event files
@@ -411,7 +413,7 @@ Sessions enable conversation continuity.
 8. Spawn Docker container:
    ├── Resolve credentials (env → keychain → cached)
    ├── Build volume mounts (group, global, session, IPC, env)
-   ├── Send JSON input via stdin (or IPC file in persistent mode)
+   ├── Send JSON input via stdin (one-shot) or Unix socket RPC (persistent)
    └── Adapter dispatch based on group's providerConfig
    │
    ▼

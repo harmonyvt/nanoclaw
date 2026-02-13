@@ -31,17 +31,18 @@ container/agent-runner/src/
 ```
 Host Process
   |
-  |  Spawns Docker container, sends ContainerInput as JSON on stdin
-  |  (or writes to IPC agent-input dir in persistent mode)
+  |  Spawns Docker container
+  |  - One-shot mode: sends ContainerInput via stdin/stdout
+  |  - Persistent mode: sends ContainerInput over Unix socket RPC
   v
 index.ts
-  |-- Reads ContainerInput (stdin or file)
+  |-- Reads ContainerInput (stdin or RPC request)
   |-- preparePrompt(): injects SOUL.md, scheduled task prefix
   |-- createAdapter(provider): returns ClaudeAdapter or OpenAIAdapter
   |-- Constructs AdapterInput from ContainerInput
   |-- Iterates adapter.run(adapterInput) AsyncGenerator<AgentEvent>
   |-- Collects session_init, result, tool_start, tool_progress, adapter_stderr events
-  |-- Writes ContainerOutput as JSON on stdout (or to agent-output file)
+  |-- Returns ContainerOutput as JSON (stdout or RPC response)
   v
 Host Process reads output, updates session, sends result to Telegram
 ```
@@ -353,9 +354,16 @@ OpenAI sessions are persisted as JSON files in `/workspace/group/.openai-session
 
 **Atomic writes:** Session files use temp + rename to prevent corruption.
 
-### Reasoning Content (o-series Models)
+### Reasoning Content (Streaming)
 
-For o-series models (o1, o3, etc.), the OpenAI adapter captures `reasoning_content` from the response and yields it as a `thinking` event (truncated to the last 200 chars). This provides the same thinking status display as the Claude adapter's extended thinking.
+The OpenAI adapter uses streaming to surface reasoning content incrementally. For reasoning models (o-series, gpt-5.x, or compatible APIs), the adapter:
+
+1. Passes `reasoning_effort` to the API (env: `OPENAI_REASONING_EFFORT`, default: `medium`)
+2. Captures `reasoning_content` deltas from the stream in real-time
+3. Yields `thinking` events throttled to every 3 seconds (matching the Claude adapter pattern)
+4. Truncates snapshots to the last 4000 characters
+
+This provides the same live thinking status display as the Claude adapter's extended thinking. Set `OPENAI_REASONING_EFFORT` to `low`, `medium`, or `high` to control reasoning depth. The `/thinking` toggle disables reasoning entirely (skips `reasoning_effort` param).
 
 ### Default Model
 
@@ -374,7 +382,7 @@ When no model is specified, the OpenAI adapter defaults to `gpt-4o`.
 | **Context handling** | SDK-managed compaction (PreCompact hook) | Manual trim: keep first + last 99 messages |
 | **Max iterations** | SDK-managed (no explicit cap) | 50 (`MAX_ITERATIONS`) |
 | **Conversation archiving** | PreCompact hook writes Markdown transcripts | No archiving |
-| **Extended thinking** | `maxThinkingTokens` (env: `MAX_THINKING_TOKENS`) | `reasoning_content` from o-series models |
+| **Extended thinking** | `maxThinkingTokens` (env: `MAX_THINKING_TOKENS`) | `reasoning_effort` (env: `OPENAI_REASONING_EFFORT`), streamed |
 | **Default model** | SDK default (determined by Claude CLI) | `gpt-4o` |
 | **CLAUDE.md loading** | Via `settingSources: ['project']` (SDK auto-discovers) | Manually read and injected into system prompt |
 | **SOUL.md loading** | Injected by `index.ts` `preparePrompt()` (shared) | Injected by `index.ts` `preparePrompt()` (shared) |

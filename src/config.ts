@@ -4,6 +4,18 @@ export const ASSISTANT_NAME = process.env.ASSISTANT_NAME || 'Andy';
 export const POLL_INTERVAL = 2000;
 export const SCHEDULER_POLL_INTERVAL = 60000;
 
+// Concurrency: max simultaneous agent containers across all chats
+export const MAX_CONCURRENT_AGENTS = parseInt(
+  process.env.MAX_CONCURRENT_AGENTS || '4',
+  10,
+);
+
+// Conversation history: max messages (user + assistant) included in agent prompt
+export const MAX_CONVERSATION_MESSAGES = parseInt(
+  process.env.MAX_CONVERSATION_MESSAGES || '50',
+  10,
+);
+
 // When true, appends the session/thread ID to outgoing messages for debugging
 export const DEBUG_THREADS = process.env.DEBUG_THREADS === 'true';
 

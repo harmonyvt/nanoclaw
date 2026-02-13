@@ -25,6 +25,7 @@
   },
   "dependencies": {
     "@grammyjs/files": "^1.2.0",
+    "@grammyjs/runner": "^2.0.3",
     "cron-parser": "^5.5.0",
     "grammy": "^1.39.3",
     "pino": "^9.6.0",

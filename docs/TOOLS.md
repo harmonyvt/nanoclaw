@@ -2,7 +2,7 @@
 
 ## Overview
 
-All agent tools are defined in `container/agent-runner/src/tool-registry.ts` using Zod schemas and exposed to agent containers via file-based IPC. The host process watches for IPC files written by the container and processes them accordingly.
+All agent tools are defined in `container/agent-runner/src/tool-registry.ts` using Zod schemas. In persistent mode, tools are executed over a typed Unix-socket RPC channel between host and container. Legacy file-based IPC remains as a compatibility fallback (primarily one-shot mode).
 
 ### Tool Availability by Provider
 

@@ -9,13 +9,11 @@ import {
   CUA_SANDBOX_IMAGE_IS_LEGACY,
   CUA_SANDBOX_PLATFORM,
   DATA_DIR,
-  DEBUG_THREADS,
   DEFAULT_MODEL,
   DEFAULT_PROVIDER,
   GROUPS_DIR,
   IPC_POLL_INTERVAL,
   MAIN_GROUP_FOLDER,
-  POLL_INTERVAL,
   TELEGRAM_BOT_TOKEN,
   TELEGRAM_OWNER_ID,
   TIMEZONE,
@@ -30,6 +28,8 @@ import {
   cleanupOrphanPersistentContainers,
   consumeGroupInterrupted,
   ensureAgentImage,
+  HostRpcEvent,
+  HostRpcRequest,
   interruptContainer,
   killAllContainers,
   runContainerAgent,
@@ -40,15 +40,18 @@ import {
 import {
   getAllChats,
   getAllTasks,
-  getMessagesSince,
+  getConversationHistory,
   getNewMessages,
   initDatabase,
+  storeAssistantMessage,
 } from './db.js';
 import { runTaskNow, startSchedulerLoop } from './task-scheduler.js';
 import {
   connectTelegram,
   isVerbose,
   isThinkingEnabled,
+  addThinkingDisabled,
+  removeThinkingDisabled,
   sendTelegramDocument,
   sendTelegramMessage,
   sendTelegramPhoto,
@@ -62,8 +65,8 @@ import {
   setTelegramTyping,
   stopTelegram,
 } from './telegram.js';
-import type { SessionManager, TaskActionHandler, InterruptHandler } from './telegram.js';
-import { NewMessage, RegisteredGroup, Session } from './types.js';
+import type { OnMessageStored, TaskActionHandler, InterruptHandler } from './telegram.js';
+import { NewMessage, RegisteredGroup } from './types.js';
 import {
   detectEmotionFromText,
   formatFreyaText,
@@ -102,6 +105,10 @@ import {
   startIdleWatcher,
 } from './sandbox-manager.js';
 import {
+  routeHostRpcEvent,
+  routeHostRpcRequest,
+} from './host-rpc-router.js';
+import {
   getTakeoverUrl,
   startCuaTakeoverServer,
   stopCuaTakeoverServer,
@@ -122,12 +129,13 @@ import {
 } from './tailscale-serve.js';
 import { emitCuaActivity } from './cua-activity.js';
 import { initTrajectoryPersistence } from './cua-trajectory.js';
+import { agentSemaphore } from './concurrency.js';
+import { MAX_CONVERSATION_MESSAGES } from './config.js';
 import { logDebugEvent, exportDebugReport, pruneDebugEventEntries } from './debug-log.js';
+import { hasSoulConfigured, resolveAssistantIdentity } from './soul.js';
 
 let lastTimestamp = '';
-let sessions: Session = {};
 let registeredGroups: Record<string, RegisteredGroup> = {};
-let lastAgentTimestamp: Record<string, string> = {};
 type CuaUsageStats = {
   total: number;
   ok: number;
@@ -144,6 +152,7 @@ interface ActiveStatusMessage {
   extraMessageIds: number[];
   currentText: string;
   lastEditTime: number;
+  hadThinkingContent: boolean;
 }
 
 /** Active italic status messages keyed by group folder */
@@ -191,6 +200,19 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
   cancel_task: 'cancelling task', register_group: 'registering group',
 };
 
+const VOICE_DEDUPE_WINDOW_MS = 2500;
+const lastVoiceSentAtByChat = new Map<string, number>();
+
+function shouldSuppressDuplicateVoice(chatJid: string): boolean {
+  const now = Date.now();
+  const last = lastVoiceSentAtByChat.get(chatJid);
+  if (typeof last === 'number' && now - last < VOICE_DEDUPE_WINDOW_MS) {
+    return true;
+  }
+  lastVoiceSentAtByChat.set(chatJid, now);
+  return false;
+}
+
 function humanizeToolName(rawName: string): string {
   const name = rawName.replace(/^mcp__nanoclaw__/, '');
   return TOOL_DISPLAY_NAMES[name] || name.replace(/_/g, ' ');
@@ -200,19 +222,59 @@ async function setTyping(jid: string, isTyping: boolean): Promise<void> {
   if (isTyping) await setTelegramTyping(jid);
 }
 
+// ─── Conversation History Helper ─────────────────────────────────────────────
+
+const escapeXml = (s: string) =>
+  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+/**
+ * Build the <messages> XML block from DB conversation history.
+ * Returns { messagesXml, latestContent } for use in prompts and memory retrieval.
+ */
+function buildConversationXml(chatJid: string, groupFolder: string): {
+  messagesXml: string;
+  latestContent: string;
+  messageCount: number;
+} {
+  const history = getConversationHistory(chatJid, MAX_CONVERSATION_MESSAGES);
+
+  const lines = history.map((m) => {
+    let mediaAttrs = '';
+    if (m.media_type && m.media_path) {
+      const groupDir = path.join(GROUPS_DIR, groupFolder);
+      const containerPath = m.media_path.startsWith(groupDir)
+        ? '/workspace/group' + m.media_path.slice(groupDir.length)
+        : m.media_path;
+      mediaAttrs = ` media_type="${escapeXml(m.media_type)}" media_path="${escapeXml(containerPath)}"`;
+    }
+    return `<message role="${m.role}" sender="${escapeXml(m.sender_name)}" time="${m.timestamp}"${mediaAttrs}>${escapeXml(m.content)}</message>`;
+  });
+
+  return {
+    messagesXml: `<messages>\n${lines.join('\n')}\n</messages>`,
+    latestContent: history[history.length - 1]?.content || '',
+    messageCount: history.length,
+  };
+}
+
 function loadState(): void {
   const statePath = path.join(DATA_DIR, 'router_state.json');
   const state = loadJson<{
     last_timestamp?: string;
-    last_agent_timestamp?: Record<string, string>;
   }>(statePath, {});
   lastTimestamp = state.last_timestamp || '';
-  lastAgentTimestamp = state.last_agent_timestamp || {};
-  sessions = loadJson(path.join(DATA_DIR, 'sessions.json'), {});
   registeredGroups = loadJson(
     path.join(DATA_DIR, 'registered_groups.json'),
     {},
   );
+
+  // Load persisted thinking state from .thinking_disabled files
+  for (const [chatJid, group] of Object.entries(registeredGroups)) {
+    if (fs.existsSync(path.join(GROUPS_DIR, group.folder, '.thinking_disabled'))) {
+      addThinkingDisabled(chatJid);
+    }
+  }
+
   logger.info(
     { module: 'index', groupCount: Object.keys(registeredGroups).length },
     'State loaded',
@@ -222,9 +284,7 @@ function loadState(): void {
 function saveState(): void {
   saveJson(path.join(DATA_DIR, 'router_state.json'), {
     last_timestamp: lastTimestamp,
-    last_agent_timestamp: lastAgentTimestamp,
   });
-  saveJson(path.join(DATA_DIR, 'sessions.json'), sessions);
 }
 
 function registerGroup(jid: string, group: RegisteredGroup): void {
@@ -262,6 +322,19 @@ function getAvailableGroups(): AvailableGroup[] {
 async function processMessage(msg: NewMessage): Promise<void> {
   const group = registeredGroups[msg.chat_jid];
   if (!group) return;
+  const getAssistantIdentity = () =>
+    resolveAssistantIdentity(group.folder, ASSISTANT_NAME);
+  const ensureSoulReady = async (): Promise<boolean> => {
+    if (hasSoulConfigured(group.folder)) return true;
+    await sendMessage(
+      msg.chat_jid,
+      'I need a persona before I can respond. Please run /soul to set it up (try /soul reset), then send your request again.',
+    );
+    logDebugEvent('telegram', 'command_invoked', group.folder, {
+      command: 'soul_required',
+    });
+    return false;
+  };
 
   const content = msg.content.trim();
   const isMainGroup = group.folder === MAIN_GROUP_FOLDER;
@@ -359,9 +432,26 @@ async function processMessage(msg: NewMessage): Promise<void> {
     return;
   }
 
+  // Handle /thinking toggle (host-level, no agent needed)
+  if (/^\/thinking$/i.test(content)) {
+    const thinkingPath = path.join(GROUPS_DIR, group.folder, '.thinking_disabled');
+    const wasDisabled = fs.existsSync(thinkingPath);
+    if (wasDisabled) {
+      fs.unlinkSync(thinkingPath);
+      removeThinkingDisabled(msg.chat_jid);
+      await sendMessage(msg.chat_jid, 'Extended thinking enabled — reasoning will be shown.');
+    } else {
+      fs.writeFileSync(thinkingPath, '');
+      addThinkingDisabled(msg.chat_jid);
+      await sendMessage(msg.chat_jid, 'Extended thinking disabled — faster responses.');
+    }
+    return;
+  }
+
   // Handle /voice — unified TTS voice configuration (design, preset, clone, reset)
   const voiceMatch = content.match(/^\/voice(?:\s+(.*))?$/i);
   if (voiceMatch) {
+    if (!(await ensureSoulReady())) return;
     const params = voiceMatch[1] || '';
     const instructions = `Help the user configure the TTS voice for this chat.
 
@@ -418,34 +508,17 @@ Voice profile JSON format (include only the active mode's config, not all):
   "updated_at": "<ISO timestamp>"
 }`;
 
-    const escapeXml = (s: string) =>
-      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     let skillXml = `<skill name="voice"`;
     if (params) skillXml += ` parameters="${escapeXml(params)}"`;
     skillXml += `>\n${escapeXml(instructions)}\n</skill>`;
 
-    const sinceTimestamp = lastAgentTimestamp[msg.chat_jid] || '';
-    const missedMessages = getMessagesSince(msg.chat_jid, sinceTimestamp, ASSISTANT_NAME);
+    const { messagesXml, latestContent } = buildConversationXml(msg.chat_jid, group.folder);
 
     let memoryXml = '';
     if (isSupermemoryEnabled()) {
-      const latestMessage = missedMessages[missedMessages.length - 1]?.content || '';
-      const memories = await retrieveMemories(group.folder, latestMessage);
+      const memories = await retrieveMemories(group.folder, latestContent);
       if (memories) memoryXml = formatMemoryContext(memories);
     }
-
-    const lines = missedMessages.map((m) => {
-      let mediaAttrs = '';
-      if (m.media_type && m.media_path) {
-        const groupDir = path.join(GROUPS_DIR, group.folder);
-        const containerPath = m.media_path.startsWith(groupDir)
-          ? '/workspace/group' + m.media_path.slice(groupDir.length)
-          : m.media_path;
-        mediaAttrs = ` media_type="${escapeXml(m.media_type)}" media_path="${escapeXml(containerPath)}"`;
-      }
-      return `<message sender="${escapeXml(m.sender_name)}" time="${m.timestamp}"${mediaAttrs}>${escapeXml(m.content)}</message>`;
-    });
-    const messagesXml = `<messages>\n${lines.join('\n')}\n</messages>`;
 
     const prompt = [memoryXml, skillXml, messagesXml].filter(Boolean).join('\n\n');
 
@@ -454,8 +527,12 @@ Voice profile JSON format (include only the active mode's config, not all):
     await setTyping(msg.chat_jid, false);
 
     if (response) {
-      lastAgentTimestamp[msg.chat_jid] = msg.timestamp;
-      saveState();
+      storeAssistantMessage(
+        msg.chat_jid,
+        response,
+        new Date().toISOString(),
+        getAssistantIdentity(),
+      );
       const voiceSep = '---voice---';
       const sepIdx = response.indexOf(voiceSep);
       const cleanText = sepIdx !== -1 ? response.replace(voiceSep, '').trim() : response;
@@ -465,6 +542,81 @@ Voice profile JSON format (include only the active mode's config, not all):
     }
     return;
   }
+
+  // Handle /soul — manage SOUL.md identity/personality coherently
+  const soulMatch = content.match(/^\/soul(?:\s+([\s\S]*))?$/i);
+  if (soulMatch) {
+    const params = (soulMatch[1] || '').trim();
+    const instructions = `Help the user manage SOUL.md (assistant identity/personality) for this chat.
+
+Files:
+- /workspace/group/SOUL.md
+- /workspace/group/voice_profile.json (optional, for voice coherence)
+
+Behavior:
+
+1) If parameters are empty OR "show":
+- Read SOUL.md and summarize current name and personality.
+- If SOUL.md does not exist, say so and offer to create one.
+- Do not modify files.
+
+2) If parameters are "reset":
+- Rewrite SOUL.md to a neutral, helpful assistant persona.
+- Use clear markdown sections:
+  - H1 assistant name
+  - short description
+  - Personality
+  - Response Style
+- Confirm the resulting identity.
+
+3) Otherwise:
+- Treat parameters as requested SOUL.md edits.
+- Update SOUL.md accordingly.
+- Preserve useful existing details unless user asked to remove them.
+- Keep the first markdown heading as the assistant name (e.g. "# Yoona").
+- If name changes, explicitly confirm the new name.
+
+After any SOUL.md modification:
+- Summarize what changed.
+- Mention the user can run /voice to align TTS voice with the updated persona.`;
+
+    let skillXml = '<skill name="soul"';
+    if (params) skillXml += ` parameters="${escapeXml(params)}"`;
+    skillXml += `>\n${escapeXml(instructions)}\n</skill>`;
+
+    const { messagesXml, latestContent } = buildConversationXml(msg.chat_jid, group.folder);
+
+    let memoryXml = '';
+    if (isSupermemoryEnabled()) {
+      const memories = await retrieveMemories(group.folder, latestContent);
+      if (memories) memoryXml = formatMemoryContext(memories);
+    }
+
+    const prompt = [memoryXml, skillXml, messagesXml].filter(Boolean).join('\n\n');
+
+    await setTyping(msg.chat_jid, true);
+    const response = await runAgent(group, prompt, msg.chat_jid, { isSkillInvocation: true });
+    await setTyping(msg.chat_jid, false);
+
+    if (response) {
+      storeAssistantMessage(
+        msg.chat_jid,
+        response,
+        new Date().toISOString(),
+        getAssistantIdentity(),
+      );
+      const voiceSep = '---voice---';
+      const sepIdx = response.indexOf(voiceSep);
+      const cleanText = sepIdx !== -1 ? response.replace(voiceSep, '').trim() : response;
+      if (cleanText && !cleanText.startsWith('[') && !cleanText.endsWith('queued')) {
+        await sendMessage(msg.chat_jid, cleanText);
+      }
+    }
+    return;
+  }
+
+  // For all non-/soul interactions, require SOUL.md to be configured first.
+  if (!(await ensureSoulReady())) return;
 
   // Check if message is a skill invocation: /skill_name [params]
   const skillMatch = content.match(/^\/([a-z][a-z0-9_]{1,30})(?:\s+(.*))?$/);
@@ -478,50 +630,32 @@ Voice profile JSON format (include only the active mode's config, not all):
       );
 
       // Build prompt with skill instructions injected
-      const escapeXml = (s: string) =>
-        s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
       let skillXml = `<skill name="${skillName}"`;
       if (skillParams) skillXml += ` parameters="${escapeXml(skillParams)}"`;
       if (skill.parameters) skillXml += ` accepts="${escapeXml(skill.parameters)}"`;
       skillXml += `>\n${escapeXml(skill.instructions)}\n</skill>`;
 
-      // Get messages for context (same as normal flow)
-      const sinceTimestamp = lastAgentTimestamp[msg.chat_jid] || '';
-      const missedMessages = getMessagesSince(msg.chat_jid, sinceTimestamp, ASSISTANT_NAME);
+      const { messagesXml, latestContent } = buildConversationXml(msg.chat_jid, group.folder);
 
       let memoryXml = '';
       if (isSupermemoryEnabled()) {
-        const latestMessage = missedMessages[missedMessages.length - 1]?.content || '';
-        const memories = await retrieveMemories(group.folder, latestMessage);
+        const memories = await retrieveMemories(group.folder, latestContent);
         if (memories) memoryXml = formatMemoryContext(memories);
       }
 
-      const lines = missedMessages.map((m) => {
-        const escapeXml = (s: string) =>
-          s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-        let mediaAttrs = '';
-        if (m.media_type && m.media_path) {
-          const groupDir = path.join(GROUPS_DIR, group.folder);
-          const containerPath = m.media_path.startsWith(groupDir)
-            ? '/workspace/group' + m.media_path.slice(groupDir.length)
-            : m.media_path;
-          mediaAttrs = ` media_type="${escapeXml(m.media_type)}" media_path="${escapeXml(containerPath)}"`;
-        }
-        return `<message sender="${escapeXml(m.sender_name)}" time="${m.timestamp}"${mediaAttrs}>${escapeXml(m.content)}</message>`;
-      });
-      const messagesXml = `<messages>\n${lines.join('\n')}\n</messages>`;
-
-      // Compose: memory + skill + messages
-      const parts = [memoryXml, skillXml, messagesXml].filter(Boolean);
-      const prompt = parts.join('\n\n');
+      const prompt = [memoryXml, skillXml, messagesXml].filter(Boolean).join('\n\n');
 
       await setTyping(msg.chat_jid, true);
       const response = await runAgent(group, prompt, msg.chat_jid, { isSkillInvocation: true });
       await setTyping(msg.chat_jid, false);
 
       if (response) {
-        lastAgentTimestamp[msg.chat_jid] = msg.timestamp;
-        saveState();
+        storeAssistantMessage(
+          msg.chat_jid,
+          response,
+          new Date().toISOString(),
+          getAssistantIdentity(),
+        );
 
         // Strip voice separator if present (skill responses are typically text)
         const voiceSep = '---voice---';
@@ -535,7 +669,6 @@ Voice profile JSON format (include only the active mode's config, not all):
 
         if (isSupermemoryEnabled()) {
           void storeInteraction(group.folder, messagesXml, response, {
-            threadId: sessions[group.folder],
             timestamp: msg.timestamp,
             groupName: group.name,
           });
@@ -548,46 +681,16 @@ Voice profile JSON format (include only the active mode's config, not all):
   // Main group responds to all messages; other groups require trigger prefix
   if (!isMainGroup && !TRIGGER_PATTERN.test(content)) return;
 
-  // Get all messages since last agent interaction so the session has full context
-  const sinceTimestamp = lastAgentTimestamp[msg.chat_jid] || '';
-  const missedMessages = getMessagesSince(
-    msg.chat_jid,
-    sinceTimestamp,
-    ASSISTANT_NAME,
-  );
+  // Build conversation context from DB (single source of truth)
+  const { messagesXml, latestContent, messageCount } = buildConversationXml(msg.chat_jid, group.folder);
 
   // Retrieve relevant memories from Supermemory (non-blocking)
   let memoryXml = '';
   if (isSupermemoryEnabled()) {
-    const latestMessage =
-      missedMessages[missedMessages.length - 1]?.content || '';
-    const memories = await retrieveMemories(group.folder, latestMessage);
+    const memories = await retrieveMemories(group.folder, latestContent);
     if (memories) memoryXml = formatMemoryContext(memories);
   }
 
-  const lines = missedMessages.map((m) => {
-    // Escape XML special characters in content
-    const escapeXml = (s: string) =>
-      s
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
-
-    // Build optional media attributes
-    let mediaAttrs = '';
-    if (m.media_type && m.media_path) {
-      // Translate host path to container path: groups/{folder}/media/file -> /workspace/group/media/file
-      const groupDir = path.join(GROUPS_DIR, group.folder);
-      const containerPath = m.media_path.startsWith(groupDir)
-        ? '/workspace/group' + m.media_path.slice(groupDir.length)
-        : m.media_path;
-      mediaAttrs = ` media_type="${escapeXml(m.media_type)}" media_path="${escapeXml(containerPath)}"`;
-    }
-
-    return `<message sender="${escapeXml(m.sender_name)}" time="${m.timestamp}"${mediaAttrs}>${escapeXml(m.content)}</message>`;
-  });
-  const messagesXml = `<messages>\n${lines.join('\n')}\n</messages>`;
   const prompt = memoryXml
     ? `${memoryXml}\n${messagesXml}`
     : messagesXml;
@@ -595,7 +698,7 @@ Voice profile JSON format (include only the active mode's config, not all):
   if (!prompt) return;
 
   logger.info(
-    { module: 'index', group: group.name, messageCount: missedMessages.length },
+    { module: 'index', group: group.name, messageCount },
     'Processing message',
   );
 
@@ -605,7 +708,7 @@ Voice profile JSON format (include only the active mode's config, not all):
     provider: agentProvider,
     model: agentModel || null,
     promptLength: prompt.length,
-    messageCount: missedMessages.length,
+    messageCount,
     isSkillInvocation: false,
   });
 
@@ -621,6 +724,7 @@ Voice profile JSON format (include only the active mode's config, not all):
         extraMessageIds: [],
         currentText: 'thinking',
         lastEditTime: Date.now(),
+        hadThinkingContent: false,
       });
     }
   }
@@ -638,9 +742,13 @@ Voice profile JSON format (include only the active mode's config, not all):
   const statusEntry = activeStatusMessages.get(group.folder);
   if (statusEntry) {
     activeStatusMessages.delete(group.folder);
-    await deleteTelegramMessage(statusEntry.chatJid, statusEntry.messageId);
-    for (const extraId of statusEntry.extraMessageIds) {
-      await deleteTelegramMessage(statusEntry.chatJid, extraId);
+    if (statusEntry.hadThinkingContent && isThinkingEnabled(msg.chat_jid)) {
+      // Keep reasoning visible — don't delete
+    } else {
+      await deleteTelegramMessage(statusEntry.chatJid, statusEntry.messageId);
+      for (const extraId of statusEntry.extraMessageIds) {
+        await deleteTelegramMessage(statusEntry.chatJid, extraId);
+      }
     }
   }
 
@@ -652,18 +760,16 @@ Voice profile JSON format (include only the active mode's config, not all):
     if (cuaEntry.screenshotMessageId) await deleteTelegramMessage(cuaEntry.chatJid, cuaEntry.screenshotMessageId);
   }
 
-  // Always advance the timestamp so failed/interrupted messages are not reprocessed
-  lastAgentTimestamp[msg.chat_jid] = msg.timestamp;
-  saveState();
-
   if (response) {
-    let text = response;
-    if (DEBUG_THREADS) {
-      const threadId = sessions[group.folder];
-      if (threadId) {
-        text += `\n[thread: ${threadId.slice(0, 8)}]`;
-      }
-    }
+    // Store assistant response in DB (single source of truth for conversation history)
+    storeAssistantMessage(
+      msg.chat_jid,
+      response,
+      new Date().toISOString(),
+      getAssistantIdentity(),
+    );
+
+    const text = response;
 
     // Auto-TTS: voice-first with text transcription
     // Mute state: groups/{folder}/.tts_muted file presence = muted (default: not muted)
@@ -714,8 +820,15 @@ Voice profile JSON format (include only the active mode's config, not all):
             oggPath = await synthesizeSpeech(markedText, mediaDir);
           }
 
-          await sendTelegramVoice(msg.chat_jid, oggPath);
-          voiceSent = true;
+          if (shouldSuppressDuplicateVoice(msg.chat_jid)) {
+            logDebugEvent('tts', 'voice_deduped', group.folder, {
+              source: 'auto',
+              chatJid: msg.chat_jid,
+            });
+          } else {
+            await sendTelegramVoice(msg.chat_jid, oggPath);
+            voiceSent = true;
+          }
           logDebugEvent('tts', 'auto_tts_attempt', group.folder, {
             provider: qwenProfile ? 'qwen' : 'freya',
             voicePartLength: voicePart.length,
@@ -748,7 +861,6 @@ Voice profile JSON format (include only the active mode's config, not all):
     // Store interaction to Supermemory (non-blocking)
     if (isSupermemoryEnabled()) {
       void storeInteraction(group.folder, messagesXml, response, {
-        threadId: sessions[group.folder],
         timestamp: msg.timestamp,
         groupName: group.name,
       });
@@ -763,7 +875,6 @@ async function runAgent(
   opts?: { isSkillInvocation?: boolean },
 ): Promise<string | null> {
   const isMain = group.folder === MAIN_GROUP_FOLDER;
-  const sessionId = sessions[group.folder];
 
   // Update tasks snapshot for container to read (filtered by group)
   const tasks = getAllTasks();
@@ -793,18 +904,19 @@ async function runAgent(
   const provider = group.providerConfig?.provider || DEFAULT_PROVIDER;
   const model = group.providerConfig?.model || DEFAULT_MODEL || undefined;
   const baseUrl = group.providerConfig?.baseUrl || undefined;
+  const assistantIdentity = resolveAssistantIdentity(group.folder, ASSISTANT_NAME);
 
   const input = {
     prompt,
-    sessionId,
     groupFolder: group.folder,
     chatJid,
     isMain,
     isSkillInvocation: opts?.isSkillInvocation,
-    assistantName: ASSISTANT_NAME,
+    assistantName: assistantIdentity,
     provider,
     model,
     baseUrl,
+    enableThinking: isThinkingEnabled(chatJid),
   };
 
   for (let attempt = 0; attempt <= MAX_AGENT_RETRIES; attempt++) {
@@ -830,21 +942,19 @@ async function runAgent(
     }
 
     try {
-      const output = await runContainerAgent(group, input);
+      const output = await runContainerAgent(group, input, {
+        onRequest: (req) => handleContainerRpcRequest(group.folder, req),
+        onEvent: (evt) => handleContainerRpcEvent(group.folder, evt),
+      });
 
       logDebugEvent('sdk', 'container_result', group.folder, {
         status: output.status,
         hasResult: !!output.result,
         resultLength: output.result?.length || 0,
-        hasNewSession: !!output.newSessionId,
         provider,
         model: model || null,
       });
 
-      if (output.newSessionId) {
-        sessions[group.folder] = output.newSessionId;
-        saveJson(path.join(DATA_DIR, 'sessions.json'), sessions);
-      }
 
       // Interrupted: stop immediately, don't retry
       if (output.status === 'interrupted') {
@@ -1061,6 +1171,373 @@ async function updateCuaScreenshot(
   }
 }
 
+async function processStatusEvents(
+  sourceGroup: string,
+  events: Array<Record<string, unknown>>,
+): Promise<void> {
+  if (events.length === 0) return;
+
+  // Always log adapter_stderr events to Pino
+  for (const evt of events) {
+    if (evt.type === 'adapter_stderr') {
+      logger.warn(
+        { module: 'claude-cli', group_folder: sourceGroup },
+        `[stderr] ${evt.message}`,
+      );
+    }
+    if (evt.type === 'tool_start') {
+      logDebugEvent('sdk', 'tool_call', sourceGroup, {
+        toolName: evt.tool_name,
+        preview: String(evt.preview || '').slice(0, 200),
+      });
+    }
+  }
+
+  // Update the editable thinking status message (always-on when active)
+  const statusEntry = activeStatusMessages.get(sourceGroup);
+  if (statusEntry && events.length > 0) {
+    // Priority: thinking content > tool name
+    const lastThinking = [...events].reverse().find((e) => e.type === 'thinking');
+    const lastToolStart = [...events].reverse().find((e) => e.type === 'tool_start');
+
+    let newText: string | undefined;
+    if (lastThinking) {
+      newText = String(lastThinking.content);
+      statusEntry.hadThinkingContent = true;
+    } else if (lastToolStart) {
+      const toolName = String(lastToolStart.tool_name || '').replace(/^mcp__nanoclaw__/, '');
+      if (!HIDDEN_TOOLS.has(toolName)) {
+        newText = humanizeToolName(String(lastToolStart.tool_name));
+      }
+    }
+
+    if (newText && newText !== statusEntry.currentText) {
+      const now = Date.now();
+      if (now - statusEntry.lastEditTime >= STATUS_EDIT_INTERVAL_MS) {
+        // Telegram allows ~4096 chars per message; account for <i></i> tags
+        const MAX_CHUNK = 4000;
+
+        // Delete any previous overflow messages before sending new ones
+        for (const extraId of statusEntry.extraMessageIds) {
+          await deleteTelegramMessage(statusEntry.chatJid, extraId);
+        }
+        statusEntry.extraMessageIds = [];
+
+        // Split into chunks at line boundaries when possible
+        const chunks: string[] = [];
+        let remaining = newText;
+        while (remaining.length > 0) {
+          if (remaining.length <= MAX_CHUNK) {
+            chunks.push(remaining);
+            break;
+          }
+          // Try to split at a newline within the chunk
+          let splitAt = remaining.lastIndexOf('\n', MAX_CHUNK);
+          if (splitAt === -1) splitAt = MAX_CHUNK;
+          chunks.push(remaining.slice(0, splitAt));
+          remaining = remaining.slice(splitAt).replace(/^\n/, '');
+        }
+
+        // Edit the primary message with the first chunk
+        const edited = await editTelegramStatusMessage(
+          statusEntry.chatJid,
+          statusEntry.messageId,
+          chunks[0],
+        );
+        if (edited) {
+          statusEntry.currentText = newText;
+          statusEntry.lastEditTime = now;
+
+          // Send overflow chunks as additional messages
+          for (let i = 1; i < chunks.length; i++) {
+            const extraId = await sendTelegramStatusMessage(
+              statusEntry.chatJid,
+              chunks[i],
+            );
+            if (extraId) {
+              statusEntry.extraMessageIds.push(extraId);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Verbose mode: still send full detail messages
+  const chatJid = Object.entries(registeredGroups).find(
+    ([, g]) => g.folder === sourceGroup,
+  )?.[0];
+
+  if (chatJid && isVerbose(chatJid) && events.length > 0) {
+    const lines: string[] = [];
+    for (const evt of events) {
+      if (evt.type === 'tool_start') {
+        const preview = evt.preview
+          ? String(evt.preview).slice(0, 100)
+          : '';
+        lines.push(
+          `> ${evt.tool_name}${preview ? ': ' + preview : ''}`,
+        );
+      } else if (evt.type === 'tool_progress') {
+        lines.push(`> ${evt.tool_name} (${evt.elapsed_seconds}s)`);
+      }
+    }
+    if (lines.length > 0) {
+      const statusMsg = lines.slice(0, 5).join('\n');
+      try {
+        await sendTelegramMessage(chatJid, statusMsg);
+      } catch (err) {
+        logger.debug({ module: 'index', err }, 'Failed to send verbose status message');
+      }
+    }
+  }
+}
+
+async function handleBrowseRpc(
+  sourceGroup: string,
+  action: string,
+  browseParams: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const requestId = `rpc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const chatJid = getChatJidForGroup(sourceGroup);
+
+  if (action === 'wait_for_user') {
+    const waitMessage =
+      typeof browseParams.message === 'string' &&
+      browseParams.message.trim().length > 0
+        ? browseParams.message.trim()
+        : 'Please take over the CUA browser session, then return control when done.';
+
+    try {
+      await ensureSandbox();
+    } catch (err) {
+      logger.warn(
+        { module: 'index', err, sourceGroup },
+        'Failed to prestart sandbox for wait_for_user',
+      );
+    }
+
+    const waitRequest = ensureWaitForUserRequest(
+      requestId,
+      sourceGroup,
+      waitMessage,
+    );
+
+    if (chatJid) {
+      const ownerSession = createSessionForOwner();
+      const takeoverUrl = getTakeoverUrl(waitRequest.token, ownerSession?.token);
+      const takeoverPart = takeoverUrl ? `Take over CUA: ${takeoverUrl}` : '';
+      const promptLines = [
+        waitMessage,
+        '',
+        takeoverPart,
+        `When done, send: continue ${waitRequest.requestId}`,
+      ];
+      await sendMessage(chatJid, promptLines.join('\n'));
+    }
+  } else {
+    const startDescription = describeCuaActionStart(action, browseParams);
+    if (startDescription) {
+      if (chatJid) {
+        await updateCuaLogMessage(sourceGroup, chatJid, `CUA ${action}: ${startDescription}`);
+      }
+      emitCuaActivity({
+        groupFolder: sourceGroup,
+        action,
+        phase: 'start',
+        description: startDescription,
+        requestId,
+      });
+    }
+  }
+
+  const browseStartedAt = Date.now();
+  const result = await processBrowseRequest(
+    requestId,
+    action,
+    browseParams,
+    sourceGroup,
+    path.join(DATA_DIR, 'ipc', sourceGroup),
+  );
+  const browseDurationMs = Date.now() - browseStartedAt;
+
+  const usage = updateCuaUsage(sourceGroup, action, result.status === 'ok' ? 'ok' : 'error');
+  logDebugEvent('browse', 'action_complete', sourceGroup, {
+    action,
+    requestId,
+    status: result.status,
+    durationMs: browseDurationMs,
+    total: usage.total,
+    ok: usage.ok,
+    failed: usage.failed,
+  });
+
+  if (action !== 'wait_for_user') {
+    emitCuaActivity({
+      groupFolder: sourceGroup,
+      action,
+      phase: 'end',
+      description: describeCuaActionStart(action, browseParams) || action,
+      requestId,
+      status: result.status,
+      durationMs: browseDurationMs,
+      error: result.status === 'error' ? String(result.error || 'unknown') : undefined,
+      screenshotPath: action === 'screenshot' && result.status === 'ok' ? (result.result as string) : undefined,
+      usage: { total: usage.total, ok: usage.ok, failed: usage.failed },
+    });
+  }
+
+  if (chatJid && action !== 'wait_for_user') {
+    const statusText =
+      result.status === 'ok'
+        ? 'ok'
+        : `error: ${truncateForTelegram(String(result.error || 'unknown'), 140)}`;
+    await updateCuaLogMessage(
+      sourceGroup,
+      chatJid,
+      `CUA ${action}: ${statusText} (${browseDurationMs}ms) | ${usage.ok}/${usage.total} actions`,
+    );
+  }
+
+  if (
+    action === 'screenshot' &&
+    result.status === 'ok' &&
+    result.result &&
+    chatJid
+  ) {
+    const containerPath = result.result as string;
+    const hostPath = path.join(
+      GROUPS_DIR,
+      sourceGroup,
+      'media',
+      path.basename(containerPath),
+    );
+    try {
+      await updateCuaScreenshot(sourceGroup, chatJid, hostPath);
+    } catch (photoErr) {
+      logger.warn(
+        { module: 'index', photoErr, hostPath },
+        'Failed to send/edit screenshot as Telegram photo',
+      );
+    }
+  }
+
+  return result as Record<string, unknown>;
+}
+
+async function handleContainerRpcRequest(
+  sourceGroup: string,
+  req: HostRpcRequest,
+): Promise<unknown> {
+  return await routeHostRpcRequest(sourceGroup, req, {
+    mainGroupFolder: MAIN_GROUP_FOLDER,
+    groupFolderForChatJid: (chatJid) => registeredGroups[chatJid]?.folder,
+    sendMessage: async (chatJid, text, rpcSourceGroup) => {
+      await sendMessage(chatJid, text);
+      logDebugEvent('ipc', 'rpc_message_sent', rpcSourceGroup, { chatJid });
+    },
+    sendVoice: async ({ chatJid, text, emotion }, rpcSourceGroup) => {
+      const rpcQwenProfile = isQwenTTSEnabled()
+        ? (loadVoiceProfile(rpcSourceGroup) ?? defaultVoiceProfile())
+        : null;
+
+      if (rpcQwenProfile) {
+        const ttsStatusId = await sendTelegramStatusMessage(chatJid, 'speaking');
+        try {
+          const mediaDir = path.join(GROUPS_DIR, rpcSourceGroup, 'media');
+          const oggPath = await synthesizeQwenTTS(text, rpcQwenProfile, mediaDir, rpcSourceGroup);
+          if (shouldSuppressDuplicateVoice(chatJid)) {
+            logDebugEvent('tts', 'voice_deduped', rpcSourceGroup, {
+              source: 'rpc',
+              chatJid,
+              provider: 'qwen',
+            });
+            return 'Voice suppressed (duplicate within dedupe window).';
+          }
+          await sendTelegramVoice(chatJid, oggPath);
+          logDebugEvent('ipc', 'rpc_voice_sent', rpcSourceGroup, { chatJid, provider: 'qwen' });
+          return 'Voice sent (Qwen).';
+        } finally {
+          if (ttsStatusId) await deleteTelegramMessage(chatJid, ttsStatusId);
+        }
+      }
+
+      if (isFreyaEnabled()) {
+        const ttsStatusId = await sendTelegramStatusMessage(chatJid, 'speaking');
+        try {
+          const selectedEmotion = emotion
+            ? (() => {
+                const parsed = parseEmotion(emotion);
+                return 'error' in parsed ? detectEmotionFromText(text) : parsed;
+              })()
+            : detectEmotionFromText(text);
+          const markedText = formatFreyaText(text, selectedEmotion);
+          const mediaDir = path.join(GROUPS_DIR, rpcSourceGroup, 'media');
+          const oggPath = await synthesizeSpeech(markedText, mediaDir);
+          if (shouldSuppressDuplicateVoice(chatJid)) {
+            logDebugEvent('tts', 'voice_deduped', rpcSourceGroup, {
+              source: 'rpc',
+              chatJid,
+              provider: 'freya',
+            });
+            return 'Voice suppressed (duplicate within dedupe window).';
+          }
+          await sendTelegramVoice(chatJid, oggPath);
+          logDebugEvent('ipc', 'rpc_voice_sent', rpcSourceGroup, { chatJid, provider: 'freya' });
+          return 'Voice sent (Freya).';
+        } finally {
+          if (ttsStatusId) await deleteTelegramMessage(chatJid, ttsStatusId);
+        }
+      }
+
+      await sendMessage(chatJid, text);
+      return 'No TTS provider configured, sent as text.';
+    },
+    sendFile: async ({ chatJid, filePath, caption }, rpcSourceGroup) => {
+      let hostFilePath = '';
+      if (filePath.startsWith('/workspace/group/')) {
+        hostFilePath = path.join(
+          GROUPS_DIR,
+          rpcSourceGroup,
+          filePath.slice('/workspace/group/'.length),
+        );
+      } else if (filePath.startsWith('/workspace/global/')) {
+        hostFilePath = path.join(
+          GROUPS_DIR,
+          'global',
+          filePath.slice('/workspace/global/'.length),
+        );
+      } else {
+        throw new Error('File path must start with /workspace/group/ or /workspace/global/');
+      }
+
+      if (!fs.existsSync(hostFilePath)) {
+        throw new Error(`File not found on host: ${hostFilePath}`);
+      }
+
+      await sendTelegramDocument(chatJid, hostFilePath, caption || undefined);
+      logDebugEvent('ipc', 'rpc_file_sent', rpcSourceGroup, { chatJid, file: hostFilePath });
+      return 'File sent.';
+    },
+    handleTaskAction: async (payload, rpcSourceGroup, isMain) => {
+      await processTaskIpc(payload as Parameters<typeof processTaskIpc>[0], rpcSourceGroup, isMain);
+      return 'Task action handled.';
+    },
+    handleBrowseAction: async (rpcSourceGroup, action, params) =>
+      handleBrowseRpc(rpcSourceGroup, action, params),
+    processStatusEvents,
+  });
+}
+
+async function handleContainerRpcEvent(
+  sourceGroup: string,
+  evt: HostRpcEvent,
+): Promise<void> {
+  await routeHostRpcEvent(sourceGroup, evt, {
+    processStatusEvents,
+  });
+}
+
 function startIpcWatcher(): void {
   const ipcBaseDir = path.join(DATA_DIR, 'ipc');
   fs.mkdirSync(ipcBaseDir, { recursive: true });
@@ -1145,8 +1622,16 @@ function startIpcWatcher(): void {
                     try {
                       const mediaDir = path.join(GROUPS_DIR, sourceGroup, 'media');
                       const oggPath = await synthesizeQwenTTS(data.text, ipcQwenProfile, mediaDir, sourceGroup);
-                      await sendTelegramVoice(data.chatJid, oggPath);
-                      logDebugEvent('ipc', 'voice_sent', sourceGroup, { chatJid: data.chatJid, provider: 'qwen' });
+                      if (shouldSuppressDuplicateVoice(data.chatJid)) {
+                        logDebugEvent('tts', 'voice_deduped', sourceGroup, {
+                          source: 'ipc',
+                          chatJid: data.chatJid,
+                          provider: 'qwen',
+                        });
+                      } else {
+                        await sendTelegramVoice(data.chatJid, oggPath);
+                        logDebugEvent('ipc', 'voice_sent', sourceGroup, { chatJid: data.chatJid, provider: 'qwen' });
+                      }
                       logger.info(
                         {
                           module: 'index',
@@ -1187,8 +1672,16 @@ function startIpcWatcher(): void {
                       const markedText = formatFreyaText(data.text, emotion);
                       const mediaDir = path.join(GROUPS_DIR, sourceGroup, 'media');
                       const oggPath = await synthesizeSpeech(markedText, mediaDir);
-                      await sendTelegramVoice(data.chatJid, oggPath);
-                      logDebugEvent('ipc', 'voice_sent', sourceGroup, { chatJid: data.chatJid, provider: 'freya' });
+                      if (shouldSuppressDuplicateVoice(data.chatJid)) {
+                        logDebugEvent('tts', 'voice_deduped', sourceGroup, {
+                          source: 'ipc',
+                          chatJid: data.chatJid,
+                          provider: 'freya',
+                        });
+                      } else {
+                        await sendTelegramVoice(data.chatJid, oggPath);
+                        logDebugEvent('ipc', 'voice_sent', sourceGroup, { chatJid: data.chatJid, provider: 'freya' });
+                      }
                       logger.info(
                         {
                           module: 'index',
@@ -1557,120 +2050,7 @@ function startIpcWatcher(): void {
                 fs.unlinkSync(filePath);
               } catch {}
             }
-
-            // Always log adapter_stderr events to Pino
-            for (const evt of events) {
-              if (evt.type === 'adapter_stderr') {
-                logger.warn(
-                  { module: 'claude-cli', group_folder: sourceGroup },
-                  `[stderr] ${evt.message}`,
-                );
-              }
-              if (evt.type === 'tool_start') {
-                logDebugEvent('sdk', 'tool_call', sourceGroup, {
-                  toolName: evt.tool_name,
-                  preview: String(evt.preview || '').slice(0, 200),
-                });
-              }
-            }
-
-            // Update the editable thinking status message (always-on when active)
-            const statusEntry = activeStatusMessages.get(sourceGroup);
-            if (statusEntry && events.length > 0) {
-              // Priority: thinking content > tool name
-              const lastThinking = [...events].reverse().find(e => e.type === 'thinking');
-              const lastToolStart = [...events].reverse().find(e => e.type === 'tool_start');
-
-              let newText: string | undefined;
-              if (lastThinking) {
-                newText = String(lastThinking.content);
-              } else if (lastToolStart) {
-                const toolName = String(lastToolStart.tool_name || '').replace(/^mcp__nanoclaw__/, '');
-                if (!HIDDEN_TOOLS.has(toolName)) {
-                  newText = humanizeToolName(String(lastToolStart.tool_name));
-                }
-              }
-
-              if (newText && newText !== statusEntry.currentText) {
-                const now = Date.now();
-                if (now - statusEntry.lastEditTime >= STATUS_EDIT_INTERVAL_MS) {
-                  // Telegram allows ~4096 chars per message; account for <i></i> tags
-                  const MAX_CHUNK = 4000;
-
-                  // Delete any previous overflow messages before sending new ones
-                  for (const extraId of statusEntry.extraMessageIds) {
-                    await deleteTelegramMessage(statusEntry.chatJid, extraId);
-                  }
-                  statusEntry.extraMessageIds = [];
-
-                  // Split into chunks at line boundaries when possible
-                  const chunks: string[] = [];
-                  let remaining = newText;
-                  while (remaining.length > 0) {
-                    if (remaining.length <= MAX_CHUNK) {
-                      chunks.push(remaining);
-                      break;
-                    }
-                    // Try to split at a newline within the chunk
-                    let splitAt = remaining.lastIndexOf('\n', MAX_CHUNK);
-                    if (splitAt === -1) splitAt = MAX_CHUNK;
-                    chunks.push(remaining.slice(0, splitAt));
-                    remaining = remaining.slice(splitAt).replace(/^\n/, '');
-                  }
-
-                  // Edit the primary message with the first chunk
-                  const edited = await editTelegramStatusMessage(
-                    statusEntry.chatJid,
-                    statusEntry.messageId,
-                    chunks[0],
-                  );
-                  if (edited) {
-                    statusEntry.currentText = newText;
-                    statusEntry.lastEditTime = now;
-
-                    // Send overflow chunks as additional messages
-                    for (let i = 1; i < chunks.length; i++) {
-                      const extraId = await sendTelegramStatusMessage(
-                        statusEntry.chatJid,
-                        chunks[i],
-                      );
-                      if (extraId) {
-                        statusEntry.extraMessageIds.push(extraId);
-                      }
-                    }
-                  }
-                }
-              }
-            }
-
-            // Verbose mode: still send full detail messages
-            const chatJid = Object.entries(registeredGroups).find(
-              ([, g]) => g.folder === sourceGroup,
-            )?.[0];
-
-            if (chatJid && isVerbose(chatJid) && events.length > 0) {
-              const lines: string[] = [];
-              for (const evt of events) {
-                if (evt.type === 'tool_start') {
-                  const preview = evt.preview
-                    ? String(evt.preview).slice(0, 100)
-                    : '';
-                  lines.push(
-                    `> ${evt.tool_name}${preview ? ': ' + preview : ''}`,
-                  );
-                } else if (evt.type === 'tool_progress') {
-                  lines.push(`> ${evt.tool_name} (${evt.elapsed_seconds}s)`);
-                }
-              }
-              if (lines.length > 0) {
-                const statusMsg = lines.slice(0, 5).join('\n');
-                try {
-                  await sendTelegramMessage(chatJid, statusMsg);
-                } catch (err) {
-                  logger.debug({ module: 'index', err }, 'Failed to send verbose status message');
-                }
-              }
-            }
+            await processStatusEvents(sourceGroup, events);
           }
         }
       } catch (err) {
@@ -1914,35 +2294,51 @@ async function processTaskIpc(
   }
 }
 
-async function startMessageLoop(): Promise<void> {
-  logger.info({ module: 'index' }, `NanoClaw running (trigger: @${ASSISTANT_NAME})`);
+/**
+ * Handle a single message with concurrency limiting.
+ * Called directly from grammY runner handlers (no polling).
+ */
+async function handleMessage(msg: NewMessage): Promise<void> {
+  await agentSemaphore.acquire();
+  try {
+    await processMessage(msg);
+  } catch (err) {
+    logger.error(
+      { module: 'index', err, msg: msg.id },
+      'Error processing message',
+    );
+  } finally {
+    agentSemaphore.release();
+  }
+}
 
-  while (true) {
-    try {
-      const jids = Object.keys(registeredGroups);
-      const { messages } = getNewMessages(jids, lastTimestamp, ASSISTANT_NAME);
+/**
+ * Process any messages that arrived while the bot was offline.
+ * Runs once at startup, then hands off to grammY runner for real-time processing.
+ */
+async function catchUpMissedMessages(): Promise<void> {
+  try {
+    const jids = Object.keys(registeredGroups);
+    const { messages } = getNewMessages(jids, lastTimestamp, ASSISTANT_NAME);
 
-      if (messages.length > 0)
-        logger.info({ module: 'index', count: messages.length }, 'New messages');
+    if (messages.length > 0) {
+      logger.info({ module: 'index', count: messages.length }, 'Catching up missed messages');
       for (const msg of messages) {
         try {
           await processMessage(msg);
-          // Only advance timestamp after successful processing for at-least-once delivery
           lastTimestamp = msg.timestamp;
           saveState();
         } catch (err) {
           logger.error(
             { module: 'index', err, msg: msg.id },
-            'Error processing message, will retry',
+            'Error processing catch-up message',
           );
-          // Stop processing this batch - failed message will be retried next loop
           break;
         }
       }
-    } catch (err) {
-      logger.error({ module: 'index', err }, 'Error in message loop');
     }
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
+  } catch (err) {
+    logger.error({ module: 'index', err }, 'Error catching up missed messages');
   }
 }
 
@@ -2116,25 +2512,11 @@ async function main(): Promise<void> {
     cleanupOldMedia(path.join(GROUPS_DIR, group.folder, 'media'), 7);
   }
 
-  const sessionManager: SessionManager = {
-    getSession(chatJid: string): string | undefined {
-      const group = registeredGroups[chatJid];
-      if (!group) return undefined;
-      return sessions[group.folder];
-    },
-    clearSession(chatJid: string): void {
-      const group = registeredGroups[chatJid];
-      if (group && sessions[group.folder]) {
-        delete sessions[group.folder];
-        saveJson(path.join(DATA_DIR, 'sessions.json'), sessions);
-      }
-    },
-  };
-
   const schedulerDeps = {
     sendMessage,
     registeredGroups: () => registeredGroups,
-    getSessions: () => sessions,
+    handleHostRpcRequest: (sourceGroup: string, req: HostRpcRequest) =>
+      handleContainerRpcRequest(sourceGroup, req),
   };
 
   const taskActions: TaskActionHandler = {
@@ -2157,25 +2539,47 @@ async function main(): Promise<void> {
     },
   };
 
-  await connectTelegram(
+  // Catch up any messages that arrived while bot was offline
+  await catchUpMissedMessages();
+
+  // Connect Telegram with grammY runner for concurrent processing.
+  // The onMessageStored callback triggers agent processing directly from handlers.
+  const onMessageStored: OnMessageStored = async (msg) => {
+    // Advance lastTimestamp for catch-up tracking
+    if (msg.timestamp > lastTimestamp) {
+      lastTimestamp = msg.timestamp;
+      saveState();
+    }
+    // Process the message with concurrency limiting
+    void handleMessage(msg);
+  };
+
+  const runnerHandle = await connectTelegram(
     () => registeredGroups,
     registerGroup,
-    sessionManager,
     taskActions,
     interruptHandler,
+    onMessageStored,
   );
   startSchedulerLoop(schedulerDeps);
   startIpcWatcher();
   startIdleWatcher();
   startContainerIdleCleanup();
-  startMessageLoop();
+
+  logger.info({ module: 'index' }, `NanoClaw running (trigger: @${ASSISTANT_NAME})`);
+
+  // Keep the process alive via the runner handle
+  await runnerHandle.task();
 }
 
 // Graceful shutdown
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.on(signal, async () => {
     logger.info({ module: 'index', signal }, 'Shutting down');
-    stopTelegram();
+    // Stop accepting new updates, wait for in-flight handlers (30s timeout)
+    const stopPromise = stopTelegram();
+    const timeout = new Promise<void>((resolve) => setTimeout(resolve, 30000));
+    await Promise.race([stopPromise, timeout]);
     killAllContainers();
     await disconnectBrowser();
     stopTtsServer();

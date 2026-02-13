@@ -128,17 +128,18 @@ Skills we'd love to see:
 ## Architecture
 
 ```
-Telegram (grammY) --> SQLite --> Polling loop --> Container (Adapter) --> Response
-                                                    |
-                                          ClaudeAdapter (Claude Agent SDK)
-                                          OpenAIAdapter (chat completions + function calling)
+Telegram (grammY) --> SQLite --> Host Router --> Container (Adapter) --> Response
+                          |             ^             |
+                          |             |             +-- Unix socket RPC (typed requests/events)
+                          +-- Scheduler -------------+
 ```
 
-Single Bun process. Agents execute in isolated Linux containers with mounted directories. The container uses an adapter pattern to dispatch to either the Claude Agent SDK or OpenAI chat completions based on per-group provider configuration. IPC via filesystem. No daemons, no queues, no complexity.
+Single Bun process. Agents execute in isolated Linux containers with mounted directories. The container uses an adapter pattern to dispatch to either the Claude Agent SDK or OpenAI chat completions based on per-group provider configuration. Persistent mode uses a typed Unix-socket RPC channel; legacy file-IPC remains as compatibility fallback for one-shot mode.
 
 Key files:
 
 - `src/index.ts` - Main app: message routing, IPC, provider resolution
+- `src/host-rpc-router.ts` - Typed host RPC request/event dispatch + auth checks
 - `src/cua-takeover-server.ts` - Browser takeover web UI for CUA handoff
 - `src/container-runner.ts` - Spawns agent containers (passes provider/model)
 - `src/task-scheduler.ts` - Runs scheduled tasks

@@ -20,6 +20,10 @@ export interface IpcMcpContext {
 export interface ToolResult {
   content: string;
   isError?: boolean;
+  /** Optional base64 image data for vision-capable adapters (e.g. screenshots) */
+  imageBase64?: string;
+  /** MIME type for the image (default: 'image/png') */
+  imageMimeType?: string;
 }
 
 /** Provider-agnostic tool definition */
@@ -44,13 +48,13 @@ export type AgentEvent =
 /** Input passed to a provider adapter's run() method */
 export interface AdapterInput {
   prompt: string;
-  sessionId?: string;
   model?: string;
   baseUrl?: string;
   groupFolder: string;
   isMain: boolean;
   isScheduledTask?: boolean;
   assistantName?: string;
+  enableThinking?: boolean;
   ipcContext: IpcMcpContext;
 }
 
@@ -64,7 +68,6 @@ export interface ProviderAdapter {
 /** JSON input sent to the agent container (from host) */
 export interface ContainerInput {
   prompt: string;
-  sessionId?: string;
   groupFolder: string;
   chatJid: string;
   isMain: boolean;
@@ -74,12 +77,12 @@ export interface ContainerInput {
   provider?: string;
   model?: string;
   baseUrl?: string;
+  enableThinking?: boolean;
 }
 
 /** JSON output returned from the agent container (to host) */
 export interface ContainerOutput {
   status: 'success' | 'error';
   result: string | null;
-  newSessionId?: string;
   error?: string;
 }

@@ -1,13 +1,14 @@
 /**
  * Container Runner for NanoClaw
  * Supports two modes:
- * - Persistent (default): Long-lived containers with file-based IPC, eliminating ~3s startup overhead
+ * - Persistent (default): Long-lived containers with Unix socket RPC, eliminating ~3s startup overhead
  * - One-shot (fallback): Spawns docker run per message via stdin/stdout
  *
  * Persistent containers are tracked per group and automatically cleaned up after idle timeout.
  */
 import { execFileSync, execSync, spawn } from 'child_process';
 import fs from 'fs';
+import net from 'net';
 import os from 'os';
 import path from 'path';
 
@@ -22,6 +23,8 @@ import { logger } from './logger.js';
 import { logDebugEvent } from './debug-log.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
+import type { RpcMessage, RpcRequestMessage } from './rpc-protocol.js';
+import { parseRpcLines, serializeRpcMessage } from './rpc-protocol.js';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -34,8 +37,8 @@ const CONTAINER_IDLE_TIMEOUT = 10 * 60 * 1000;     // 10 minutes
 const IDLE_CHECK_INTERVAL = 2 * 60 * 1000;         // Check every 2 minutes
 const HEARTBEAT_WAIT_TIMEOUT = 30_000;              // 30s to wait for container to become ready
 const HEARTBEAT_POLL_INTERVAL = 300;                // Poll heartbeat every 300ms
-const OUTPUT_POLL_INTERVAL = 200;                   // Poll for output file every 200ms
 const HEARTBEAT_STALE_THRESHOLD = 30_000;           // Heartbeat older than 30s = stale
+const AGENT_RPC_SOCKET = 'agent.sock';
 
 // Use env var to force one-shot mode
 const FORCE_ONESHOT = process.env.NANOCLAW_ONESHOT === '1';
@@ -111,7 +114,6 @@ export async function ensureAgentImage(): Promise<boolean> {
 
 export interface ContainerInput {
   prompt: string;
-  sessionId?: string;
   groupFolder: string;
   chatJid: string;
   isMain: boolean;
@@ -120,13 +122,28 @@ export interface ContainerInput {
   assistantName?: string;
   provider?: string;
   model?: string;
+  enableThinking?: boolean;
 }
 
 export interface ContainerOutput {
   status: 'success' | 'error' | 'interrupted';
   result: string | null;
-  newSessionId?: string;
   error?: string;
+}
+
+export interface HostRpcRequest {
+  method: string;
+  params?: unknown;
+}
+
+export interface HostRpcEvent {
+  method: string;
+  params?: unknown;
+}
+
+export interface HostRpcHandlers {
+  onRequest?: (req: HostRpcRequest) => Promise<unknown>;
+  onEvent?: (evt: HostRpcEvent) => Promise<void> | void;
 }
 
 interface VolumeMount {
@@ -602,21 +619,6 @@ function buildVolumeMounts(
     }
   }
 
-  // Per-group Claude sessions directory (isolated from other groups)
-  // Each group gets their own .claude/ to prevent cross-group session access
-  const groupSessionsDir = path.join(
-    DATA_DIR,
-    'sessions',
-    group.folder,
-    '.claude',
-  );
-  fs.mkdirSync(groupSessionsDir, { recursive: true });
-  mounts.push({
-    hostPath: groupSessionsDir,
-    containerPath: '/home/bun/.claude',
-    readonly: false,
-  });
-
   // Per-group IPC namespace: each group gets its own IPC directory
   // This prevents cross-group privilege escalation via IPC
   const groupIpcDir = path.join(DATA_DIR, 'ipc', group.folder);
@@ -851,7 +853,6 @@ async function runOneShotContainer(
         logLines.push(
           `=== Input Summary ===`,
           `Prompt length: ${input.prompt.length} chars`,
-          `Session ID: ${input.sessionId || 'new'}`,
           ``,
           `=== Mounts ===`,
           mounts
@@ -1032,6 +1033,11 @@ function isHeartbeatAlive(groupFolder: string): boolean {
   }
 }
 
+function isRpcSocketReady(groupFolder: string): boolean {
+  const groupIpcDir = path.join(DATA_DIR, 'ipc', groupFolder);
+  return fs.existsSync(path.join(groupIpcDir, AGENT_RPC_SOCKET));
+}
+
 /**
  * Wait for the container's heartbeat file to appear, indicating the agent is ready.
  */
@@ -1048,7 +1054,7 @@ async function waitForHeartbeat(groupFolder: string, containerId: string): Promi
       return false;
     }
 
-    if (isHeartbeatAlive(groupFolder)) {
+    if (isHeartbeatAlive(groupFolder) && isRpcSocketReady(groupFolder)) {
       return true;
     }
 
@@ -1079,10 +1085,7 @@ export function killContainer(groupFolder: string, reason: string): void {
     'Killing persistent container',
   );
 
-  // Mark group as interrupted so host-level retry loop stops
-  markGroupInterrupted(groupFolder);
-
-  // Abort any active host-side polling loop for this group
+  // Abort any active host-side request for this group
   const active = activeRequests.get(groupFolder);
   if (active) {
     active.abortController.abort();
@@ -1104,7 +1107,7 @@ export function killContainer(groupFolder: string, reason: string): void {
   const heartbeatPath = path.join(DATA_DIR, 'ipc', groupFolder, 'agent-heartbeat');
   try { fs.unlinkSync(heartbeatPath); } catch {}
 
-  // Clean up any stale input files
+  // Clean up stale legacy input files (one-shot compatibility path)
   const inputDir = path.join(DATA_DIR, 'ipc', groupFolder, 'agent-input');
   try {
     if (fs.existsSync(inputDir)) {
@@ -1353,28 +1356,17 @@ async function getOrStartContainer(
 }
 
 /**
- * Send input to a persistent container via file and wait for output.
+ * Send input to a persistent container via Unix socket RPC and wait for output.
  */
 async function sendToPersistentContainer(
   container: PersistentContainer,
   input: ContainerInput,
   timeout: number,
+  handlers?: HostRpcHandlers,
 ): Promise<ContainerOutput> {
-  const timestamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const inputDir = path.join(container.ipcDir, 'agent-input');
-  const outputDir = path.join(container.ipcDir, 'agent-output');
-  const inputFile = path.join(inputDir, `req-${timestamp}.json`);
-  const outputFile = path.join(outputDir, `res-${timestamp}.json`);
-
-  // Atomic write of input file
-  const tmpFile = `${inputFile}.tmp`;
-  fs.writeFileSync(tmpFile, JSON.stringify(input));
-  fs.renameSync(tmpFile, inputFile);
-
-  logger.debug(
-    { module: 'container', groupFolder: container.groupFolder, requestId: timestamp },
-    'Wrote input file to persistent container',
-  );
+  const socketPath = path.join(container.ipcDir, AGENT_RPC_SOCKET);
+  const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const requestId = `run-${runId}`;
 
   // Register this request so it can be interrupted
   const abortController = new AbortController();
@@ -1383,69 +1375,155 @@ async function sendToPersistentContainer(
     abortController,
   });
 
-  try {
-    // Poll for output file
-    const deadline = Date.now() + timeout;
+  return await new Promise<ContainerOutput>((resolve) => {
+    let settled = false;
+    let buffer = '';
 
-    while (Date.now() < deadline) {
-      // Check for interrupt
-      if (abortController.signal.aborted) {
-        try { fs.unlinkSync(inputFile); } catch {}
-        return {
-          status: 'interrupted',
-          result: null,
-          error: 'Interrupted by user',
-        };
-      }
+    const finish = (output: ContainerOutput): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      activeRequests.delete(container.groupFolder);
+      try { socket.destroy(); } catch {}
+      resolve(output);
+    };
 
-      if (fs.existsSync(outputFile)) {
-        try {
-          const raw = fs.readFileSync(outputFile, 'utf-8');
-          const output: ContainerOutput = JSON.parse(raw);
+    const socket = net.createConnection({ path: socketPath });
 
-          // Clean up output file
-          try { fs.unlinkSync(outputFile); } catch {}
+    const timer = setTimeout(() => {
+      finish({
+        status: 'error',
+        result: null,
+        error: `Persistent container request timed out after ${timeout}ms`,
+      });
+    }, timeout);
 
-          return output;
-        } catch (err) {
-          logger.error(
-            { module: 'container', outputFile, error: err },
-            'Failed to parse output file from persistent container',
-          );
-          try { fs.unlinkSync(outputFile); } catch {}
-          return {
-            status: 'error',
-            result: null,
-            error: `Failed to parse output: ${err instanceof Error ? err.message : String(err)}`,
-          };
+    abortController.signal.addEventListener('abort', () => {
+      finish({
+        status: 'interrupted',
+        result: null,
+        error: 'Interrupted by user',
+      });
+    });
+
+    socket.on('connect', () => {
+      const msg: RpcRequestMessage = {
+        type: 'request',
+        id: requestId,
+        method: 'run_query',
+        params: input,
+      };
+      socket.write(serializeRpcMessage(msg));
+    });
+
+    socket.on('data', (chunk) => {
+      const parsed = parseRpcLines(chunk.toString('utf8'), buffer);
+      buffer = parsed.buffer;
+
+      for (const msg of parsed.messages) {
+        if (msg.type === 'response' && msg.id === requestId) {
+          if (msg.error) {
+            finish({
+              status: 'error',
+              result: null,
+              error: msg.error,
+            });
+            return;
+          }
+
+          const result = (msg.result || null) as ContainerOutput | null;
+          if (!result || typeof result !== 'object' || !('status' in result)) {
+            finish({
+              status: 'error',
+              result: null,
+              error: 'Invalid run_query response from container',
+            });
+            return;
+          }
+          finish(result);
+          return;
+        }
+
+        if (msg.type === 'request') {
+          if (!handlers?.onRequest) {
+            const errResponse: RpcMessage = {
+              type: 'response',
+              id: msg.id,
+              error: `No host handler registered for method: ${msg.method}`,
+            };
+            socket.write(serializeRpcMessage(errResponse));
+            continue;
+          }
+
+          void handlers.onRequest({ method: msg.method, params: msg.params })
+            .then((result) => {
+              const okResponse: RpcMessage = {
+                type: 'response',
+                id: msg.id,
+                result: result ?? null,
+              };
+              try {
+                socket.write(serializeRpcMessage(okResponse));
+              } catch {
+                // Ignore if socket already closed; outer request will fail.
+              }
+            })
+            .catch((err) => {
+              const errResponse: RpcMessage = {
+                type: 'response',
+                id: msg.id,
+                error: err instanceof Error ? err.message : String(err),
+              };
+              try {
+                socket.write(serializeRpcMessage(errResponse));
+              } catch {
+                // Ignore if socket already closed.
+              }
+            });
+          continue;
+        }
+
+        if (msg.type === 'event') {
+          if (handlers?.onEvent) {
+            void Promise.resolve(
+              handlers.onEvent({ method: msg.method, params: msg.params }),
+            ).catch((err) => {
+              logger.debug(
+                { module: 'container', groupFolder: container.groupFolder, err },
+                'Host RPC event handler error',
+              );
+            });
+          }
         }
       }
+    });
 
-      // Check if container is still alive while waiting
+    socket.on('error', (err) => {
       if (!isContainerRunning(container.containerId)) {
-        // Clean up stale input file if it still exists
-        try { fs.unlinkSync(inputFile); } catch {}
-        return {
+        finish({
           status: 'error',
           result: null,
           error: 'Persistent container died while processing request',
-        };
+        });
+        return;
       }
+      finish({
+        status: 'error',
+        result: null,
+        error: `Persistent socket error: ${err.message}`,
+      });
+    });
 
-      await new Promise(resolve => setTimeout(resolve, OUTPUT_POLL_INTERVAL));
-    }
-
-    // Timeout - clean up input file if it wasn't consumed
-    try { fs.unlinkSync(inputFile); } catch {}
-
-    return {
-      status: 'error',
-      result: null,
-      error: `Persistent container request timed out after ${timeout}ms`,
-    };
-  } finally {
-    activeRequests.delete(container.groupFolder);
-  }
+    socket.on('close', () => {
+      if (!settled) {
+        finish({
+          status: 'error',
+          result: null,
+          error: 'Persistent RPC connection closed before response',
+        });
+      }
+    });
+  });
 }
 
 /**
@@ -1455,6 +1533,7 @@ async function sendToPersistentContainer(
 async function runPersistentContainer(
   group: RegisteredGroup,
   input: ContainerInput,
+  handlers?: HostRpcHandlers,
 ): Promise<ContainerOutput> {
   const startTime = Date.now();
 
@@ -1468,7 +1547,7 @@ async function runPersistentContainer(
   }
 
   const timeout = group.containerConfig?.timeout || CONTAINER_TIMEOUT;
-  const output = await sendToPersistentContainer(container, input, timeout);
+  const output = await sendToPersistentContainer(container, input, timeout, handlers);
   const duration = Date.now() - startTime;
 
   // Log the result
@@ -1501,7 +1580,6 @@ async function runPersistentContainer(
     logLines.push(
       `=== Input Summary ===`,
       `Prompt length: ${input.prompt.length} chars`,
-      `Session ID: ${input.sessionId || 'new'}`,
       ``,
     );
   }
@@ -1531,9 +1609,25 @@ async function runPersistentContainer(
     'Container completed (persistent)',
   );
 
-  // If the container died during processing, remove it from tracking
-  if (output.error?.includes('died while processing') || output.error?.includes('timed out')) {
-    killContainer(group.folder, output.error);
+  const persistentTransportFailed =
+    output.status === 'error' &&
+    !!output.error &&
+    (
+      output.error.includes('died while processing') ||
+      output.error.includes('timed out') ||
+      output.error.includes('socket error') ||
+      output.error.includes('connection closed')
+    );
+
+  // If persistent transport failed, recycle the persistent container and
+  // immediately fall back to one-shot mode for this request.
+  if (persistentTransportFailed) {
+    killContainer(group.folder, output.error || 'persistent transport failure');
+    logger.warn(
+      { module: 'container', group: group.name, error: output.error },
+      'Persistent transport failed, falling back to one-shot for this request',
+    );
+    return await runOneShotContainer(group, input);
   }
 
   return output;
@@ -1596,6 +1690,7 @@ export function interruptContainer(
 export async function runContainerAgent(
   group: RegisteredGroup,
   input: ContainerInput,
+  handlers?: HostRpcHandlers,
 ): Promise<ContainerOutput> {
   logDebugEvent('sdk', 'container_start', group.folder, {
     provider: input.provider || null,
@@ -1604,7 +1699,9 @@ export async function runContainerAgent(
     isScheduledTask: input.isScheduledTask || false,
     mode: FORCE_ONESHOT ? 'one-shot' : 'persistent',
   });
-  const run = FORCE_ONESHOT ? runOneShotContainer : runPersistentContainer;
+  const run = FORCE_ONESHOT
+    ? (g: RegisteredGroup, i: ContainerInput) => runOneShotContainer(g, i)
+    : (g: RegisteredGroup, i: ContainerInput) => runPersistentContainer(g, i, handlers);
   const result = await run(group, input);
 
   // Self-heal: if the error looks like a missing image, rebuild and retry once

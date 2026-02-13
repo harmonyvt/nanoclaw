@@ -9,10 +9,11 @@ import { FilesPane } from './panes/FilesPane.js';
 import { TakeoverPane } from './panes/TakeoverPane.js';
 import { TrajectoryPane } from './panes/TrajectoryPane.js';
 import { ProcessesPane } from './panes/ProcessesPane.js';
+import { ChatsPane } from './panes/ChatsPane.js';
 
 export function DashboardApp() {
   const { authenticated, loading } = useAuth();
-  const [activeTab, setActiveTab] = useState('logs');
+  const [activeTab, setActiveTab] = useState('chats');
   const [connected, setConnected] = useState(false);
   const [reconnectFn, setReconnectFn] = useState<(() => void) | null>(null);
 
@@ -57,6 +58,7 @@ export function DashboardApp() {
     <>
       <Header connected={connected} onReconnect={handleReconnect} />
       <TabBar active={activeTab} onChange={setActiveTab} />
+      {activeTab === 'chats' && <ChatsPane />}
       {activeTab === 'logs' && (
         <LogsPane onConnectionChange={handleConnectionChange} />
       )}

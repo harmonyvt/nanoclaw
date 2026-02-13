@@ -4,53 +4,13 @@
  * preparePrompt reads /workspace/group/SOUL.md which does not exist in the
  * test environment, so we monkey-patch fs.existsSync / fs.readFileSync to
  * simulate its presence or absence.
- *
- * IMPORTANT: index.ts calls main() at module scope which detects stdin and
- * may call process.exit(1). We mock process.exit and set stdin.isTTY before
- * dynamically importing the module to prevent the test runner from being killed.
- * The persistent mode's async loop starts but never interferes with tests
- * because it polls a non-existent directory.
  */
 
-import { describe, test, expect, beforeAll, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import fs from 'fs';
 import type { ContainerInput, ProviderAdapter } from './types.js';
-
-// ─── Module-level setup: prevent main() side effects ─────────────────────────
-
-// Save originals
-const origExit = process.exit;
-const origMkdirSync = fs.mkdirSync;
-
-// Prevent process.exit from killing test runner
-(process as any).exit = (_code?: number) => { /* no-op */ };
-
-// Make stdin look like a TTY so main() enters persistent mode (async loop)
-// instead of one-shot mode (which reads stdin then calls process.exit)
-Object.defineProperty(process.stdin, 'isTTY', { value: true, writable: true, configurable: true });
-
-// Prevent persistent mode from creating dirs at /workspace/ipc/...
-(fs as any).mkdirSync = (p: string, opts?: any) => {
-  if (typeof p === 'string' && p.startsWith('/workspace/ipc')) {
-    return; // silently skip
-  }
-  return origMkdirSync(p, opts);
-};
-
-// Dynamic imports so our mocks are in place before module evaluation
-let preparePrompt: (input: ContainerInput) => string;
-let createAdapter: (provider: string) => ProviderAdapter;
-
-// We load the modules once -- the main() side-effect runs but is harmless
-const indexMod = await import('./index.js');
-const adaptersMod = await import('./adapters/index.js');
-
-preparePrompt = indexMod.preparePrompt;
-createAdapter = adaptersMod.createAdapter;
-
-// Restore process.exit and fs.mkdirSync after import
-(process as any).exit = origExit;
-(fs as any).mkdirSync = origMkdirSync;
+import { preparePrompt } from './index.js';
+import { createAdapter } from './adapters/index.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -121,7 +81,7 @@ describe('preparePrompt with SOUL.md present', () => {
   });
 });
 
-// ─── 2. preparePrompt — injects soul_setup when no SOUL.md and not scheduled ─
+// ─── 2. preparePrompt — does not inject soul_setup when no SOUL.md ───────────
 
 describe('preparePrompt without SOUL.md (non-scheduled)', () => {
   let origExistsSync: typeof fs.existsSync;
@@ -141,22 +101,20 @@ describe('preparePrompt without SOUL.md (non-scheduled)', () => {
     (fs as any).existsSync = origExistsSync;
   });
 
-  test('includes <soul_setup> block for non-scheduled tasks', () => {
+  test('does not include <soul_setup> block for non-scheduled tasks', () => {
     const input = makeInput({ isScheduledTask: false });
     const result = preparePrompt(input);
 
-    expect(result).toContain('<soul_setup>');
-    expect(result).toContain("You don't have a personality defined yet");
-    expect(result).toContain('</soul_setup>');
+    expect(result).not.toContain('<soul_setup>');
+    expect(result).toContain('Hello, world!');
   });
 
-  test('soul_setup appears before the original prompt', () => {
+  test('keeps original prompt content intact', () => {
     const input = makeInput({ prompt: 'Hi there', isScheduledTask: false });
     const result = preparePrompt(input);
 
-    const setupIndex = result.indexOf('<soul_setup>');
-    const promptIndex = result.indexOf('Hi there');
-    expect(setupIndex).toBeLessThan(promptIndex);
+    expect(result).toContain('Hi there');
+    expect(result).not.toContain('<soul_setup>');
   });
 });
 

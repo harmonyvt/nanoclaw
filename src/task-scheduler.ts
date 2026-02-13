@@ -12,7 +12,11 @@ import {
   SCHEDULER_POLL_INTERVAL,
   TIMEZONE,
 } from './config.js';
-import { runContainerAgent, writeTasksSnapshot } from './container-runner.js';
+import {
+  HostRpcRequest,
+  runContainerAgent,
+  writeTasksSnapshot,
+} from './container-runner.js';
 import {
   getAllTasks,
   getDueTasks,
@@ -23,11 +27,12 @@ import {
 import { logger } from './logger.js';
 import { logDebugEvent } from './debug-log.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
+import { resolveAssistantIdentity } from './soul.js';
 
 export interface SchedulerDependencies {
   sendMessage: (jid: string, text: string) => Promise<void>;
   registeredGroups: () => Record<string, RegisteredGroup>;
-  getSessions: () => Record<string, string>;
+  handleHostRpcRequest?: (sourceGroup: string, req: HostRpcRequest) => Promise<unknown>;
 }
 
 async function runTask(
@@ -88,26 +93,25 @@ async function runTask(
   let result: string | null = null;
   let error: string | null = null;
 
-  // For group context mode, use the group's current session
-  const sessions = deps.getSessions();
-  const sessionId =
-    task.context_mode === 'group' ? sessions[task.group_folder] : undefined;
-
   try {
     const provider = group.providerConfig?.provider || DEFAULT_PROVIDER;
     const model = group.providerConfig?.model || DEFAULT_MODEL || undefined;
 
     const output = await runContainerAgent(group, {
       prompt: task.prompt,
-      sessionId,
       groupFolder: task.group_folder,
       chatJid: task.chat_jid,
       isMain,
       isScheduledTask: true,
-      assistantName: ASSISTANT_NAME,
+      assistantName: resolveAssistantIdentity(task.group_folder, ASSISTANT_NAME),
       provider,
       model,
-    });
+      enableThinking: true,
+    }, deps.handleHostRpcRequest
+      ? {
+          onRequest: (req) => deps.handleHostRpcRequest!(task.group_folder, req),
+        }
+      : undefined);
 
     if (output.status === 'error') {
       error = output.error || 'Unknown error';
