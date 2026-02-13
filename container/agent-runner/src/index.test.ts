@@ -81,7 +81,7 @@ describe('preparePrompt with SOUL.md present', () => {
   });
 });
 
-// ─── 2. preparePrompt — injects soul_setup when no SOUL.md and not scheduled ─
+// ─── 2. preparePrompt — does not inject soul_setup when no SOUL.md ───────────
 
 describe('preparePrompt without SOUL.md (non-scheduled)', () => {
   let origExistsSync: typeof fs.existsSync;
@@ -101,22 +101,20 @@ describe('preparePrompt without SOUL.md (non-scheduled)', () => {
     (fs as any).existsSync = origExistsSync;
   });
 
-  test('includes <soul_setup> block for non-scheduled tasks', () => {
+  test('does not include <soul_setup> block for non-scheduled tasks', () => {
     const input = makeInput({ isScheduledTask: false });
     const result = preparePrompt(input);
 
-    expect(result).toContain('<soul_setup>');
-    expect(result).toContain("You don't have a personality defined yet");
-    expect(result).toContain('</soul_setup>');
+    expect(result).not.toContain('<soul_setup>');
+    expect(result).toContain('Hello, world!');
   });
 
-  test('soul_setup appears before the original prompt', () => {
+  test('keeps original prompt content intact', () => {
     const input = makeInput({ prompt: 'Hi there', isScheduledTask: false });
     const result = preparePrompt(input);
 
-    const setupIndex = result.indexOf('<soul_setup>');
-    const promptIndex = result.indexOf('Hi there');
-    expect(setupIndex).toBeLessThan(promptIndex);
+    expect(result).toContain('Hi there');
+    expect(result).not.toContain('<soul_setup>');
   });
 });
 

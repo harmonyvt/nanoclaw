@@ -552,6 +552,64 @@ export function getMessageCount(chatJid: string): number {
   return row?.count ?? 0;
 }
 
+export interface ConversationStatus {
+  totalMessageCount: number;
+  threadMessageCount: number;
+  resetAt?: string;
+  threadStartedAt?: string;
+  threadLatestAt?: string;
+}
+
+/**
+ * Get debug-friendly conversation status for a chat.
+ * Thread metrics are scoped to messages after the latest /new reset marker.
+ */
+export function getConversationStatus(chatJid: string): ConversationStatus {
+  const totalMessageCount = getMessageCount(chatJid);
+
+  const resetRow = db
+    .prepare(
+      `SELECT timestamp FROM messages
+       WHERE chat_jid = ? AND content = ? AND sender = 'system'
+       ORDER BY timestamp DESC LIMIT 1`,
+    )
+    .get(chatJid, CONVERSATION_RESET_MARKER) as { timestamp: string } | undefined;
+
+  const sinceTimestamp = resetRow?.timestamp || '';
+
+  const threadAgg = db
+    .prepare(
+      `
+      SELECT
+        COUNT(*) as count,
+        MIN(timestamp) as first_timestamp,
+        MAX(timestamp) as last_timestamp
+      FROM messages
+      WHERE chat_jid = ?
+        AND timestamp > ?
+        AND sender != 'system'
+        AND content != ?
+    `,
+    )
+    .get(
+      chatJid,
+      sinceTimestamp,
+      CONVERSATION_RESET_MARKER,
+    ) as {
+    count: number;
+    first_timestamp: string | null;
+    last_timestamp: string | null;
+  } | undefined;
+
+  return {
+    totalMessageCount,
+    threadMessageCount: threadAgg?.count ?? 0,
+    resetAt: resetRow?.timestamp,
+    threadStartedAt: threadAgg?.first_timestamp || undefined,
+    threadLatestAt: threadAgg?.last_timestamp || undefined,
+  };
+}
+
 // ── Dashboard chat/thread functions ──────────────────────────────────────
 
 export interface ChatWithCount extends ChatInfo {

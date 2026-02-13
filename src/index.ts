@@ -132,6 +132,7 @@ import { initTrajectoryPersistence } from './cua-trajectory.js';
 import { agentSemaphore } from './concurrency.js';
 import { MAX_CONVERSATION_MESSAGES } from './config.js';
 import { logDebugEvent, exportDebugReport, pruneDebugEventEntries } from './debug-log.js';
+import { hasSoulConfigured, resolveAssistantIdentity } from './soul.js';
 
 let lastTimestamp = '';
 let registeredGroups: Record<string, RegisteredGroup> = {};
@@ -321,6 +322,19 @@ function getAvailableGroups(): AvailableGroup[] {
 async function processMessage(msg: NewMessage): Promise<void> {
   const group = registeredGroups[msg.chat_jid];
   if (!group) return;
+  const getAssistantIdentity = () =>
+    resolveAssistantIdentity(group.folder, ASSISTANT_NAME);
+  const ensureSoulReady = async (): Promise<boolean> => {
+    if (hasSoulConfigured(group.folder)) return true;
+    await sendMessage(
+      msg.chat_jid,
+      'I need a persona before I can respond. Please run /soul to set it up (try /soul reset), then send your request again.',
+    );
+    logDebugEvent('telegram', 'command_invoked', group.folder, {
+      command: 'soul_required',
+    });
+    return false;
+  };
 
   const content = msg.content.trim();
   const isMainGroup = group.folder === MAIN_GROUP_FOLDER;
@@ -437,6 +451,7 @@ async function processMessage(msg: NewMessage): Promise<void> {
   // Handle /voice — unified TTS voice configuration (design, preset, clone, reset)
   const voiceMatch = content.match(/^\/voice(?:\s+(.*))?$/i);
   if (voiceMatch) {
+    if (!(await ensureSoulReady())) return;
     const params = voiceMatch[1] || '';
     const instructions = `Help the user configure the TTS voice for this chat.
 
@@ -512,7 +527,12 @@ Voice profile JSON format (include only the active mode's config, not all):
     await setTyping(msg.chat_jid, false);
 
     if (response) {
-      storeAssistantMessage(msg.chat_jid, response, new Date().toISOString(), ASSISTANT_NAME);
+      storeAssistantMessage(
+        msg.chat_jid,
+        response,
+        new Date().toISOString(),
+        getAssistantIdentity(),
+      );
       const voiceSep = '---voice---';
       const sepIdx = response.indexOf(voiceSep);
       const cleanText = sepIdx !== -1 ? response.replace(voiceSep, '').trim() : response;
@@ -522,6 +542,81 @@ Voice profile JSON format (include only the active mode's config, not all):
     }
     return;
   }
+
+  // Handle /soul — manage SOUL.md identity/personality coherently
+  const soulMatch = content.match(/^\/soul(?:\s+([\s\S]*))?$/i);
+  if (soulMatch) {
+    const params = (soulMatch[1] || '').trim();
+    const instructions = `Help the user manage SOUL.md (assistant identity/personality) for this chat.
+
+Files:
+- /workspace/group/SOUL.md
+- /workspace/group/voice_profile.json (optional, for voice coherence)
+
+Behavior:
+
+1) If parameters are empty OR "show":
+- Read SOUL.md and summarize current name and personality.
+- If SOUL.md does not exist, say so and offer to create one.
+- Do not modify files.
+
+2) If parameters are "reset":
+- Rewrite SOUL.md to a neutral, helpful assistant persona.
+- Use clear markdown sections:
+  - H1 assistant name
+  - short description
+  - Personality
+  - Response Style
+- Confirm the resulting identity.
+
+3) Otherwise:
+- Treat parameters as requested SOUL.md edits.
+- Update SOUL.md accordingly.
+- Preserve useful existing details unless user asked to remove them.
+- Keep the first markdown heading as the assistant name (e.g. "# Yoona").
+- If name changes, explicitly confirm the new name.
+
+After any SOUL.md modification:
+- Summarize what changed.
+- Mention the user can run /voice to align TTS voice with the updated persona.`;
+
+    let skillXml = '<skill name="soul"';
+    if (params) skillXml += ` parameters="${escapeXml(params)}"`;
+    skillXml += `>\n${escapeXml(instructions)}\n</skill>`;
+
+    const { messagesXml, latestContent } = buildConversationXml(msg.chat_jid, group.folder);
+
+    let memoryXml = '';
+    if (isSupermemoryEnabled()) {
+      const memories = await retrieveMemories(group.folder, latestContent);
+      if (memories) memoryXml = formatMemoryContext(memories);
+    }
+
+    const prompt = [memoryXml, skillXml, messagesXml].filter(Boolean).join('\n\n');
+
+    await setTyping(msg.chat_jid, true);
+    const response = await runAgent(group, prompt, msg.chat_jid, { isSkillInvocation: true });
+    await setTyping(msg.chat_jid, false);
+
+    if (response) {
+      storeAssistantMessage(
+        msg.chat_jid,
+        response,
+        new Date().toISOString(),
+        getAssistantIdentity(),
+      );
+      const voiceSep = '---voice---';
+      const sepIdx = response.indexOf(voiceSep);
+      const cleanText = sepIdx !== -1 ? response.replace(voiceSep, '').trim() : response;
+      if (cleanText && !cleanText.startsWith('[') && !cleanText.endsWith('queued')) {
+        await sendMessage(msg.chat_jid, cleanText);
+      }
+    }
+    return;
+  }
+
+  // For all non-/soul interactions, require SOUL.md to be configured first.
+  if (!(await ensureSoulReady())) return;
 
   // Check if message is a skill invocation: /skill_name [params]
   const skillMatch = content.match(/^\/([a-z][a-z0-9_]{1,30})(?:\s+(.*))?$/);
@@ -555,7 +650,12 @@ Voice profile JSON format (include only the active mode's config, not all):
       await setTyping(msg.chat_jid, false);
 
       if (response) {
-        storeAssistantMessage(msg.chat_jid, response, new Date().toISOString(), ASSISTANT_NAME);
+        storeAssistantMessage(
+          msg.chat_jid,
+          response,
+          new Date().toISOString(),
+          getAssistantIdentity(),
+        );
 
         // Strip voice separator if present (skill responses are typically text)
         const voiceSep = '---voice---';
@@ -662,7 +762,12 @@ Voice profile JSON format (include only the active mode's config, not all):
 
   if (response) {
     // Store assistant response in DB (single source of truth for conversation history)
-    storeAssistantMessage(msg.chat_jid, response, new Date().toISOString(), ASSISTANT_NAME);
+    storeAssistantMessage(
+      msg.chat_jid,
+      response,
+      new Date().toISOString(),
+      getAssistantIdentity(),
+    );
 
     const text = response;
 
@@ -799,6 +904,7 @@ async function runAgent(
   const provider = group.providerConfig?.provider || DEFAULT_PROVIDER;
   const model = group.providerConfig?.model || DEFAULT_MODEL || undefined;
   const baseUrl = group.providerConfig?.baseUrl || undefined;
+  const assistantIdentity = resolveAssistantIdentity(group.folder, ASSISTANT_NAME);
 
   const input = {
     prompt,
@@ -806,7 +912,7 @@ async function runAgent(
     chatJid,
     isMain,
     isSkillInvocation: opts?.isSkillInvocation,
-    assistantName: ASSISTANT_NAME,
+    assistantName: assistantIdentity,
     provider,
     model,
     baseUrl,

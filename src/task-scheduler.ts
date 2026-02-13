@@ -27,6 +27,7 @@ import {
 import { logger } from './logger.js';
 import { logDebugEvent } from './debug-log.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
+import { resolveAssistantIdentity } from './soul.js';
 
 export interface SchedulerDependencies {
   sendMessage: (jid: string, text: string) => Promise<void>;
@@ -102,7 +103,7 @@ async function runTask(
       chatJid: task.chat_jid,
       isMain,
       isScheduledTask: true,
-      assistantName: ASSISTANT_NAME,
+      assistantName: resolveAssistantIdentity(task.group_folder, ASSISTANT_NAME),
       provider,
       model,
       enableThinking: true,

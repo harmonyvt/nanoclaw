@@ -8,18 +8,21 @@ import type { RunnerHandle } from '@grammyjs/runner';
 import type { LanguageCode } from 'grammy/types';
 
 import {
+  ASSISTANT_NAME,
   GROUPS_DIR,
   TELEGRAM_BOT_TOKEN,
   TELEGRAM_OWNER_ID,
   makeTelegramChatId,
   extractTelegramChatId,
   DEFAULT_PROVIDER,
+  MAX_CONVERSATION_MESSAGES,
 } from './config.js';
 
 import {
   clearMessages,
+  getConversationHistory,
+  getConversationStatus,
   getAllTasks,
-  getMessageCount,
   getTaskById,
   getTaskByShortId,
   getTaskRunLogs,
@@ -49,6 +52,7 @@ import {
   deleteSkill as deleteSkillFromDisk,
   getSkillCommandsForGroup,
 } from './skills.js';
+import { resolveAssistantIdentity } from './soul.js';
 
 /**
  * Callback invoked after a message is stored in the DB.
@@ -338,6 +342,7 @@ type SlashCommandSpec = {
     | 'debug'
     | 'mute'
     | 'voice'
+    | 'soul'
     | 'help'
     | 'skills';
   description: string;
@@ -368,7 +373,7 @@ const TELEGRAM_SLASH_COMMANDS: SlashCommandSpec[] = [
   {
     command: 'status',
     description: 'Show session info',
-    help: 'Show session info, message count, uptime',
+    help: 'Show session info, identity, thread history, uptime',
   },
   {
     command: 'update',
@@ -419,6 +424,11 @@ const TELEGRAM_SLASH_COMMANDS: SlashCommandSpec[] = [
     command: 'voice',
     description: 'Configure TTS voice (design, preset, clone)',
     help: 'Configure TTS voice: /voice [design|preset|clone|reset]',
+  },
+  {
+    command: 'soul',
+    description: 'View or edit SOUL.md persona',
+    help: 'Manage persona: /soul [show|reset|<change request>]',
   },
   {
     command: 'help',
@@ -838,15 +848,31 @@ export async function connectTelegram(
     await next();
   });
 
-  bot.command('new', async (ctx) => {
-    if (!shouldAccept(ctx)) return;
+  const handleConversationReset = async (
+    ctx: { chat: { id: number } },
+    command: 'new' | 'reset',
+  ) => {
     const chatId = makeTelegramChatId(ctx.chat.id);
+
+    // Prevent stale replies from an in-flight run started before the reset.
+    if (interruptHandler) interruptHandler.interrupt(chatId);
+
     insertConversationReset(chatId);
     logger.info(
-      { module: 'telegram', chatId },
-      'Conversation reset via /new command',
+      { module: 'telegram', chatId, command },
+      'Conversation reset command received',
     );
-    await ctx.reply('New conversation started.');
+  };
+
+  bot.command('new', async (ctx) => {
+    if (!shouldAccept(ctx)) return;
+    await handleConversationReset(ctx, 'new');
+  });
+
+  // Alias for users who expect /reset semantics from other bots.
+  bot.command('reset', async (ctx) => {
+    if (!shouldAccept(ctx)) return;
+    await handleConversationReset(ctx, 'reset');
   });
 
   bot.command('clear', async (ctx) => {
@@ -867,19 +893,43 @@ export async function connectTelegram(
     const chatId = makeTelegramChatId(ctx.chat.id);
     const group = registeredGroups()[chatId];
 
-    const messageCount = getMessageCount(chatId);
+    const convoStatus = getConversationStatus(chatId);
+    const messageCount = convoStatus.totalMessageCount;
+    const historyWindowCount = getConversationHistory(
+      chatId,
+      MAX_CONVERSATION_MESSAGES,
+    ).length;
     const uptimeMs = Date.now() - startTime;
     const uptimeHours = Math.floor(uptimeMs / 3600000);
     const uptimeMinutes = Math.floor((uptimeMs % 3600000) / 60000);
 
     const provider = group?.providerConfig?.provider || DEFAULT_PROVIDER;
     const model = group?.providerConfig?.model || '(default)';
+    const assistantIdentity = group
+      ? resolveAssistantIdentity(group.folder, ASSISTANT_NAME)
+      : ASSISTANT_NAME;
+    const resetAt = convoStatus.resetAt
+      ? `${convoStatus.resetAt} (${formatRelativeTime(convoStatus.resetAt)})`
+      : 'never';
+    const threadStarted = convoStatus.threadStartedAt
+      ? `${convoStatus.threadStartedAt} (${formatRelativeTime(convoStatus.threadStartedAt)})`
+      : '--';
+    const threadLatest = convoStatus.threadLatestAt
+      ? `${convoStatus.threadLatestAt} (${formatRelativeTime(convoStatus.threadLatestAt)})`
+      : '--';
 
     const lines = [
       `Group: ${group ? group.name : 'unregistered'}`,
+      `Identity: ${assistantIdentity}`,
+      `Chat: ${chatId}`,
       `Provider: ${provider}`,
       `Model: ${model}`,
-      `Messages: ${messageCount}`,
+      `Messages (all): ${messageCount}`,
+      `Thread messages (since /new): ${convoStatus.threadMessageCount}`,
+      `History sent to model: ${historyWindowCount}/${MAX_CONVERSATION_MESSAGES}`,
+      `Thread reset at: ${resetAt}`,
+      `Thread started at: ${threadStarted}`,
+      `Thread last activity: ${threadLatest}`,
       `Uptime: ${uptimeHours}h ${uptimeMinutes}m`,
       `Version: v${APP_VERSION}`,
     ];
@@ -1550,6 +1600,7 @@ export async function connectTelegram(
   const grammyHandledCommands = new Set([
     'new', 'clear', 'status', 'takeover', 'dashboard', 'help', 'skills',
     'verbose', 'thinking', 'stop', 'update', 'rebuild', 'tasks', 'runtask',
+    'reset',
   ]);
 
   bot.on('message:text', async (ctx) => {

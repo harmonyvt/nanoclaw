@@ -135,6 +135,9 @@ export function buildSystemPrompt(input: AdapterInput): string {
   const parts: string[] = [];
 
   parts.push(`You are ${input.assistantName || 'Andy'}, a helpful AI assistant.`);
+  parts.push(
+    'If the prompt contains a <soul> block, treat that identity/personality as authoritative.',
+  );
 
   // Load CLAUDE.md for group instructions
   const claudeMdPath = '/workspace/group/CLAUDE.md';
