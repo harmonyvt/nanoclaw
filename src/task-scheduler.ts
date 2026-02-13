@@ -96,6 +96,7 @@ async function runTask(
   try {
     const provider = group.providerConfig?.provider || DEFAULT_PROVIDER;
     const model = group.providerConfig?.model || DEFAULT_MODEL || undefined;
+    const baseUrl = group.providerConfig?.baseUrl || undefined;
 
     const output = await runContainerAgent(group, {
       prompt: task.prompt,
@@ -106,6 +107,7 @@ async function runTask(
       assistantName: resolveAssistantIdentity(task.group_folder, ASSISTANT_NAME),
       provider,
       model,
+      baseUrl,
       enableThinking: true,
     }, deps.handleHostRpcRequest
       ? {

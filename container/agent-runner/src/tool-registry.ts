@@ -11,6 +11,7 @@ import Supermemory from 'supermemory';
 import type { NanoTool, IpcMcpContext, ToolResult } from './types.js';
 import { isCancelled } from './cancel.js';
 import { getHostRpcBridge } from './host-rpc.js';
+import { resolveMediaOpenAIConfig } from './media-ai-config.js';
 
 /** Spawn a command with Bun.spawn(), capture stdout/stderr, respect timeout. */
 async function runCommand(
@@ -2020,7 +2021,7 @@ If a skill with the same name already exists, it will be overwritten.`,
     description:
       'Transcribe an audio file to text using OpenAI Whisper. Useful for getting ' +
       'transcripts of voice recordings or reference audio for voice cloning. ' +
-      'Requires OPENAI_API_KEY to be configured.',
+      'Uses OPENAI_API_KEY by default, or OPENAI_MEDIA_* when COMPOSITE_AI_ENABLED=true.',
     schema: z.object({
       path: z
         .string()
@@ -2029,11 +2030,14 @@ If a skill with the same name already exists, it will be overwritten.`,
         ),
     }),
     handler: async (args): Promise<ToolResult> => {
-      const apiKey = process.env.OPENAI_API_KEY;
+      const mediaConfig = resolveMediaOpenAIConfig();
+      const useCompositeMedia = mediaConfig.compositeEnabled;
+      const apiKey = mediaConfig.apiKey;
       if (!apiKey) {
         return {
-          content:
-            'OPENAI_API_KEY not configured. Ask the user for a transcript instead.',
+          content: useCompositeMedia
+            ? 'OPENAI_MEDIA_API_KEY/OPENAI_API_KEY not configured. Ask the user for a transcript instead.'
+            : 'OPENAI_API_KEY not configured. Ask the user for a transcript instead.',
           isError: true,
         };
       }
@@ -2047,17 +2051,18 @@ If a skill with the same name already exists, it will be overwritten.`,
         const fileBuffer = fs.readFileSync(filePath);
         const blob = new Blob([fileBuffer]);
         const formData = new FormData();
-        formData.append('model', 'whisper-1');
+        formData.append('model', useCompositeMedia ? mediaConfig.audioModel : 'whisper-1');
         formData.append('file', blob, path.basename(filePath));
 
-        const resp = await fetch(
-          'https://api.openai.com/v1/audio/transcriptions',
-          {
-            method: 'POST',
-            headers: { Authorization: `Bearer ${apiKey}` },
-            body: formData,
-          },
-        );
+        const transcriptionEndpoint = useCompositeMedia
+          ? `${mediaConfig.baseUrl}/audio/transcriptions`
+          : 'https://api.openai.com/v1/audio/transcriptions';
+
+        const resp = await fetch(transcriptionEndpoint, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${apiKey}` },
+          body: formData,
+        });
 
         if (!resp.ok) {
           const detail = await resp.text().catch(() => '');

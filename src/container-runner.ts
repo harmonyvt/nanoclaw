@@ -122,6 +122,7 @@ export interface ContainerInput {
   assistantName?: string;
   provider?: string;
   model?: string;
+  baseUrl?: string;
   enableThinking?: boolean;
 }
 
@@ -475,12 +476,18 @@ function resolveCredentials(): CredentialResult {
   // Collect non-auth API keys from .env (always included regardless of auth source)
   const extraVars = [
     'OPENAI_API_KEY',
+    'OPENAI_MEDIA_API_KEY',
     'MINIMAX_API_KEY',
     'FIRECRAWL_API_KEY',
     'SUPERMEMORY_API_KEY',
     'SUPERMEMORY_OPENCLAW_API_KEY',
     'SUPERMEMORY_CC_API_KEY',
+    'COMPOSITE_AI_ENABLED',
     'OPENAI_BASE_URL',
+    'OPENAI_MEDIA_BASE_URL',
+    'OPENAI_MEDIA_MODEL',
+    'OPENAI_MEDIA_VISION_MODEL',
+    'OPENAI_MEDIA_AUDIO_MODEL',
     'ANTHROPIC_BASE_URL',
   ];
   const extraLines: string[] = [];
