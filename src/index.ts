@@ -2539,9 +2539,6 @@ async function main(): Promise<void> {
     },
   };
 
-  // Catch up any messages that arrived while bot was offline
-  await catchUpMissedMessages();
-
   // Connect Telegram with grammY runner for concurrent processing.
   // The onMessageStored callback triggers agent processing directly from handlers.
   const onMessageStored: OnMessageStored = async (msg) => {
@@ -2561,6 +2558,8 @@ async function main(): Promise<void> {
     interruptHandler,
     onMessageStored,
   );
+
+  // Catch-up disabled — grammY runner handles missed messages on reconnect.
   startSchedulerLoop(schedulerDeps);
   startIpcWatcher();
   startIdleWatcher();

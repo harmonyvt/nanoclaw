@@ -34,3 +34,4 @@ __pycache__/
 .vscode/
 
 agents-sdk-docs
+.env.bak*

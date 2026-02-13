@@ -219,16 +219,16 @@ cat > "$MARKER_FILE" <<MARKER_EOF
 {"expectedHead":"${NEW_HEAD}","chatId":"${SELF_UPDATE_CHAT_ID}","timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)","containerRebuilt":${REBUILT_FLAG}}
 MARKER_EOF
 
-log_step "Restarting service"
+# Send the "done" notification BEFORE restarting, since the restart will kill
+# this script (it runs inside the service's cgroup). The post-restart
+# verifySelfUpdate() sends a separate confirmation with the new version.
+log_done "Restarting service..."
 
 OS="$(uname -s)"
 if [[ "$OS" == "Darwin" ]]; then
   if ! command -v launchctl >/dev/null 2>&1; then
     fail "launchctl not found on Darwin host"
   fi
-  # On macOS, kickstart -k kills this process, so the progress message
-  # will show "⏳ Restarting service..." as the last state. The post-restart
-  # verification (verifySelfUpdate) sends the final confirmation.
   launchctl kickstart -k "gui/${UID}/com.nanoclaw"
 elif [[ "$OS" == "Linux" ]]; then
   if ! command -v systemctl >/dev/null 2>&1; then
@@ -237,6 +237,11 @@ elif [[ "$OS" == "Linux" ]]; then
   # Use systemd-run to restart from a separate cgroup scope, so this script
   # isn't killed when systemd tears down the service's cgroup.
   if command -v systemd-run >/dev/null 2>&1; then
+    # Clean up stale transient unit from a previous update (systemd-run fails
+    # if the unit name already exists, even if it's dead/inactive).
+    systemctl --user reset-failed nanoclaw-self-update-restart.service 2>/dev/null || true
+    systemctl --user stop nanoclaw-self-update-restart.service 2>/dev/null || true
+
     systemd-run --user --no-block --unit=nanoclaw-self-update-restart \
       systemctl --user restart com.nanoclaw.service
   else
@@ -247,4 +252,4 @@ else
   fail "unsupported OS for self-update: ${OS}"
 fi
 
-log_done "Update complete"
+echo "${LOG_PREFIX} Service restart issued"
