@@ -28,6 +28,8 @@ import {
   cleanupOrphanPersistentContainers,
   consumeGroupInterrupted,
   ensureAgentImage,
+  HostRpcEvent,
+  HostRpcRequest,
   interruptContainer,
   killAllContainers,
   runContainerAgent,
@@ -102,6 +104,10 @@ import {
   ensureSandbox,
   startIdleWatcher,
 } from './sandbox-manager.js';
+import {
+  routeHostRpcEvent,
+  routeHostRpcRequest,
+} from './host-rpc-router.js';
 import {
   getTakeoverUrl,
   startCuaTakeoverServer,
@@ -192,6 +198,19 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
   pause_task: 'pausing task', resume_task: 'resuming task',
   cancel_task: 'cancelling task', register_group: 'registering group',
 };
+
+const VOICE_DEDUPE_WINDOW_MS = 2500;
+const lastVoiceSentAtByChat = new Map<string, number>();
+
+function shouldSuppressDuplicateVoice(chatJid: string): boolean {
+  const now = Date.now();
+  const last = lastVoiceSentAtByChat.get(chatJid);
+  if (typeof last === 'number' && now - last < VOICE_DEDUPE_WINDOW_MS) {
+    return true;
+  }
+  lastVoiceSentAtByChat.set(chatJid, now);
+  return false;
+}
 
 function humanizeToolName(rawName: string): string {
   const name = rawName.replace(/^mcp__nanoclaw__/, '');
@@ -589,7 +608,7 @@ Voice profile JSON format (include only the active mode's config, not all):
     provider: agentProvider,
     model: agentModel || null,
     promptLength: prompt.length,
-    messageCount: missedMessages.length,
+    messageCount,
     isSkillInvocation: false,
   });
 
@@ -696,8 +715,15 @@ Voice profile JSON format (include only the active mode's config, not all):
             oggPath = await synthesizeSpeech(markedText, mediaDir);
           }
 
-          await sendTelegramVoice(msg.chat_jid, oggPath);
-          voiceSent = true;
+          if (shouldSuppressDuplicateVoice(msg.chat_jid)) {
+            logDebugEvent('tts', 'voice_deduped', group.folder, {
+              source: 'auto',
+              chatJid: msg.chat_jid,
+            });
+          } else {
+            await sendTelegramVoice(msg.chat_jid, oggPath);
+            voiceSent = true;
+          }
           logDebugEvent('tts', 'auto_tts_attempt', group.folder, {
             provider: qwenProfile ? 'qwen' : 'freya',
             voicePartLength: voicePart.length,
@@ -810,7 +836,10 @@ async function runAgent(
     }
 
     try {
-      const output = await runContainerAgent(group, input);
+      const output = await runContainerAgent(group, input, {
+        onRequest: (req) => handleContainerRpcRequest(group.folder, req),
+        onEvent: (evt) => handleContainerRpcEvent(group.folder, evt),
+      });
 
       logDebugEvent('sdk', 'container_result', group.folder, {
         status: output.status,
@@ -1036,6 +1065,373 @@ async function updateCuaScreenshot(
   }
 }
 
+async function processStatusEvents(
+  sourceGroup: string,
+  events: Array<Record<string, unknown>>,
+): Promise<void> {
+  if (events.length === 0) return;
+
+  // Always log adapter_stderr events to Pino
+  for (const evt of events) {
+    if (evt.type === 'adapter_stderr') {
+      logger.warn(
+        { module: 'claude-cli', group_folder: sourceGroup },
+        `[stderr] ${evt.message}`,
+      );
+    }
+    if (evt.type === 'tool_start') {
+      logDebugEvent('sdk', 'tool_call', sourceGroup, {
+        toolName: evt.tool_name,
+        preview: String(evt.preview || '').slice(0, 200),
+      });
+    }
+  }
+
+  // Update the editable thinking status message (always-on when active)
+  const statusEntry = activeStatusMessages.get(sourceGroup);
+  if (statusEntry && events.length > 0) {
+    // Priority: thinking content > tool name
+    const lastThinking = [...events].reverse().find((e) => e.type === 'thinking');
+    const lastToolStart = [...events].reverse().find((e) => e.type === 'tool_start');
+
+    let newText: string | undefined;
+    if (lastThinking) {
+      newText = String(lastThinking.content);
+      statusEntry.hadThinkingContent = true;
+    } else if (lastToolStart) {
+      const toolName = String(lastToolStart.tool_name || '').replace(/^mcp__nanoclaw__/, '');
+      if (!HIDDEN_TOOLS.has(toolName)) {
+        newText = humanizeToolName(String(lastToolStart.tool_name));
+      }
+    }
+
+    if (newText && newText !== statusEntry.currentText) {
+      const now = Date.now();
+      if (now - statusEntry.lastEditTime >= STATUS_EDIT_INTERVAL_MS) {
+        // Telegram allows ~4096 chars per message; account for <i></i> tags
+        const MAX_CHUNK = 4000;
+
+        // Delete any previous overflow messages before sending new ones
+        for (const extraId of statusEntry.extraMessageIds) {
+          await deleteTelegramMessage(statusEntry.chatJid, extraId);
+        }
+        statusEntry.extraMessageIds = [];
+
+        // Split into chunks at line boundaries when possible
+        const chunks: string[] = [];
+        let remaining = newText;
+        while (remaining.length > 0) {
+          if (remaining.length <= MAX_CHUNK) {
+            chunks.push(remaining);
+            break;
+          }
+          // Try to split at a newline within the chunk
+          let splitAt = remaining.lastIndexOf('\n', MAX_CHUNK);
+          if (splitAt === -1) splitAt = MAX_CHUNK;
+          chunks.push(remaining.slice(0, splitAt));
+          remaining = remaining.slice(splitAt).replace(/^\n/, '');
+        }
+
+        // Edit the primary message with the first chunk
+        const edited = await editTelegramStatusMessage(
+          statusEntry.chatJid,
+          statusEntry.messageId,
+          chunks[0],
+        );
+        if (edited) {
+          statusEntry.currentText = newText;
+          statusEntry.lastEditTime = now;
+
+          // Send overflow chunks as additional messages
+          for (let i = 1; i < chunks.length; i++) {
+            const extraId = await sendTelegramStatusMessage(
+              statusEntry.chatJid,
+              chunks[i],
+            );
+            if (extraId) {
+              statusEntry.extraMessageIds.push(extraId);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Verbose mode: still send full detail messages
+  const chatJid = Object.entries(registeredGroups).find(
+    ([, g]) => g.folder === sourceGroup,
+  )?.[0];
+
+  if (chatJid && isVerbose(chatJid) && events.length > 0) {
+    const lines: string[] = [];
+    for (const evt of events) {
+      if (evt.type === 'tool_start') {
+        const preview = evt.preview
+          ? String(evt.preview).slice(0, 100)
+          : '';
+        lines.push(
+          `> ${evt.tool_name}${preview ? ': ' + preview : ''}`,
+        );
+      } else if (evt.type === 'tool_progress') {
+        lines.push(`> ${evt.tool_name} (${evt.elapsed_seconds}s)`);
+      }
+    }
+    if (lines.length > 0) {
+      const statusMsg = lines.slice(0, 5).join('\n');
+      try {
+        await sendTelegramMessage(chatJid, statusMsg);
+      } catch (err) {
+        logger.debug({ module: 'index', err }, 'Failed to send verbose status message');
+      }
+    }
+  }
+}
+
+async function handleBrowseRpc(
+  sourceGroup: string,
+  action: string,
+  browseParams: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const requestId = `rpc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const chatJid = getChatJidForGroup(sourceGroup);
+
+  if (action === 'wait_for_user') {
+    const waitMessage =
+      typeof browseParams.message === 'string' &&
+      browseParams.message.trim().length > 0
+        ? browseParams.message.trim()
+        : 'Please take over the CUA browser session, then return control when done.';
+
+    try {
+      await ensureSandbox();
+    } catch (err) {
+      logger.warn(
+        { module: 'index', err, sourceGroup },
+        'Failed to prestart sandbox for wait_for_user',
+      );
+    }
+
+    const waitRequest = ensureWaitForUserRequest(
+      requestId,
+      sourceGroup,
+      waitMessage,
+    );
+
+    if (chatJid) {
+      const ownerSession = createSessionForOwner();
+      const takeoverUrl = getTakeoverUrl(waitRequest.token, ownerSession?.token);
+      const takeoverPart = takeoverUrl ? `Take over CUA: ${takeoverUrl}` : '';
+      const promptLines = [
+        waitMessage,
+        '',
+        takeoverPart,
+        `When done, send: continue ${waitRequest.requestId}`,
+      ];
+      await sendMessage(chatJid, promptLines.join('\n'));
+    }
+  } else {
+    const startDescription = describeCuaActionStart(action, browseParams);
+    if (startDescription) {
+      if (chatJid) {
+        await updateCuaLogMessage(sourceGroup, chatJid, `CUA ${action}: ${startDescription}`);
+      }
+      emitCuaActivity({
+        groupFolder: sourceGroup,
+        action,
+        phase: 'start',
+        description: startDescription,
+        requestId,
+      });
+    }
+  }
+
+  const browseStartedAt = Date.now();
+  const result = await processBrowseRequest(
+    requestId,
+    action,
+    browseParams,
+    sourceGroup,
+    path.join(DATA_DIR, 'ipc', sourceGroup),
+  );
+  const browseDurationMs = Date.now() - browseStartedAt;
+
+  const usage = updateCuaUsage(sourceGroup, action, result.status === 'ok' ? 'ok' : 'error');
+  logDebugEvent('browse', 'action_complete', sourceGroup, {
+    action,
+    requestId,
+    status: result.status,
+    durationMs: browseDurationMs,
+    total: usage.total,
+    ok: usage.ok,
+    failed: usage.failed,
+  });
+
+  if (action !== 'wait_for_user') {
+    emitCuaActivity({
+      groupFolder: sourceGroup,
+      action,
+      phase: 'end',
+      description: describeCuaActionStart(action, browseParams) || action,
+      requestId,
+      status: result.status,
+      durationMs: browseDurationMs,
+      error: result.status === 'error' ? String(result.error || 'unknown') : undefined,
+      screenshotPath: action === 'screenshot' && result.status === 'ok' ? (result.result as string) : undefined,
+      usage: { total: usage.total, ok: usage.ok, failed: usage.failed },
+    });
+  }
+
+  if (chatJid && action !== 'wait_for_user') {
+    const statusText =
+      result.status === 'ok'
+        ? 'ok'
+        : `error: ${truncateForTelegram(String(result.error || 'unknown'), 140)}`;
+    await updateCuaLogMessage(
+      sourceGroup,
+      chatJid,
+      `CUA ${action}: ${statusText} (${browseDurationMs}ms) | ${usage.ok}/${usage.total} actions`,
+    );
+  }
+
+  if (
+    action === 'screenshot' &&
+    result.status === 'ok' &&
+    result.result &&
+    chatJid
+  ) {
+    const containerPath = result.result as string;
+    const hostPath = path.join(
+      GROUPS_DIR,
+      sourceGroup,
+      'media',
+      path.basename(containerPath),
+    );
+    try {
+      await updateCuaScreenshot(sourceGroup, chatJid, hostPath);
+    } catch (photoErr) {
+      logger.warn(
+        { module: 'index', photoErr, hostPath },
+        'Failed to send/edit screenshot as Telegram photo',
+      );
+    }
+  }
+
+  return result as Record<string, unknown>;
+}
+
+async function handleContainerRpcRequest(
+  sourceGroup: string,
+  req: HostRpcRequest,
+): Promise<unknown> {
+  return await routeHostRpcRequest(sourceGroup, req, {
+    mainGroupFolder: MAIN_GROUP_FOLDER,
+    groupFolderForChatJid: (chatJid) => registeredGroups[chatJid]?.folder,
+    sendMessage: async (chatJid, text, rpcSourceGroup) => {
+      await sendMessage(chatJid, text);
+      logDebugEvent('ipc', 'rpc_message_sent', rpcSourceGroup, { chatJid });
+    },
+    sendVoice: async ({ chatJid, text, emotion }, rpcSourceGroup) => {
+      const rpcQwenProfile = isQwenTTSEnabled()
+        ? (loadVoiceProfile(rpcSourceGroup) ?? defaultVoiceProfile())
+        : null;
+
+      if (rpcQwenProfile) {
+        const ttsStatusId = await sendTelegramStatusMessage(chatJid, 'speaking');
+        try {
+          const mediaDir = path.join(GROUPS_DIR, rpcSourceGroup, 'media');
+          const oggPath = await synthesizeQwenTTS(text, rpcQwenProfile, mediaDir, rpcSourceGroup);
+          if (shouldSuppressDuplicateVoice(chatJid)) {
+            logDebugEvent('tts', 'voice_deduped', rpcSourceGroup, {
+              source: 'rpc',
+              chatJid,
+              provider: 'qwen',
+            });
+            return 'Voice suppressed (duplicate within dedupe window).';
+          }
+          await sendTelegramVoice(chatJid, oggPath);
+          logDebugEvent('ipc', 'rpc_voice_sent', rpcSourceGroup, { chatJid, provider: 'qwen' });
+          return 'Voice sent (Qwen).';
+        } finally {
+          if (ttsStatusId) await deleteTelegramMessage(chatJid, ttsStatusId);
+        }
+      }
+
+      if (isFreyaEnabled()) {
+        const ttsStatusId = await sendTelegramStatusMessage(chatJid, 'speaking');
+        try {
+          const selectedEmotion = emotion
+            ? (() => {
+                const parsed = parseEmotion(emotion);
+                return 'error' in parsed ? detectEmotionFromText(text) : parsed;
+              })()
+            : detectEmotionFromText(text);
+          const markedText = formatFreyaText(text, selectedEmotion);
+          const mediaDir = path.join(GROUPS_DIR, rpcSourceGroup, 'media');
+          const oggPath = await synthesizeSpeech(markedText, mediaDir);
+          if (shouldSuppressDuplicateVoice(chatJid)) {
+            logDebugEvent('tts', 'voice_deduped', rpcSourceGroup, {
+              source: 'rpc',
+              chatJid,
+              provider: 'freya',
+            });
+            return 'Voice suppressed (duplicate within dedupe window).';
+          }
+          await sendTelegramVoice(chatJid, oggPath);
+          logDebugEvent('ipc', 'rpc_voice_sent', rpcSourceGroup, { chatJid, provider: 'freya' });
+          return 'Voice sent (Freya).';
+        } finally {
+          if (ttsStatusId) await deleteTelegramMessage(chatJid, ttsStatusId);
+        }
+      }
+
+      await sendMessage(chatJid, text);
+      return 'No TTS provider configured, sent as text.';
+    },
+    sendFile: async ({ chatJid, filePath, caption }, rpcSourceGroup) => {
+      let hostFilePath = '';
+      if (filePath.startsWith('/workspace/group/')) {
+        hostFilePath = path.join(
+          GROUPS_DIR,
+          rpcSourceGroup,
+          filePath.slice('/workspace/group/'.length),
+        );
+      } else if (filePath.startsWith('/workspace/global/')) {
+        hostFilePath = path.join(
+          GROUPS_DIR,
+          'global',
+          filePath.slice('/workspace/global/'.length),
+        );
+      } else {
+        throw new Error('File path must start with /workspace/group/ or /workspace/global/');
+      }
+
+      if (!fs.existsSync(hostFilePath)) {
+        throw new Error(`File not found on host: ${hostFilePath}`);
+      }
+
+      await sendTelegramDocument(chatJid, hostFilePath, caption || undefined);
+      logDebugEvent('ipc', 'rpc_file_sent', rpcSourceGroup, { chatJid, file: hostFilePath });
+      return 'File sent.';
+    },
+    handleTaskAction: async (payload, rpcSourceGroup, isMain) => {
+      await processTaskIpc(payload as Parameters<typeof processTaskIpc>[0], rpcSourceGroup, isMain);
+      return 'Task action handled.';
+    },
+    handleBrowseAction: async (rpcSourceGroup, action, params) =>
+      handleBrowseRpc(rpcSourceGroup, action, params),
+    processStatusEvents,
+  });
+}
+
+async function handleContainerRpcEvent(
+  sourceGroup: string,
+  evt: HostRpcEvent,
+): Promise<void> {
+  await routeHostRpcEvent(sourceGroup, evt, {
+    processStatusEvents,
+  });
+}
+
 function startIpcWatcher(): void {
   const ipcBaseDir = path.join(DATA_DIR, 'ipc');
   fs.mkdirSync(ipcBaseDir, { recursive: true });
@@ -1120,8 +1516,16 @@ function startIpcWatcher(): void {
                     try {
                       const mediaDir = path.join(GROUPS_DIR, sourceGroup, 'media');
                       const oggPath = await synthesizeQwenTTS(data.text, ipcQwenProfile, mediaDir, sourceGroup);
-                      await sendTelegramVoice(data.chatJid, oggPath);
-                      logDebugEvent('ipc', 'voice_sent', sourceGroup, { chatJid: data.chatJid, provider: 'qwen' });
+                      if (shouldSuppressDuplicateVoice(data.chatJid)) {
+                        logDebugEvent('tts', 'voice_deduped', sourceGroup, {
+                          source: 'ipc',
+                          chatJid: data.chatJid,
+                          provider: 'qwen',
+                        });
+                      } else {
+                        await sendTelegramVoice(data.chatJid, oggPath);
+                        logDebugEvent('ipc', 'voice_sent', sourceGroup, { chatJid: data.chatJid, provider: 'qwen' });
+                      }
                       logger.info(
                         {
                           module: 'index',
@@ -1162,8 +1566,16 @@ function startIpcWatcher(): void {
                       const markedText = formatFreyaText(data.text, emotion);
                       const mediaDir = path.join(GROUPS_DIR, sourceGroup, 'media');
                       const oggPath = await synthesizeSpeech(markedText, mediaDir);
-                      await sendTelegramVoice(data.chatJid, oggPath);
-                      logDebugEvent('ipc', 'voice_sent', sourceGroup, { chatJid: data.chatJid, provider: 'freya' });
+                      if (shouldSuppressDuplicateVoice(data.chatJid)) {
+                        logDebugEvent('tts', 'voice_deduped', sourceGroup, {
+                          source: 'ipc',
+                          chatJid: data.chatJid,
+                          provider: 'freya',
+                        });
+                      } else {
+                        await sendTelegramVoice(data.chatJid, oggPath);
+                        logDebugEvent('ipc', 'voice_sent', sourceGroup, { chatJid: data.chatJid, provider: 'freya' });
+                      }
                       logger.info(
                         {
                           module: 'index',
@@ -1532,121 +1944,7 @@ function startIpcWatcher(): void {
                 fs.unlinkSync(filePath);
               } catch {}
             }
-
-            // Always log adapter_stderr events to Pino
-            for (const evt of events) {
-              if (evt.type === 'adapter_stderr') {
-                logger.warn(
-                  { module: 'claude-cli', group_folder: sourceGroup },
-                  `[stderr] ${evt.message}`,
-                );
-              }
-              if (evt.type === 'tool_start') {
-                logDebugEvent('sdk', 'tool_call', sourceGroup, {
-                  toolName: evt.tool_name,
-                  preview: String(evt.preview || '').slice(0, 200),
-                });
-              }
-            }
-
-            // Update the editable thinking status message (always-on when active)
-            const statusEntry = activeStatusMessages.get(sourceGroup);
-            if (statusEntry && events.length > 0) {
-              // Priority: thinking content > tool name
-              const lastThinking = [...events].reverse().find(e => e.type === 'thinking');
-              const lastToolStart = [...events].reverse().find(e => e.type === 'tool_start');
-
-              let newText: string | undefined;
-              if (lastThinking) {
-                newText = String(lastThinking.content);
-                statusEntry.hadThinkingContent = true;
-              } else if (lastToolStart) {
-                const toolName = String(lastToolStart.tool_name || '').replace(/^mcp__nanoclaw__/, '');
-                if (!HIDDEN_TOOLS.has(toolName)) {
-                  newText = humanizeToolName(String(lastToolStart.tool_name));
-                }
-              }
-
-              if (newText && newText !== statusEntry.currentText) {
-                const now = Date.now();
-                if (now - statusEntry.lastEditTime >= STATUS_EDIT_INTERVAL_MS) {
-                  // Telegram allows ~4096 chars per message; account for <i></i> tags
-                  const MAX_CHUNK = 4000;
-
-                  // Delete any previous overflow messages before sending new ones
-                  for (const extraId of statusEntry.extraMessageIds) {
-                    await deleteTelegramMessage(statusEntry.chatJid, extraId);
-                  }
-                  statusEntry.extraMessageIds = [];
-
-                  // Split into chunks at line boundaries when possible
-                  const chunks: string[] = [];
-                  let remaining = newText;
-                  while (remaining.length > 0) {
-                    if (remaining.length <= MAX_CHUNK) {
-                      chunks.push(remaining);
-                      break;
-                    }
-                    // Try to split at a newline within the chunk
-                    let splitAt = remaining.lastIndexOf('\n', MAX_CHUNK);
-                    if (splitAt === -1) splitAt = MAX_CHUNK;
-                    chunks.push(remaining.slice(0, splitAt));
-                    remaining = remaining.slice(splitAt).replace(/^\n/, '');
-                  }
-
-                  // Edit the primary message with the first chunk
-                  const edited = await editTelegramStatusMessage(
-                    statusEntry.chatJid,
-                    statusEntry.messageId,
-                    chunks[0],
-                  );
-                  if (edited) {
-                    statusEntry.currentText = newText;
-                    statusEntry.lastEditTime = now;
-
-                    // Send overflow chunks as additional messages
-                    for (let i = 1; i < chunks.length; i++) {
-                      const extraId = await sendTelegramStatusMessage(
-                        statusEntry.chatJid,
-                        chunks[i],
-                      );
-                      if (extraId) {
-                        statusEntry.extraMessageIds.push(extraId);
-                      }
-                    }
-                  }
-                }
-              }
-            }
-
-            // Verbose mode: still send full detail messages
-            const chatJid = Object.entries(registeredGroups).find(
-              ([, g]) => g.folder === sourceGroup,
-            )?.[0];
-
-            if (chatJid && isVerbose(chatJid) && events.length > 0) {
-              const lines: string[] = [];
-              for (const evt of events) {
-                if (evt.type === 'tool_start') {
-                  const preview = evt.preview
-                    ? String(evt.preview).slice(0, 100)
-                    : '';
-                  lines.push(
-                    `> ${evt.tool_name}${preview ? ': ' + preview : ''}`,
-                  );
-                } else if (evt.type === 'tool_progress') {
-                  lines.push(`> ${evt.tool_name} (${evt.elapsed_seconds}s)`);
-                }
-              }
-              if (lines.length > 0) {
-                const statusMsg = lines.slice(0, 5).join('\n');
-                try {
-                  await sendTelegramMessage(chatJid, statusMsg);
-                } catch (err) {
-                  logger.debug({ module: 'index', err }, 'Failed to send verbose status message');
-                }
-              }
-            }
+            await processStatusEvents(sourceGroup, events);
           }
         }
       } catch (err) {
@@ -2111,6 +2409,8 @@ async function main(): Promise<void> {
   const schedulerDeps = {
     sendMessage,
     registeredGroups: () => registeredGroups,
+    handleHostRpcRequest: (sourceGroup: string, req: HostRpcRequest) =>
+      handleContainerRpcRequest(sourceGroup, req),
   };
 
   const taskActions: TaskActionHandler = {

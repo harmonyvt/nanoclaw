@@ -35,6 +35,8 @@ import {
   getAllTasks,
   getTaskRunLogs,
   getAllTaskRunLogs,
+  getChatsWithCounts,
+  getChatMessages,
 } from './db.js';
 import {
   runCuaCommand,
@@ -299,6 +301,21 @@ function handleTaskRunLogsList(url: URL): Response {
       offset ? parseInt(offset, 10) : 0,
     ),
   );
+}
+
+// ── Chats API handlers ───────────────────────────────────────────────────
+
+function handleChatsList(): Response {
+  return jsonResponse(getChatsWithCounts());
+}
+
+function handleChatMessages(url: URL): Response {
+  const jid = url.searchParams.get('jid');
+  if (!jid) return jsonResponse({ error: 'jid parameter required' }, 400);
+
+  const limit = parseInt(url.searchParams.get('limit') || '200', 10);
+  const messages = getChatMessages(jid, Math.min(limit, 1000));
+  return jsonResponse(messages);
 }
 
 // ── Files API helpers ────────────────────────────────────────────────────
@@ -1283,6 +1300,10 @@ function handleRequest(req: Request, server: import('bun').Server<NoVncWsData>):
   // Tasks
   if (pathname === '/api/tasks') return handleTasksList(url);
   if (pathname === '/api/tasks/runs') return handleTaskRunLogsList(url);
+
+  // Chats
+  if (pathname === '/api/chats') return handleChatsList();
+  if (pathname === '/api/chats/messages') return handleChatMessages(url);
 
   // Processes (live running containers)
   if (pathname === '/api/processes') return handleProcessesList();

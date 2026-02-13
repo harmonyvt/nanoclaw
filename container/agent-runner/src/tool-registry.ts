@@ -10,6 +10,7 @@ import { CronExpressionParser } from 'cron-parser';
 import Supermemory from 'supermemory';
 import type { NanoTool, IpcMcpContext, ToolResult } from './types.js';
 import { isCancelled } from './cancel.js';
+import { getHostRpcBridge } from './host-rpc.js';
 
 /** Spawn a command with Bun.spawn(), capture stdout/stderr, respect timeout. */
 async function runCommand(
@@ -59,6 +60,23 @@ export function resolveSupermemoryApiKey(): {
   return null;
 }
 
+type HostBrowseResult = {
+  status: string;
+  result?: unknown;
+  error?: string;
+  analysis?: { summary?: string; metadataPath?: string };
+};
+
+async function requestHost<T = unknown>(
+  method: string,
+  params?: unknown,
+): Promise<T | null> {
+  const bridge = getHostRpcBridge();
+  if (!bridge) return null;
+  const result = await bridge.request(method, params);
+  return (result ?? null) as T | null;
+}
+
 export function writeIpcFile(dir: string, data: object): string {
   fs.mkdirSync(dir, { recursive: true });
 
@@ -73,16 +91,31 @@ export function writeIpcFile(dir: string, data: object): string {
   return filename;
 }
 
+async function dispatchTaskAction(
+  data: Record<string, unknown>,
+): Promise<string | null> {
+  const viaRpc = await requestHost<{ ok?: boolean; message?: string }>(
+    'tasks.handle',
+    data,
+  );
+  if (viaRpc) {
+    return viaRpc.message || 'Task action handled.';
+  }
+  return writeIpcFile(TASKS_DIR, data);
+}
+
 export async function writeBrowseRequest(
   action: string,
   params: Record<string, unknown>,
   timeoutMs = 60000,
-): Promise<{
-  status: string;
-  result?: unknown;
-  error?: string;
-  analysis?: { summary?: string; metadataPath?: string };
-}> {
+): Promise<HostBrowseResult> {
+  const viaRpc = await requestHost<HostBrowseResult>('browse.handle', {
+    action,
+    params,
+    timeoutMs,
+  });
+  if (viaRpc) return viaRpc;
+
   fs.mkdirSync(BROWSE_DIR, { recursive: true });
 
   const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -131,6 +164,140 @@ export async function writeBrowseRequest(
   };
 }
 
+// ─── Accessibility Tree Summarizer ──────────────────────────────────────────
+
+const SNAPSHOT_LABEL_FIELDS = [
+  'title', 'label', 'name', 'text', 'description',
+  'value', 'content', 'aria_label', 'ariaLabel', 'placeholder',
+];
+
+const SNAPSHOT_ROLE_FIELDS = ['role', 'class', 'type', 'controlType', 'control_type'];
+
+const SNAPSHOT_MAX_INTERACTIVE = 30;
+const SNAPSHOT_MAX_CONTENT = 15;
+const SNAPSHOT_MAX_RAW_CHARS = 10_000;
+
+interface SnapshotElement {
+  label: string;
+  role: string;
+  interactive: boolean;
+}
+
+function coerceRecord(input: unknown): Record<string, unknown> | null {
+  if (input && typeof input === 'object' && !Array.isArray(input)) {
+    return input as Record<string, unknown>;
+  }
+  if (typeof input === 'string') {
+    try {
+      const parsed = JSON.parse(input) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch { /* not JSON */ }
+  }
+  return null;
+}
+
+function collectSnapshotNodes(
+  node: Record<string, unknown>,
+  output: Record<string, unknown>[],
+  depth = 0,
+): void {
+  if (depth > 200) return;
+  output.push(node);
+  for (const key of ['children', 'nodes', 'elements', 'items']) {
+    const raw = node[key];
+    if (!Array.isArray(raw)) continue;
+    for (const child of raw) {
+      const rec = coerceRecord(child);
+      if (rec) collectSnapshotNodes(rec, output, depth + 1);
+    }
+  }
+}
+
+function snapshotNodeIsInteractive(node: Record<string, unknown>, role: string): boolean {
+  if (node.clickable === true || node.interactive === true || node.interactivity === true) {
+    return true;
+  }
+  return /button|input|entry|link|checkbox|textbox|tab|menuitem|combobox|search/i.test(role);
+}
+
+/**
+ * Convert a raw accessibility tree (JSON or string) into a structured summary
+ * listing interactive and content elements. Much more useful than the raw dump
+ * for models that aren't specifically trained on accessibility tree structures.
+ */
+function summarizeAccessibilityTree(raw: string): string {
+  // Try JSON parsing
+  const record = coerceRecord(raw);
+  if (!record) {
+    // Not parseable JSON — return truncated raw text
+    if (raw.length > SNAPSHOT_MAX_RAW_CHARS) {
+      return raw.slice(0, SNAPSHOT_MAX_RAW_CHARS) + '\n\n[Snapshot truncated]';
+    }
+    return raw;
+  }
+
+  // Resolve tree root (may be nested under .tree)
+  const root = coerceRecord(record.tree) || record;
+
+  const nodes: Record<string, unknown>[] = [];
+  collectSnapshotNodes(root, nodes);
+
+  const elements: SnapshotElement[] = [];
+  for (const node of nodes) {
+    // Extract role
+    let role = '';
+    for (const key of SNAPSHOT_ROLE_FIELDS) {
+      const v = node[key];
+      if (typeof v === 'string' && v.trim()) { role = v.trim(); break; }
+    }
+
+    // Extract label (first non-empty from label fields)
+    let label = '';
+    for (const key of SNAPSHOT_LABEL_FIELDS) {
+      const v = node[key];
+      if (typeof v === 'string' && v.trim()) { label = v.trim(); break; }
+    }
+    if (!label) continue; // skip unlabeled nodes
+
+    const interactive = snapshotNodeIsInteractive(node, role);
+    elements.push({ label: label.slice(0, 80), role: role || 'element', interactive });
+  }
+
+  const interactiveEls = elements.filter(e => e.interactive);
+  const contentEls = elements.filter(e => !e.interactive);
+
+  const lines: string[] = [];
+  lines.push(`Page snapshot (${elements.length} elements, ${interactiveEls.length} interactive):`);
+
+  if (interactiveEls.length > 0) {
+    lines.push('\nInteractive elements:');
+    for (const [i, el] of interactiveEls.slice(0, SNAPSHOT_MAX_INTERACTIVE).entries()) {
+      lines.push(`${i + 1}. "${el.label}" [${el.role}]`);
+    }
+    if (interactiveEls.length > SNAPSHOT_MAX_INTERACTIVE) {
+      lines.push(`   ... and ${interactiveEls.length - SNAPSHOT_MAX_INTERACTIVE} more`);
+    }
+  }
+
+  if (contentEls.length > 0) {
+    lines.push('\nContent elements:');
+    for (const [i, el] of contentEls.slice(0, SNAPSHOT_MAX_CONTENT).entries()) {
+      lines.push(`${i + 1}. "${el.label}" [${el.role}]`);
+    }
+    if (contentEls.length > SNAPSHOT_MAX_CONTENT) {
+      lines.push(`   ... and ${contentEls.length - SNAPSHOT_MAX_CONTENT} more`);
+    }
+  }
+
+  if (elements.length === 0) {
+    lines.push('\nNo labeled elements found in snapshot.');
+  }
+
+  return lines.join('\n');
+}
+
 // ─── Tool Definitions ───────────────────────────────────────────────────────
 
 export const NANOCLAW_TOOLS: NanoTool[] = [
@@ -144,6 +311,18 @@ export const NANOCLAW_TOOLS: NanoTool[] = [
       text: z.string().describe('The message text to send'),
     }),
     handler: async (args, ctx): Promise<ToolResult> => {
+      const viaRpc = await requestHost<{ ok?: boolean; message?: string }>(
+        'telegram.sendMessage',
+        {
+          chatJid: ctx.chatJid,
+          text: args.text as string,
+          sourceGroup: ctx.groupFolder,
+        },
+      );
+      if (viaRpc) {
+        return { content: viaRpc.message || 'Message sent.' };
+      }
+
       const data = {
         type: 'message',
         chatJid: ctx.chatJid,
@@ -183,6 +362,19 @@ export const NANOCLAW_TOOLS: NanoTool[] = [
         };
       }
 
+      const viaRpc = await requestHost<{ ok?: boolean; message?: string }>(
+        'telegram.sendFile',
+        {
+          chatJid: ctx.chatJid,
+          filePath,
+          caption: (args.caption as string) || null,
+          sourceGroup: ctx.groupFolder,
+        },
+      );
+      if (viaRpc) {
+        return { content: viaRpc.message || `File sent: ${filePath}` };
+      }
+
       const data = {
         type: 'file',
         chatJid: ctx.chatJid,
@@ -215,6 +407,19 @@ Keep text under ~500 chars for best quality. The emotion parameter is optional a
         ),
     }),
     handler: async (args, ctx): Promise<ToolResult> => {
+      const viaRpc = await requestHost<{ ok?: boolean; message?: string }>(
+        'telegram.sendVoice',
+        {
+          chatJid: ctx.chatJid,
+          text: args.text as string,
+          emotion: (args.emotion as string) || null,
+          sourceGroup: ctx.groupFolder,
+        },
+      );
+      if (viaRpc) {
+        return { content: viaRpc.message || 'Voice message sent.' };
+      }
+
       const data = {
         type: 'voice',
         chatJid: ctx.chatJid,
@@ -329,10 +534,11 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
         timestamp: new Date().toISOString(),
       };
 
-      const filename = writeIpcFile(TASKS_DIR, data);
+      const result = await dispatchTaskAction(data);
+      const tag = result || 'handled';
 
       return {
-        content: `Task scheduled (${filename}): ${scheduleType} - ${scheduleValue}`,
+        content: `Task scheduled (${tag}): ${scheduleType} - ${scheduleValue}`,
       };
     },
   },
@@ -401,7 +607,7 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
         timestamp: new Date().toISOString(),
       };
 
-      writeIpcFile(TASKS_DIR, data);
+      await dispatchTaskAction(data);
 
       return { content: `Task ${args.task_id} pause requested.` };
     },
@@ -422,7 +628,7 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
         timestamp: new Date().toISOString(),
       };
 
-      writeIpcFile(TASKS_DIR, data);
+      await dispatchTaskAction(data);
 
       return { content: `Task ${args.task_id} resume requested.` };
     },
@@ -443,7 +649,7 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
         timestamp: new Date().toISOString(),
       };
 
-      writeIpcFile(TASKS_DIR, data);
+      await dispatchTaskAction(data);
 
       return { content: `Task ${args.task_id} cancellation requested.` };
     },
@@ -512,7 +718,7 @@ Use available_groups.json to find the chat ID. The folder name should be lowerca
         };
       }
 
-      writeIpcFile(TASKS_DIR, data);
+      await dispatchTaskAction(data);
 
       return {
         content: `Group "${args.name}" registered. It will start receiving messages immediately.`,
@@ -613,7 +819,7 @@ If a skill with the same name already exists, it will be overwritten.`,
       fs.renameSync(tempPath, skillPath);
 
       // Notify host to re-register Telegram commands
-      writeIpcFile(TASKS_DIR, {
+      await dispatchTaskAction({
         type: 'skill_changed',
         action: 'stored',
         skillName: name,
@@ -718,7 +924,7 @@ If a skill with the same name already exists, it will be overwritten.`,
       fs.unlinkSync(skillPath);
 
       // Notify host to re-register Telegram commands
-      writeIpcFile(TASKS_DIR, {
+      await dispatchTaskAction({
         type: 'skill_changed',
         action: 'deleted',
         skillName: name,
@@ -1180,7 +1386,7 @@ If a skill with the same name already exists, it will be overwritten.`,
   {
     name: 'browse_snapshot',
     description:
-      'Get an accessibility tree / simplified snapshot of the current page or desktop UI. Useful for understanding visible structure and finding elements to interact with.',
+      'Get a structured snapshot of the current page or desktop UI. Returns labeled interactive and content elements. Useful for understanding visible structure and finding elements to interact with.',
     schema: z.object({}),
     handler: async (): Promise<ToolResult> => {
       const res = await writeBrowseRequest('snapshot', {});
@@ -1190,7 +1396,7 @@ If a skill with the same name already exists, it will be overwritten.`,
           isError: true,
         };
       }
-      return { content: String(res.result) };
+      return { content: summarizeAccessibilityTree(String(res.result)) };
     },
   },
 
@@ -1445,8 +1651,22 @@ If a skill with the same name already exists, it will be overwritten.`,
       const hint = screenshotPath
         ? `\n\nTo visually inspect this screenshot, use the Read tool on: ${screenshotPath}`
         : '';
+
+      // Attach screenshot image bytes for vision-capable adapters (e.g. OpenAI)
+      let imageBase64: string | undefined;
+      if (screenshotPath) {
+        try {
+          const imgBytes = fs.readFileSync(screenshotPath);
+          imageBase64 = imgBytes.toString('base64');
+        } catch {
+          // Ignore -- image will still be available via Read tool for Claude
+        }
+      }
+
       return {
         content: (summary || `Screenshot saved: ${res.result}`) + hint,
+        imageBase64,
+        imageMimeType: 'image/png',
       };
     },
   },
@@ -1852,6 +2072,95 @@ If a skill with the same name already exists, it will be overwritten.`,
       } catch (err) {
         return {
           content: `Transcription failed: ${err instanceof Error ? err.message : String(err)}`,
+          isError: true,
+        };
+      }
+    },
+  },
+
+  // -- Filesystem (group workspace) ----------------------------------------
+
+  {
+    name: 'read_file',
+    description:
+      'Read a file from the group workspace (/workspace/group/) or global workspace (/workspace/global/). Returns the file content as text.',
+    schema: z.object({
+      path: z
+        .string()
+        .describe(
+          'Absolute path to the file to read (must be under /workspace/group/ or /workspace/global/)',
+        ),
+    }),
+    handler: async (args): Promise<ToolResult> => {
+      const rawPath = args.path as string;
+      const resolvedPath = path.resolve(rawPath);
+
+      if (
+        !resolvedPath.startsWith('/workspace/group/') &&
+        !resolvedPath.startsWith('/workspace/global/')
+      ) {
+        return {
+          content: 'Access denied: path must be under /workspace/group/ or /workspace/global/',
+          isError: true,
+        };
+      }
+
+      if (!fs.existsSync(resolvedPath)) {
+        return { content: `File not found: ${resolvedPath}`, isError: true };
+      }
+
+      const stat = fs.statSync(resolvedPath);
+      if (!stat.isFile()) {
+        return { content: `Path is a directory, not a file: ${resolvedPath}`, isError: true };
+      }
+
+      const content = fs.readFileSync(resolvedPath, 'utf-8');
+      const MAX_SIZE = 100_000;
+      if (content.length > MAX_SIZE) {
+        return {
+          content: content.slice(0, MAX_SIZE) + `\n\n[Truncated at ${MAX_SIZE} characters]`,
+        };
+      }
+      return { content };
+    },
+  },
+
+  {
+    name: 'write_file',
+    description:
+      'Write content to a file in the group workspace (/workspace/group/). Creates parent directories automatically. Use this to create or update SOUL.md, voice_profile.json, and other group files.',
+    schema: z.object({
+      path: z
+        .string()
+        .describe('Absolute path to write the file (must be under /workspace/group/)'),
+      content: z.string().describe('The content to write to the file'),
+    }),
+    handler: async (args): Promise<ToolResult> => {
+      const rawPath = args.path as string;
+      const fileContent = args.content as string;
+      const resolvedPath = path.resolve(rawPath);
+
+      if (!resolvedPath.startsWith('/workspace/group/')) {
+        return {
+          content: 'Access denied: can only write to /workspace/group/',
+          isError: true,
+        };
+      }
+
+      try {
+        fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
+
+        // Atomic write: temp file then rename
+        const tempPath = `${resolvedPath}.tmp`;
+        fs.writeFileSync(tempPath, fileContent);
+        fs.renameSync(tempPath, resolvedPath);
+
+        return {
+          content: `File written: ${resolvedPath} (${Buffer.byteLength(fileContent)} bytes)`,
+        };
+      } catch (err) {
+        return {
+          content: `Failed to write file: ${err instanceof Error ? err.message : String(err)}`,
           isError: true,
         };
       }

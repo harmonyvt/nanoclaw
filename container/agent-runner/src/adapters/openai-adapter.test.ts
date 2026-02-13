@@ -10,7 +10,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { buildSystemPrompt, OpenAIAdapter } from './openai-adapter.js';
+import { buildSystemPrompt, OpenAIAdapter, resolveReasoningEffort } from './openai-adapter.js';
 import { NANOCLAW_TOOLS } from '../tool-registry.js';
 import type { AdapterInput, ProviderAdapter, IpcMcpContext } from '../types.js';
 
@@ -261,6 +261,67 @@ describe('openai-adapter', () => {
         // Empty/whitespace CLAUDE.md should not add an Instructions section
         expect(prompt).not.toContain('## Instructions');
       });
+    });
+  });
+
+  // -- resolveReasoningEffort() ---------------------------------------------
+
+  describe('resolveReasoningEffort()', () => {
+    let originalEnv: string | undefined;
+
+    beforeEach(() => {
+      originalEnv = process.env.OPENAI_REASONING_EFFORT;
+      delete process.env.OPENAI_REASONING_EFFORT;
+    });
+
+    afterEach(() => {
+      if (originalEnv !== undefined) {
+        process.env.OPENAI_REASONING_EFFORT = originalEnv;
+      } else {
+        delete process.env.OPENAI_REASONING_EFFORT;
+      }
+    });
+
+    test('returns "medium" by default when no env var set', () => {
+      expect(resolveReasoningEffort()).toBe('medium');
+    });
+
+    test('returns "medium" when enableThinking is true', () => {
+      expect(resolveReasoningEffort(true)).toBe('medium');
+    });
+
+    test('returns undefined when enableThinking is false', () => {
+      expect(resolveReasoningEffort(false)).toBeUndefined();
+    });
+
+    test('returns undefined when enableThinking is false even with env var', () => {
+      process.env.OPENAI_REASONING_EFFORT = 'high';
+      expect(resolveReasoningEffort(false)).toBeUndefined();
+    });
+
+    test('reads OPENAI_REASONING_EFFORT env var for "low"', () => {
+      process.env.OPENAI_REASONING_EFFORT = 'low';
+      expect(resolveReasoningEffort()).toBe('low');
+    });
+
+    test('reads OPENAI_REASONING_EFFORT env var for "high"', () => {
+      process.env.OPENAI_REASONING_EFFORT = 'high';
+      expect(resolveReasoningEffort()).toBe('high');
+    });
+
+    test('handles case-insensitive env var values', () => {
+      process.env.OPENAI_REASONING_EFFORT = 'HIGH';
+      expect(resolveReasoningEffort()).toBe('high');
+    });
+
+    test('falls back to "medium" for invalid env var values', () => {
+      process.env.OPENAI_REASONING_EFFORT = 'ultra';
+      expect(resolveReasoningEffort()).toBe('medium');
+    });
+
+    test('falls back to "medium" for empty string env var', () => {
+      process.env.OPENAI_REASONING_EFFORT = '';
+      expect(resolveReasoningEffort()).toBe('medium');
     });
   });
 

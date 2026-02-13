@@ -20,6 +20,10 @@ export interface IpcMcpContext {
 export interface ToolResult {
   content: string;
   isError?: boolean;
+  /** Optional base64 image data for vision-capable adapters (e.g. screenshots) */
+  imageBase64?: string;
+  /** MIME type for the image (default: 'image/png') */
+  imageMimeType?: string;
 }
 
 /** Provider-agnostic tool definition */

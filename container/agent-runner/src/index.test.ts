@@ -4,53 +4,13 @@
  * preparePrompt reads /workspace/group/SOUL.md which does not exist in the
  * test environment, so we monkey-patch fs.existsSync / fs.readFileSync to
  * simulate its presence or absence.
- *
- * IMPORTANT: index.ts calls main() at module scope which detects stdin and
- * may call process.exit(1). We mock process.exit and set stdin.isTTY before
- * dynamically importing the module to prevent the test runner from being killed.
- * The persistent mode's async loop starts but never interferes with tests
- * because it polls a non-existent directory.
  */
 
-import { describe, test, expect, beforeAll, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import fs from 'fs';
 import type { ContainerInput, ProviderAdapter } from './types.js';
-
-// ─── Module-level setup: prevent main() side effects ─────────────────────────
-
-// Save originals
-const origExit = process.exit;
-const origMkdirSync = fs.mkdirSync;
-
-// Prevent process.exit from killing test runner
-(process as any).exit = (_code?: number) => { /* no-op */ };
-
-// Make stdin look like a TTY so main() enters persistent mode (async loop)
-// instead of one-shot mode (which reads stdin then calls process.exit)
-Object.defineProperty(process.stdin, 'isTTY', { value: true, writable: true, configurable: true });
-
-// Prevent persistent mode from creating dirs at /workspace/ipc/...
-(fs as any).mkdirSync = (p: string, opts?: any) => {
-  if (typeof p === 'string' && p.startsWith('/workspace/ipc')) {
-    return; // silently skip
-  }
-  return origMkdirSync(p, opts);
-};
-
-// Dynamic imports so our mocks are in place before module evaluation
-let preparePrompt: (input: ContainerInput) => string;
-let createAdapter: (provider: string) => ProviderAdapter;
-
-// We load the modules once -- the main() side-effect runs but is harmless
-const indexMod = await import('./index.js');
-const adaptersMod = await import('./adapters/index.js');
-
-preparePrompt = indexMod.preparePrompt;
-createAdapter = adaptersMod.createAdapter;
-
-// Restore process.exit and fs.mkdirSync after import
-(process as any).exit = origExit;
-(fs as any).mkdirSync = origMkdirSync;
+import { preparePrompt } from './index.js';
+import { createAdapter } from './adapters/index.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 

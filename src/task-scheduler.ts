@@ -12,7 +12,11 @@ import {
   SCHEDULER_POLL_INTERVAL,
   TIMEZONE,
 } from './config.js';
-import { runContainerAgent, writeTasksSnapshot } from './container-runner.js';
+import {
+  HostRpcRequest,
+  runContainerAgent,
+  writeTasksSnapshot,
+} from './container-runner.js';
 import {
   getAllTasks,
   getDueTasks,
@@ -27,6 +31,7 @@ import { RegisteredGroup, ScheduledTask } from './types.js';
 export interface SchedulerDependencies {
   sendMessage: (jid: string, text: string) => Promise<void>;
   registeredGroups: () => Record<string, RegisteredGroup>;
+  handleHostRpcRequest?: (sourceGroup: string, req: HostRpcRequest) => Promise<unknown>;
 }
 
 async function runTask(
@@ -101,7 +106,11 @@ async function runTask(
       provider,
       model,
       enableThinking: true,
-    });
+    }, deps.handleHostRpcRequest
+      ? {
+          onRequest: (req) => deps.handleHostRpcRequest!(task.group_folder, req),
+        }
+      : undefined);
 
     if (output.status === 'error') {
       error = output.error || 'Unknown error';

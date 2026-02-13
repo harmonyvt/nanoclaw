@@ -552,6 +552,79 @@ export function getMessageCount(chatJid: string): number {
   return row?.count ?? 0;
 }
 
+// ── Dashboard chat/thread functions ──────────────────────────────────────
+
+export interface ChatWithCount extends ChatInfo {
+  message_count: number;
+}
+
+/**
+ * Get all chats with message counts, ordered by most recent activity.
+ */
+export function getChatsWithCounts(): ChatWithCount[] {
+  return db
+    .prepare(
+      `
+      SELECT c.jid, c.name, c.last_message_time,
+             COUNT(m.id) as message_count
+      FROM chats c
+      LEFT JOIN messages m ON m.chat_jid = c.jid
+      GROUP BY c.jid
+      ORDER BY c.last_message_time DESC
+    `,
+    )
+    .all() as ChatWithCount[];
+}
+
+export interface ChatMessage {
+  id: string;
+  sender: string;
+  sender_name: string;
+  content: string;
+  timestamp: string;
+  is_from_me: number;
+  media_type: string | null;
+  media_path: string | null;
+  is_reset: boolean;
+}
+
+/**
+ * Get all messages for a chat (including reset markers), chronological order.
+ * Reset markers are tagged with is_reset: true so the UI can render thread dividers.
+ */
+export function getChatMessages(
+  chatJid: string,
+  limit = 200,
+): ChatMessage[] {
+  const rows = db
+    .prepare(
+      `
+      SELECT id, sender, sender_name, content, timestamp, is_from_me,
+             media_type, media_path
+      FROM messages
+      WHERE chat_jid = ?
+      ORDER BY timestamp DESC
+      LIMIT ?
+    `,
+    )
+    .all(chatJid, limit) as Array<{
+    id: string;
+    sender: string;
+    sender_name: string;
+    content: string;
+    timestamp: string;
+    is_from_me: number;
+    media_type: string | null;
+    media_path: string | null;
+  }>;
+
+  return rows.reverse().map((row) => ({
+    ...row,
+    is_reset:
+      row.content === CONVERSATION_RESET_MARKER && row.sender === 'system',
+  }));
+}
+
 // ── Dashboard log functions ──────────────────────────────────────────────
 
 export interface LogEntry {

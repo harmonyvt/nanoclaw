@@ -61,17 +61,22 @@ describe('Tool definitions completeness', () => {
   });
 });
 
-// ─── 2. All 22 Tools Present ──────────────────────────────────────────────────
+// ─── 2. All Tools Present ────────────────────────────────────────────────────
 
 describe('All tools present', () => {
   const EXPECTED_TOOLS = [
     'send_message',
+    'send_file',
+    'send_voice',
     'schedule_task',
     'list_tasks',
     'pause_task',
     'resume_task',
     'cancel_task',
     'register_group',
+    'store_skill',
+    'list_skills',
+    'delete_skill',
     'firecrawl_scrape',
     'firecrawl_crawl',
     'firecrawl_map',
@@ -80,6 +85,9 @@ describe('All tools present', () => {
     'browse_navigate',
     'browse_snapshot',
     'browse_click',
+    'browse_click_xy',
+    'browse_type_at_xy',
+    'browse_perform',
     'browse_fill',
     'browse_scroll',
     'browse_screenshot',
@@ -87,10 +95,17 @@ describe('All tools present', () => {
     'browse_go_back',
     'browse_evaluate',
     'browse_close',
+    'browse_extract_file',
+    'browse_upload_file',
+    'download_audio',
+    'convert_audio',
+    'transcribe_audio',
+    'read_file',
+    'write_file',
   ] as const;
 
-  test('NANOCLAW_TOOLS contains exactly 22 tools', () => {
-    expect(NANOCLAW_TOOLS.length).toBe(22);
+  test(`NANOCLAW_TOOLS contains exactly ${EXPECTED_TOOLS.length} tools`, () => {
+    expect(NANOCLAW_TOOLS.length).toBe(EXPECTED_TOOLS.length);
   });
 
   test.each(EXPECTED_TOOLS)('tool "%s" exists', (name) => {
@@ -212,17 +227,17 @@ describe('Zod schema validation', () => {
   describe('browse_scroll schema', () => {
     const tool = findTool('browse_scroll');
 
-    test('valid dy parses', () => {
-      const result = tool.schema.safeParse({ dy: 300 });
+    test('valid direction parses', () => {
+      const result = tool.schema.safeParse({ direction: 'down' });
       expect(result.success).toBe(true);
     });
 
-    test('optional dx accepted', () => {
-      const result = tool.schema.safeParse({ dy: 300, dx: -100 });
+    test('optional clicks accepted', () => {
+      const result = tool.schema.safeParse({ direction: 'up', clicks: 10 });
       expect(result.success).toBe(true);
     });
 
-    test('missing dy fails', () => {
+    test('missing direction fails', () => {
       const result = tool.schema.safeParse({});
       expect(result.success).toBe(false);
     });
