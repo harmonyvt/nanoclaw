@@ -18,6 +18,7 @@ import {
   writeTasksSnapshot,
 } from './container-runner.js';
 import {
+  getActiveModelOverride,
   getAllTasks,
   getDueTasks,
   getTaskById,
@@ -95,7 +96,8 @@ async function runTask(
 
   try {
     const provider = group.providerConfig?.provider || DEFAULT_PROVIDER;
-    const model = group.providerConfig?.model || DEFAULT_MODEL || undefined;
+    const taskModelOverride = getActiveModelOverride(task.chat_jid);
+    const model = taskModelOverride?.model || group.providerConfig?.model || DEFAULT_MODEL || undefined;
     const baseUrl = group.providerConfig?.baseUrl || undefined;
 
     const output = await runContainerAgent(group, {

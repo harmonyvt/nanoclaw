@@ -129,6 +129,27 @@ export function initDatabase(): void {
     CREATE INDEX IF NOT EXISTS idx_debug_events_cat ON debug_events(category, event_type);
     CREATE INDEX IF NOT EXISTS idx_debug_events_group ON debug_events(group_folder);
   `);
+
+  // Model swap menu tables
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS model_menu (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_jid TEXT NOT NULL,
+      label TEXT NOT NULL,
+      model TEXT NOT NULL,
+      sort_order INTEGER DEFAULT 0,
+      created_at TEXT NOT NULL,
+      UNIQUE(chat_jid, model)
+    );
+    CREATE INDEX IF NOT EXISTS idx_model_menu_chat ON model_menu(chat_jid);
+
+    CREATE TABLE IF NOT EXISTS active_model_override (
+      chat_jid TEXT PRIMARY KEY,
+      model_menu_id INTEGER NOT NULL,
+      activated_at TEXT NOT NULL,
+      FOREIGN KEY (model_menu_id) REFERENCES model_menu(id)
+    );
+  `);
 }
 
 /**
@@ -990,4 +1011,111 @@ export function getDebugEventStats(): {
     oldestTimestamp: times.oldest,
     newestTimestamp: times.newest,
   };
+}
+
+// ── Model swap menu functions ────────────────────────────────────────────
+
+export interface ModelMenuItem {
+  id: number;
+  label: string;
+  model: string;
+  is_active: boolean;
+}
+
+/**
+ * Add a model to the per-chat model menu.
+ * Returns the new row ID.
+ */
+export function addModelToMenu(
+  chatJid: string,
+  label: string,
+  model: string,
+): number {
+  const result = db
+    .prepare(
+      `INSERT INTO model_menu (chat_jid, label, model, created_at) VALUES (?, ?, ?, ?)`,
+    )
+    .run(chatJid, label, model, new Date().toISOString());
+  return Number(result.lastInsertRowid);
+}
+
+/**
+ * Remove a model from the menu. Also clears the active override
+ * if it was pointing at the deleted entry.
+ */
+export function removeModelFromMenu(chatJid: string, id: number): void {
+  db.prepare(
+    `DELETE FROM active_model_override WHERE chat_jid = ? AND model_menu_id = ?`,
+  ).run(chatJid, id);
+  db.prepare(`DELETE FROM model_menu WHERE id = ? AND chat_jid = ?`).run(
+    id,
+    chatJid,
+  );
+}
+
+/**
+ * Get the full model menu for a chat, with is_active flag.
+ */
+export function getModelMenu(chatJid: string): ModelMenuItem[] {
+  return db
+    .prepare(
+      `
+      SELECT mm.id, mm.label, mm.model,
+             CASE WHEN amo.model_menu_id IS NOT NULL THEN 1 ELSE 0 END as is_active
+      FROM model_menu mm
+      LEFT JOIN active_model_override amo
+        ON amo.chat_jid = mm.chat_jid AND amo.model_menu_id = mm.id
+      WHERE mm.chat_jid = ?
+      ORDER BY mm.sort_order, mm.id
+    `,
+    )
+    .all(chatJid)
+    .map((row: any) => ({
+      id: row.id as number,
+      label: row.label as string,
+      model: row.model as string,
+      is_active: row.is_active === 1,
+    }));
+}
+
+/**
+ * Set the active model override for a chat.
+ * Uses INSERT OR REPLACE (chat_jid is PK).
+ */
+export function setActiveModelOverride(
+  chatJid: string,
+  modelMenuId: number,
+): void {
+  db.prepare(
+    `INSERT OR REPLACE INTO active_model_override (chat_jid, model_menu_id, activated_at) VALUES (?, ?, ?)`,
+  ).run(chatJid, modelMenuId, new Date().toISOString());
+}
+
+/**
+ * Clear the active model override, reverting to the group default.
+ */
+export function clearActiveModelOverride(chatJid: string): void {
+  db.prepare(`DELETE FROM active_model_override WHERE chat_jid = ?`).run(
+    chatJid,
+  );
+}
+
+/**
+ * Get the active model override for a chat, if any.
+ * Returns null if no override is set.
+ */
+export function getActiveModelOverride(
+  chatJid: string,
+): { model: string; label: string } | null {
+  const row = db
+    .prepare(
+      `
+      SELECT mm.model, mm.label
+      FROM active_model_override amo
+      JOIN model_menu mm ON mm.id = amo.model_menu_id
+      WHERE amo.chat_jid = ?
+    `,
+    )
+    .get(chatJid) as { model: string; label: string } | undefined;
+  return row || null;
 }

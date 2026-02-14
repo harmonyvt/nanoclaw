@@ -40,6 +40,7 @@ import {
 import {
   getAllChats,
   getAllTasks,
+  getActiveModelOverride,
   getConversationHistory,
   getNewMessages,
   initDatabase,
@@ -943,7 +944,8 @@ async function runAgent(
   );
 
   const provider = group.providerConfig?.provider || DEFAULT_PROVIDER;
-  const model = group.providerConfig?.model || DEFAULT_MODEL || undefined;
+  const modelOverride = getActiveModelOverride(chatJid);
+  const model = modelOverride?.model || group.providerConfig?.model || DEFAULT_MODEL || undefined;
   const baseUrl = group.providerConfig?.baseUrl || undefined;
   const assistantIdentity = resolveAssistantIdentity(group.folder, ASSISTANT_NAME);
 
