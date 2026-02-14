@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'bun:test';
 import {
-  routeHostRpcEvent,
   routeHostRpcRequest,
   type HostRpcRouterDeps,
 } from './host-rpc-router.js';
@@ -15,7 +14,6 @@ function makeDeps(overrides?: Partial<HostRpcRouterDeps>): HostRpcRouterDeps {
     sendFile: async () => 'File sent.',
     handleTaskAction: async () => 'Task action handled.',
     handleBrowseAction: async () => ({ status: 'ok', result: 'done' }),
-    processStatusEvents: async () => {},
     ...overrides,
   };
 }
@@ -122,40 +120,5 @@ describe('routeHostRpcRequest', () => {
     );
 
     expect(result).toEqual({ status: 'ok', result: 'snapshot:true' });
-  });
-});
-
-describe('routeHostRpcEvent', () => {
-  test('routes status.event payload to processStatusEvents', async () => {
-    const events: unknown[][] = [];
-    await routeHostRpcEvent(
-      'group-a',
-      {
-        method: 'status.event',
-        params: { type: 'thinking', content: 'step' },
-      },
-      makeDeps({
-        processStatusEvents: async (_sourceGroup, e) => {
-          events.push(e);
-        },
-      }),
-    );
-
-    expect(events.length).toBe(1);
-    expect(events[0]).toEqual([{ type: 'thinking', content: 'step' }]);
-  });
-
-  test('ignores non-status events', async () => {
-    let called = false;
-    await routeHostRpcEvent(
-      'group-a',
-      { method: 'other.event', params: { ok: true } },
-      makeDeps({
-        processStatusEvents: async () => {
-          called = true;
-        },
-      }),
-    );
-    expect(called).toBe(false);
   });
 });
