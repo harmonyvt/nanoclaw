@@ -15,6 +15,7 @@ import {
   makeTelegramChatId,
   extractTelegramChatId,
   DEFAULT_PROVIDER,
+  DEFAULT_MODEL,
   MAX_CONVERSATION_MESSAGES,
 } from './config.js';
 
@@ -904,7 +905,7 @@ export async function connectTelegram(
     const uptimeMinutes = Math.floor((uptimeMs % 3600000) / 60000);
 
     const provider = group?.providerConfig?.provider || DEFAULT_PROVIDER;
-    const model = group?.providerConfig?.model || '(default)';
+    const model = group?.providerConfig?.model || DEFAULT_MODEL || '(default)';
     const assistantIdentity = group
       ? resolveAssistantIdentity(group.folder, ASSISTANT_NAME)
       : ASSISTANT_NAME;
