@@ -1,10 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 import { Bot } from 'grammy';
-import Replicate from 'replicate';
-
 import { logger } from './logger.js';
-import { REPLICATE_API_TOKEN } from './config.js';
+import { isReplicateConfigured, runModel } from './replicate-client.js';
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB Telegram limit
 
@@ -80,7 +78,7 @@ const AUDIO_MIME: Record<string, string> = {
  * Returns the transcription text.
  */
 export async function transcribeAudio(filePath: string): Promise<string> {
-  if (!REPLICATE_API_TOKEN) {
+  if (!isReplicateConfigured()) {
     logger.warn('REPLICATE_API_TOKEN not set, cannot transcribe audio');
     return '[transcription unavailable]';
   }
@@ -92,10 +90,9 @@ export async function transcribeAudio(filePath: string): Promise<string> {
     const base64 = fileBuffer.toString('base64');
     const dataUri = `data:${mime};base64,${base64}`;
 
-    const replicate = new Replicate({ auth: REPLICATE_API_TOKEN });
-    const output = (await replicate.run('openai/gpt-4o-transcribe', {
-      input: { audio: dataUri },
-    })) as { text: string };
+    const output = await runModel<{ text: string }>('openai/gpt-4o-transcribe', {
+      audio: dataUri,
+    });
 
     const text = output?.text ?? '';
     logger.debug({ filePath, length: text.length }, 'Audio transcribed');

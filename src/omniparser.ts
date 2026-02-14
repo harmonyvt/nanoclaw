@@ -1,8 +1,7 @@
-import Replicate from 'replicate';
 import { logger } from './logger.js';
+import { isReplicateConfigured, runModel } from './replicate-client.js';
 import {
   OMNIPARSER_ENABLED,
-  REPLICATE_API_TOKEN,
   OMNIPARSER_BOX_THRESHOLD,
   OMNIPARSER_IOU_THRESHOLD,
   OMNIPARSER_TIMEOUT_MS,
@@ -29,7 +28,7 @@ type OmniParserApiOutput = {
  * Check if OmniParser is enabled and configured.
  */
 export function isOmniParserEnabled(): boolean {
-  return OMNIPARSER_ENABLED && REPLICATE_API_TOKEN.length > 0;
+  return OMNIPARSER_ENABLED && isReplicateConfigured();
 }
 
 /**
@@ -40,7 +39,7 @@ export async function detectElements(
   screenshotPng: Buffer,
   imageSize: { width: number; height: number },
 ): Promise<OmniParserResult | null> {
-  if (!REPLICATE_API_TOKEN) {
+  if (!isReplicateConfigured()) {
     logger.warn('OmniParser enabled but REPLICATE_API_TOKEN not set');
     return null;
   }
@@ -72,43 +71,31 @@ async function callReplicate(
   screenshotPng: Buffer,
   imageSize: { width: number; height: number },
 ): Promise<OmniParserResult | null> {
-  const replicate = new Replicate({ auth: REPLICATE_API_TOKEN });
+  const base64Image = screenshotPng.toString('base64');
+  const dataUri = `data:image/png;base64,${base64Image}`;
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), OMNIPARSER_TIMEOUT_MS);
+  const output = await runModel<OmniParserApiOutput>(OMNIPARSER_MODEL, {
+    image: dataUri,
+    box_threshold: OMNIPARSER_BOX_THRESHOLD,
+    iou_threshold: OMNIPARSER_IOU_THRESHOLD,
+  }, { timeoutMs: OMNIPARSER_TIMEOUT_MS });
 
-  try {
-    const base64Image = screenshotPng.toString('base64');
-    const dataUri = `data:image/png;base64,${base64Image}`;
-
-    const output = (await replicate.run(OMNIPARSER_MODEL, {
-      input: {
-        image: dataUri,
-        box_threshold: OMNIPARSER_BOX_THRESHOLD,
-        iou_threshold: OMNIPARSER_IOU_THRESHOLD,
-      },
-      signal: controller.signal,
-    })) as OmniParserApiOutput;
-
-    if (!output) {
-      logger.warn('Replicate prediction succeeded but output is empty');
-      return null;
-    }
-
-    const parsedContentList = output.parsed_content_list ?? '';
-    const labelCoordinates = output.label_coordinates;
-
-    const elements = parseOmniParserOutput(
-      parsedContentList,
-      labelCoordinates,
-      imageSize.width,
-      imageSize.height,
-    );
-
-    return { elements, latencyMs: 0 };
-  } finally {
-    clearTimeout(timeoutId);
+  if (!output) {
+    logger.warn('Replicate prediction succeeded but output is empty');
+    return null;
   }
+
+  const parsedContentList = output.parsed_content_list ?? '';
+  const labelCoordinates = output.label_coordinates;
+
+  const elements = parseOmniParserOutput(
+    parsedContentList,
+    labelCoordinates,
+    imageSize.width,
+    imageSize.height,
+  );
+
+  return { elements, latencyMs: 0 };
 }
 
 /**

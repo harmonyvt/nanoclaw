@@ -111,9 +111,11 @@ export const CUA_SANDBOX_PERSIST = process.env.CUA_SANDBOX_PERSIST !== 'false';
 export const CUA_SANDBOX_HOME_VOLUME =
   process.env.CUA_SANDBOX_HOME_VOLUME || 'nanoclaw-cua-home';
 
-// Replicate API token (shared across OmniParser, transcription, etc.)
+// Replicate API token (shared across transcription, TTS, OmniParser)
+// Legacy fallbacks: REPLICATE_TTS_TOKEN, OMNIPARSER_REPLICATE_TOKEN (can be removed in future)
 export const REPLICATE_API_TOKEN =
   process.env.REPLICATE_API_TOKEN ||
+  process.env.REPLICATE_TTS_TOKEN ||
   process.env.OMNIPARSER_REPLICATE_TOKEN ||
   '';
 
@@ -156,11 +158,6 @@ export const QWEN_TTS_RATE_LIMIT_PER_MIN = parseInt(
 // Replicate-hosted TTS (Qwen, Chatterbox, MiniMax)
 export const REPLICATE_TTS_ENABLED =
   process.env.REPLICATE_TTS_ENABLED !== 'false';
-export const REPLICATE_TTS_TOKEN =
-  process.env.REPLICATE_TTS_TOKEN ||
-  process.env.OMNIPARSER_REPLICATE_TOKEN ||
-  process.env.REPLICATE_API_TOKEN ||
-  '';
 export const REPLICATE_TTS_RATE_LIMIT_PER_MIN = parseInt(
   process.env.REPLICATE_TTS_RATE_LIMIT_PER_MIN || '10',
   10,

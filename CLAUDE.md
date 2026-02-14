@@ -34,6 +34,7 @@ Telegram <-> Host (Bun) <-> SQLite
 | `src/browse-host.ts`      | Host-side browse bridge for CUA `/cmd` actions                     |
 | `src/sandbox-manager.ts`  | CUA sandbox lifecycle: start/stop/idle timeout (Docker)            |
 | `src/mount-security.ts`   | Validates additional mounts against external allowlist             |
+| `src/replicate-client.ts` | Shared Replicate SDK singleton and `runModel()` helper             |
 | `src/tts-qwen.ts`        | Qwen3-TTS client: voice profiles, HTTP synthesis via self-hosted server |
 | `src/tts-replicate.ts`   | Replicate-hosted TTS: Qwen, Chatterbox, MiniMax provider adapters  |
 | `src/tts-dispatch.ts`    | Unified TTS dispatcher: routes to self-hosted or Replicate by provider |
@@ -286,7 +287,7 @@ Requires `SUPERMEMORY_API_KEY`. When enabled, memories are also automatically re
 | `OPENAI_BASE_URL`           | --                       | Custom OpenAI-compatible API endpoint            |
 | `OPENAI_REASONING_EFFORT`   | `medium`                 | Reasoning effort for OpenAI reasoning models (`low`, `medium`, `high`) |
 | `ANTHROPIC_BASE_URL`        | --                       | Custom Anthropic-compatible API endpoint         |
-| `REPLICATE_API_TOKEN`       | --                       | Replicate API (transcription, OmniParser)        |
+| `REPLICATE_API_TOKEN`       | --                       | Replicate API (transcription, TTS, OmniParser)   |
 | `FIRECRAWL_API_KEY`         | --                       | Firecrawl web scraping                  |
 | `SUPERMEMORY_API_KEY`       | --                       | Supermemory long-term memory (preferred) |
 | `SUPERMEMORY_OPENCLAW_API_KEY` | --                    | Supermemory key alias (accepted fallback) |
@@ -298,7 +299,6 @@ Requires `SUPERMEMORY_API_KEY`. When enabled, memories are also automatically re
 | `QWEN_TTS_DEFAULT_SPEAKER`  | `Vivian`                 | Default preset speaker                  |
 | `QWEN_TTS_RATE_LIMIT_PER_MIN`| `10`                   | Max TTS requests per minute             |
 | `REPLICATE_TTS_ENABLED`     | `true`                   | Replicate-hosted TTS (set `false` to disable) |
-| `REPLICATE_TTS_TOKEN`       | --                       | Replicate API token (falls back to `OMNIPARSER_REPLICATE_TOKEN` / `REPLICATE_API_TOKEN`) |
 | `REPLICATE_TTS_RATE_LIMIT_PER_MIN`| `10`               | Max Replicate TTS requests per minute   |
 | `REPLICATE_TTS_TIMEOUT_MS`  | `120000`                 | Replicate TTS request timeout (ms)      |
 | `REPLICATE_TTS_DEFAULT_PROVIDER`| `qwen/qwen3-tts`     | Default Replicate TTS provider          |
@@ -328,7 +328,6 @@ Requires `SUPERMEMORY_API_KEY`. When enabled, memories are also automatically re
 | `CUA_SANDBOX_HOME_VOLUME`   | `nanoclaw-cua-home`      | Docker volume for CUA home dir          |
 | `CUA_API_KEY`               | --                       | Optional CUA API key passed to sandbox  |
 | `OMNIPARSER_ENABLED`        | `false`                  | Enable OmniParser vision-based element detection (replaces a11y tree) |
-| `OMNIPARSER_REPLICATE_TOKEN`| --                       | OmniParser-specific Replicate token override (falls back to `REPLICATE_API_TOKEN`) |
 | `OMNIPARSER_BOX_THRESHOLD`  | `0.05`                   | Detection confidence threshold          |
 | `OMNIPARSER_IOU_THRESHOLD`  | `0.1`                    | IOU threshold for box deduplication     |
 | `OMNIPARSER_TIMEOUT_MS`     | `10000`                  | Request timeout (ms), falls back to a11y tree on timeout |
