@@ -119,9 +119,10 @@ async function callReplicate(
  *   "Text Box ID 1: Settings"
  *
  * label_coordinates: JSON dict or string, e.g.:
- *   {"0": [x1_norm, y1_norm, x2_norm, y2_norm], ...}
+ *   {"0": [x_norm, y_norm, w_norm, h_norm], ...}
  *
- * Coordinates are normalized 0-1 ratios relative to image dimensions.
+ * Coordinates are in xywh format (top-left x, top-left y, width, height),
+ * normalized 0-1 ratios relative to image dimensions.
  */
 export function parseOmniParserOutput(
   parsedContentList: string,
@@ -166,24 +167,25 @@ export function parseOmniParserOutput(
     const coords = coordsMap[id];
     if (!coords || coords.length < 4) continue;
 
-    // Coordinates are normalized 0-1 ratios
-    const [x1n, y1n, x2n, y2n] = coords;
-    const x1 = Math.round(x1n * imageWidth);
-    const y1 = Math.round(y1n * imageHeight);
-    const x2 = Math.round(x2n * imageWidth);
-    const y2 = Math.round(y2n * imageHeight);
+    // OmniParser returns xywh format (top-left x, top-left y, width, height),
+    // all normalized 0-1 ratios relative to image dimensions.
+    const [xn, yn, wn, hn] = coords;
+    const x1 = Math.round(xn * imageWidth);
+    const y1 = Math.round(yn * imageHeight);
+    const w = Math.round(wn * imageWidth);
+    const h = Math.round(hn * imageHeight);
 
     elements.push({
       label,
       bbox: {
         x: x1,
         y: y1,
-        width: x2 - x1,
-        height: y2 - y1,
+        width: w,
+        height: h,
       },
       center: {
-        x: Math.round((x1 + x2) / 2),
-        y: Math.round((y1 + y2) / 2),
+        x: Math.round(x1 + w / 2),
+        y: Math.round(y1 + h / 2),
       },
       source: 'omniparser',
     });
