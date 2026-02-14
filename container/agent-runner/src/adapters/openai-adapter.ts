@@ -250,6 +250,24 @@ function extractReasoningDelta(delta: ProviderDelta): string | undefined {
   return undefined;
 }
 
+// ─── Inline Think-Tag Stripping ─────────────────────────────────────────────
+
+/**
+ * Strip `<think>...</think>` blocks from content.
+ * Some models (e.g., kimi-k2.5 via OpenRouter) embed reasoning in these tags
+ * within `delta.content` instead of using dedicated reasoning fields.
+ * Returns the cleaned content and the extracted thinking text.
+ */
+function stripThinkTags(content: string): { cleaned: string; thinking: string } {
+  const thinkParts: string[] = [];
+  // Match both complete <think>...</think> blocks and unclosed trailing <think>...
+  const cleaned = content.replace(/<think>([\s\S]*?)(<\/think>|$)/g, (_match, inner) => {
+    if (inner.trim()) thinkParts.push(inner.trim());
+    return '';
+  });
+  return { cleaned: cleaned.trim(), thinking: thinkParts.join('\n') };
+}
+
 // ─── Adapter ────────────────────────────────────────────────────────────────
 
 export class OpenAIAdapter implements ProviderAdapter {
@@ -478,10 +496,13 @@ export class OpenAIAdapter implements ProviderAdapter {
         if (delta.content) {
           contentBuffer += delta.content;
 
-          // Yield accumulated response for progressive display
+          // Yield accumulated response for progressive display (strip think tags)
           const now2 = Date.now();
           if (now2 - lastResponseYield >= RESPONSE_YIELD_INTERVAL) {
-            yield { type: 'response_delta', content: contentBuffer };
+            const { cleaned: deltaClean } = stripThinkTags(contentBuffer);
+            if (deltaClean) {
+              yield { type: 'response_delta', content: deltaClean };
+            }
             lastResponseYield = now2;
           }
         }
@@ -524,10 +545,16 @@ export class OpenAIAdapter implements ProviderAdapter {
           function: { name: tc.name, arguments: tc.arguments },
         }));
 
+      // Strip inline <think> tags before adding to messages array
+      const { cleaned: cleanContent, thinking: inlineThink } = stripThinkTags(contentBuffer);
+      if (inlineThink) {
+        reasoningBuffer += (reasoningBuffer ? '\n' : '') + inlineThink;
+      }
+
       // Reconstruct the assistant message for the messages array
       const assistantMessage: any = {
         role: 'assistant' as const,
-        content: contentBuffer || null,
+        content: cleanContent || null,
       };
       if (reasoningBuffer) {
         assistantMessage.reasoning_content = reasoningBuffer;
@@ -539,13 +566,23 @@ export class OpenAIAdapter implements ProviderAdapter {
 
       // No tool calls = final response
       if (toolCalls.length === 0) {
-        bufLog(`Final response: ${contentBuffer.length} chars (total reasoning: ${reasoningBuffer.length} chars, iterations: ${iterations})`);
+        // Strip inline <think>...</think> tags that some models embed in content
+        const { cleaned: strippedContent, thinking: inlineThinking } = stripThinkTags(contentBuffer);
+        if (inlineThinking) {
+          bufLog(`Stripped ${contentBuffer.length - strippedContent.length} chars of inline <think> tags from response`);
+          // Surface extracted thinking as a thinking event
+          thinkingBuffer += (thinkingBuffer ? '\n' : '') + inlineThinking;
+          const snippet = thinkingBuffer.slice(-THINKING_SNAPSHOT_LENGTH);
+          yield { type: 'thinking', content: snippet };
+        }
+
+        bufLog(`Final response: ${strippedContent.length} chars (total reasoning: ${(reasoningBuffer.length + inlineThinking.length)} chars, iterations: ${iterations})`);
         // Drain log buffer before final result
         while (logBuffer.length > 0) {
           yield { type: 'adapter_stderr', message: logBuffer.shift()! };
         }
-        if (contentBuffer) {
-          yield { type: 'result', result: contentBuffer };
+        if (strippedContent) {
+          yield { type: 'result', result: strippedContent };
         } else {
           bufLog('Warning: empty final response (no content and no tool calls)');
         }
