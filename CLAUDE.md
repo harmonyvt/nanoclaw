@@ -35,6 +35,8 @@ Telegram <-> Host (Bun) <-> SQLite
 | `src/sandbox-manager.ts`  | CUA sandbox lifecycle: start/stop/idle timeout (Docker)            |
 | `src/mount-security.ts`   | Validates additional mounts against external allowlist             |
 | `src/tts-qwen.ts`        | Qwen3-TTS client: voice profiles, HTTP synthesis via self-hosted server |
+| `src/tts-replicate.ts`   | Replicate-hosted TTS: Qwen, Chatterbox, MiniMax provider adapters  |
+| `src/tts-dispatch.ts`    | Unified TTS dispatcher: routes to self-hosted or Replicate by provider |
 | `src/supermemory.ts`      | Optional Supermemory integration: retrieve/store long-term memory  |
 | `src/types.ts`            | Shared TypeScript interfaces                                       |
 | `src/logger.ts`           | Pino logger with pino-pretty                                       |
@@ -294,6 +296,12 @@ Requires `SUPERMEMORY_API_KEY`. When enabled, memories are also automatically re
 | `QWEN_TTS_DEFAULT_LANGUAGE` | `English`                | Default TTS language                    |
 | `QWEN_TTS_DEFAULT_SPEAKER`  | `Vivian`                 | Default preset speaker                  |
 | `QWEN_TTS_RATE_LIMIT_PER_MIN`| `10`                   | Max TTS requests per minute             |
+| `REPLICATE_TTS_ENABLED`     | `false`                  | Enable Replicate-hosted TTS providers   |
+| `REPLICATE_TTS_TOKEN`       | --                       | Replicate API token (falls back to `OMNIPARSER_REPLICATE_TOKEN` / `REPLICATE_API_TOKEN`) |
+| `REPLICATE_TTS_RATE_LIMIT_PER_MIN`| `10`               | Max Replicate TTS requests per minute   |
+| `REPLICATE_TTS_TIMEOUT_MS`  | `120000`                 | Replicate TTS request timeout (ms)      |
+| `REPLICATE_TTS_DEFAULT_PROVIDER`| `qwen/qwen3-tts`     | Default Replicate TTS provider          |
+| `REPLICATE_TTS_DEFAULT_SPEAKER`| `Vivian`               | Default Replicate TTS preset speaker    |
 | `FREYA_TTS_ENABLED`         | `false`                  | Enable Freya TTS fallback               |
 | `FREYA_API_KEY`             | --                       | Freya TTS voice synthesis (archived)    |
 | `FREYA_CHARACTER_ID`        | `Amika2`                 | Freya TTS character voice               |

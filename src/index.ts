@@ -76,11 +76,11 @@ import {
   synthesizeSpeech,
 } from './tts.js';
 import {
-  defaultVoiceProfile,
-  isQwenTTSEnabled,
-  loadVoiceProfile,
-  synthesizeQwenTTS,
-} from './tts-qwen.js';
+  isTTSEnabled,
+  loadUnifiedVoiceProfile,
+  defaultUnifiedVoiceProfile,
+  synthesizeTTS,
+} from './tts-dispatch.js';
 import { loadJson, saveJson } from './utils.js';
 import { logger } from './logger.js';
 import {
@@ -459,21 +459,41 @@ First, read /workspace/group/voice_profile.json to show current settings (if it 
 
 Options:
 
-1. **Design a voice from description** — Ask the user to describe how they want the voice to sound. Examples: 'a warm, confident female voice with a slight British accent, mid-30s', 'a deep, calm male voice, authoritative but friendly'. Write voice_profile.json with mode: voice_design.
+0. **Switch TTS provider** — Ask the user which provider to use. Show the capabilities of each:
 
-2. **Use a preset voice** — Show the available preset voices:
-   - Vivian (female, warm)
-   - Serena (female, elegant)
-   - Dylan (male, casual)
-   - Eric (male, authoritative)
-   - Ryan (male, friendly)
-   - Aiden (male, young)
-   - Uncle_Fu (male, mature)
-   - Ono_Anna (female, Japanese)
-   - Sohee (female, Korean)
-   Write voice_profile.json with mode: custom_voice. Optional 'instruct' field for style direction.
+   | Provider | Modes | Languages |
+   |----------|-------|-----------|
+   | qwen3-tts (self-hosted) | custom_voice, voice_design, voice_clone | 10 |
+   | qwen/qwen3-tts (Replicate) | custom_voice, voice_design, voice_clone | 10 |
+   | resemble-ai/chatterbox-turbo (Replicate) | custom_voice, voice_clone | English only |
+   | minimax/speech-2.8-turbo (Replicate) | custom_voice only | 40+ |
 
-3. **Clone a voice from audio** — The user provides an audio source:
+   Replicate providers require REPLICATE_TTS_ENABLED=true and a Replicate API token.
+
+1. **Design a voice from description** (qwen3-tts and qwen/qwen3-tts only) — Ask the user to describe how they want the voice to sound. Examples: 'a warm, confident female voice with a slight British accent, mid-30s', 'a deep, calm male voice, authoritative but friendly'. Write voice_profile.json with mode: voice_design.
+
+2. **Use a preset voice** — Show the available preset voices for the selected provider:
+
+   **qwen3-tts / qwen/qwen3-tts presets:**
+   - Vivian (female, warm), Serena (female, elegant), Dylan (male, casual)
+   - Eric (male, authoritative), Ryan (male, friendly), Aiden (male, young)
+   - Uncle_Fu (male, mature), Ono_Anna (female, Japanese), Sohee (female, Korean)
+   Optional 'instruct' field for style direction (e.g. "speak cheerfully").
+
+   **resemble-ai/chatterbox-turbo presets:**
+   - Andy, Abigail, Aaron, Brian, Chloe, Dylan
+   Optional extras: temperature (0.05-2.0), exaggeration (0.25-2.0), cfg_weight (0.0-1.0)
+
+   **minimax/speech-2.8-turbo presets:**
+   - Wise_Woman, Friendly_Person, Deep_Voice_Man, Calm_Woman, Casual_Guy
+   - Lively_Girl, Patient_Man, Young_Knight, Determined_Man, Lovely_Girl
+   - Decent_Boy, Inspirational_Girl, Imposing_Manner, Elegant_Man, Abbess
+   - Sweet_Girl_2, Exuberant_Girl
+   Optional extras: speed (0.5-2.0), pitch (-12 to 12), emotion (happy/sad/angry/calm/etc.)
+
+   Write voice_profile.json with mode: custom_voice.
+
+3. **Clone a voice from audio** (qwen3-tts, qwen/qwen3-tts, resemble-ai/chatterbox-turbo) — The user provides an audio source:
 
    **Downloading from URLs:**
    Use the download_audio tool directly — it uses yt-dlp and supports YouTube, Twitch, SoundCloud, and hundreds of other platforms:
@@ -486,24 +506,45 @@ Options:
    Process the audio to proper format (24kHz mono WAV, max 10 seconds) using the convert_audio tool:
      convert_audio({ input_path: "/workspace/group/media/ref_voice_raw.wav", output_path: "/workspace/group/media/voice_ref.wav", sample_rate: 24000, mono: true, max_duration: 10 })
 
-   Get a transcript: use the transcribe_audio tool on the processed WAV file.
+   Get a transcript: use the transcribe_audio tool on the processed WAV file (needed for qwen providers, optional for chatterbox).
    If transcribe_audio fails (no API key), ask the user for the transcript or leave ref_text empty (lower quality clone).
 
    Write voice_profile.json with mode: voice_clone.
 
 4. **Reset to default** — Delete /workspace/group/voice_profile.json.
 
-Supported languages: Chinese, English, Japanese, Korean, German, French, Russian, Portuguese, Spanish, Italian.
-
 After any voice change, send a test voice message using send_voice with a short greeting so the user can hear the result.
 
 Voice profile JSON format (include only the active mode's config, not all):
+
+For qwen3-tts (self-hosted) or qwen/qwen3-tts (Replicate):
 {
-  "provider": "qwen3-tts",
+  "provider": "qwen3-tts" or "qwen/qwen3-tts",
   "mode": "voice_design" or "custom_voice" or "voice_clone",
   "voice_design": { "description": "...", "language": "English" },
   "custom_voice": { "speaker": "...", "instruct": "...", "language": "English" },
   "voice_clone": { "ref_audio_path": "media/voice_ref.wav", "ref_text": "transcript or empty", "language": "English" },
+  "created_at": "<ISO timestamp>",
+  "updated_at": "<ISO timestamp>"
+}
+
+For resemble-ai/chatterbox-turbo:
+{
+  "provider": "resemble-ai/chatterbox-turbo",
+  "mode": "custom_voice" or "voice_clone",
+  "custom_voice": { "speaker": "Andy" },
+  "voice_clone": { "ref_audio_path": "media/voice_ref.wav" },
+  "extras": { "temperature": 0.7, "exaggeration": 0.5 },
+  "created_at": "<ISO timestamp>",
+  "updated_at": "<ISO timestamp>"
+}
+
+For minimax/speech-2.8-turbo:
+{
+  "provider": "minimax/speech-2.8-turbo",
+  "mode": "custom_voice",
+  "custom_voice": { "speaker": "Friendly_Person", "language": "English" },
+  "extras": { "speed": 1.0, "emotion": "neutral" },
   "created_at": "<ISO timestamp>",
   "updated_at": "<ISO timestamp>"
 }`;
@@ -778,11 +819,11 @@ After any SOUL.md modification:
     const sepIndex = text.indexOf(voiceSep);
 
     // Check if any TTS provider is enabled and not muted
-    // Falls back to default voice profile (QWEN_TTS_DEFAULT_*) when no voice_profile.json exists
-    const qwenProfile = isQwenTTSEnabled()
-      ? (loadVoiceProfile(group.folder) ?? defaultVoiceProfile())
+    // Falls back to default voice profile when no voice_profile.json exists
+    const unifiedProfile = isTTSEnabled()
+      ? (loadUnifiedVoiceProfile(group.folder) ?? defaultUnifiedVoiceProfile())
       : null;
-    const ttsEnabled = !isMuted && ((qwenProfile !== null) || isFreyaEnabled());
+    const ttsEnabled = !isMuted && ((unifiedProfile !== null) || isFreyaEnabled());
 
     if (ttsEnabled) {
       let voicePart: string;
@@ -810,9 +851,9 @@ After any SOUL.md modification:
           const mediaDir = path.join(GROUPS_DIR, group.folder, 'media');
           let oggPath: string;
 
-          if (qwenProfile) {
-            // Qwen3-TTS via Modal (primary)
-            oggPath = await synthesizeQwenTTS(voicePart, qwenProfile, mediaDir, group.folder);
+          if (unifiedProfile) {
+            // TTS via unified dispatch (self-hosted or Replicate)
+            oggPath = await synthesizeTTS(voicePart, unifiedProfile, mediaDir, group.folder);
           } else {
             // Freya TTS (fallback)
             const emotion = detectEmotionFromText(voicePart);
@@ -830,14 +871,14 @@ After any SOUL.md modification:
             voiceSent = true;
           }
           logDebugEvent('tts', 'auto_tts_attempt', group.folder, {
-            provider: qwenProfile ? 'qwen' : 'freya',
+            provider: unifiedProfile ? unifiedProfile.provider : 'freya',
             voicePartLength: voicePart.length,
             success: true,
           });
         } catch (err) {
           logger.error({ module: 'index', err }, 'Auto-TTS failed, sending as text');
           logDebugEvent('tts', 'auto_tts_attempt', group.folder, {
-            provider: qwenProfile ? 'qwen' : 'freya',
+            provider: unifiedProfile ? unifiedProfile.provider : 'freya',
             voicePartLength: voicePart.length,
             success: false,
             error: String(err),
@@ -1437,26 +1478,26 @@ async function handleContainerRpcRequest(
       logDebugEvent('ipc', 'rpc_message_sent', rpcSourceGroup, { chatJid });
     },
     sendVoice: async ({ chatJid, text, emotion }, rpcSourceGroup) => {
-      const rpcQwenProfile = isQwenTTSEnabled()
-        ? (loadVoiceProfile(rpcSourceGroup) ?? defaultVoiceProfile())
+      const rpcVoiceProfile = isTTSEnabled()
+        ? (loadUnifiedVoiceProfile(rpcSourceGroup) ?? defaultUnifiedVoiceProfile())
         : null;
 
-      if (rpcQwenProfile) {
+      if (rpcVoiceProfile) {
         const ttsStatusId = await sendTelegramStatusMessage(chatJid, 'speaking');
         try {
           const mediaDir = path.join(GROUPS_DIR, rpcSourceGroup, 'media');
-          const oggPath = await synthesizeQwenTTS(text, rpcQwenProfile, mediaDir, rpcSourceGroup);
+          const oggPath = await synthesizeTTS(text, rpcVoiceProfile, mediaDir, rpcSourceGroup);
           if (shouldSuppressDuplicateVoice(chatJid)) {
             logDebugEvent('tts', 'voice_deduped', rpcSourceGroup, {
               source: 'rpc',
               chatJid,
-              provider: 'qwen',
+              provider: rpcVoiceProfile.provider,
             });
             return 'Voice suppressed (duplicate within dedupe window).';
           }
           await sendTelegramVoice(chatJid, oggPath);
-          logDebugEvent('ipc', 'rpc_voice_sent', rpcSourceGroup, { chatJid, provider: 'qwen' });
-          return 'Voice sent (Qwen).';
+          logDebugEvent('ipc', 'rpc_voice_sent', rpcSourceGroup, { chatJid, provider: rpcVoiceProfile.provider });
+          return `Voice sent (${rpcVoiceProfile.provider}).`;
         } finally {
           if (ttsStatusId) await deleteTelegramMessage(chatJid, ttsStatusId);
         }
@@ -1612,39 +1653,40 @@ function startIpcWatcher(): void {
                   isMain ||
                   (targetGroup && targetGroup.folder === sourceGroup)
                 ) {
-                  const ipcQwenProfile = isQwenTTSEnabled()
-                    ? (loadVoiceProfile(sourceGroup) ?? defaultVoiceProfile())
+                  const ipcVoiceProfile = isTTSEnabled()
+                    ? (loadUnifiedVoiceProfile(sourceGroup) ?? defaultUnifiedVoiceProfile())
                     : null;
 
-                  if (ipcQwenProfile) {
-                    // Qwen3-TTS via Modal (primary)
+                  if (ipcVoiceProfile) {
+                    // TTS via unified dispatch (self-hosted or Replicate)
                     const ttsStatusId = await sendTelegramStatusMessage(data.chatJid, 'speaking');
                     try {
                       const mediaDir = path.join(GROUPS_DIR, sourceGroup, 'media');
-                      const oggPath = await synthesizeQwenTTS(data.text, ipcQwenProfile, mediaDir, sourceGroup);
+                      const oggPath = await synthesizeTTS(data.text, ipcVoiceProfile, mediaDir, sourceGroup);
                       if (shouldSuppressDuplicateVoice(data.chatJid)) {
                         logDebugEvent('tts', 'voice_deduped', sourceGroup, {
                           source: 'ipc',
                           chatJid: data.chatJid,
-                          provider: 'qwen',
+                          provider: ipcVoiceProfile.provider,
                         });
                       } else {
                         await sendTelegramVoice(data.chatJid, oggPath);
-                        logDebugEvent('ipc', 'voice_sent', sourceGroup, { chatJid: data.chatJid, provider: 'qwen' });
+                        logDebugEvent('ipc', 'voice_sent', sourceGroup, { chatJid: data.chatJid, provider: ipcVoiceProfile.provider });
                       }
                       logger.info(
                         {
                           module: 'index',
                           chatJid: data.chatJid,
                           sourceGroup,
-                          mode: ipcQwenProfile.mode,
+                          provider: ipcVoiceProfile.provider,
+                          mode: ipcVoiceProfile.mode,
                         },
-                        'IPC voice message sent (Qwen3-TTS)',
+                        'IPC voice message sent via TTS',
                       );
                     } catch (err) {
                       logger.error(
-                        { module: 'index', err, chatJid: data.chatJid },
-                        'Qwen3-TTS failed, falling back to text',
+                        { module: 'index', err, chatJid: data.chatJid, provider: ipcVoiceProfile.provider },
+                        'TTS failed, falling back to text',
                       );
                       await sendMessage(data.chatJid, data.text);
                     } finally {

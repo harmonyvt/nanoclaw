@@ -151,6 +151,27 @@ export const QWEN_TTS_RATE_LIMIT_PER_MIN = parseInt(
   10,
 );
 
+// Replicate-hosted TTS (Qwen, Chatterbox, MiniMax)
+export const REPLICATE_TTS_ENABLED =
+  process.env.REPLICATE_TTS_ENABLED === 'true';
+export const REPLICATE_TTS_TOKEN =
+  process.env.REPLICATE_TTS_TOKEN ||
+  process.env.OMNIPARSER_REPLICATE_TOKEN ||
+  process.env.REPLICATE_API_TOKEN ||
+  '';
+export const REPLICATE_TTS_RATE_LIMIT_PER_MIN = parseInt(
+  process.env.REPLICATE_TTS_RATE_LIMIT_PER_MIN || '10',
+  10,
+);
+export const REPLICATE_TTS_TIMEOUT_MS = parseInt(
+  process.env.REPLICATE_TTS_TIMEOUT_MS || '120000',
+  10,
+);
+export const REPLICATE_TTS_DEFAULT_PROVIDER =
+  process.env.REPLICATE_TTS_DEFAULT_PROVIDER || 'qwen/qwen3-tts';
+export const REPLICATE_TTS_DEFAULT_SPEAKER =
+  process.env.REPLICATE_TTS_DEFAULT_SPEAKER || 'Vivian';
+
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
