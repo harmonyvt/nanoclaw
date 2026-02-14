@@ -39,6 +39,9 @@ const THINKING_YIELD_INTERVAL = 3000;
 /** Max chars of thinking content to include in a snapshot — matches Claude adapter */
 const THINKING_SNAPSHOT_LENGTH = 4000;
 
+/** Min interval between yielding response content snapshots (ms) */
+const RESPONSE_YIELD_INTERVAL = 3000;
+
 /** Max agentic loop iterations to prevent runaway loops */
 const MAX_ITERATIONS = 50;
 
@@ -186,15 +189,68 @@ export function buildSystemPrompt(input: AdapterInput): string {
   return parts.join('\n');
 }
 
+// ─── Provider-Specific Types ────────────────────────────────────────────
+
+/** Delta shape extended with reasoning fields from various providers */
+type ProviderDelta = OpenAI.Chat.Completions.ChatCompletionChunk.Choice.Delta & {
+  reasoning?: string;
+  reasoning_content?: string;
+  reasoning_details?: Array<{ type: string; text?: string }>;
+};
+
+/** OpenAI create params extended with OpenRouter-specific fields */
+type ExtendedCreateParams = OpenAI.ChatCompletionCreateParamsStreaming & {
+  reasoning?: { effort: string };
+};
+
+// ─── Reasoning Delta Extraction ─────────────────────────────────────────
+
+/**
+ * Extract reasoning/thinking content from a streaming delta.
+ * Handles multiple field formats used by different providers:
+ * - `reasoning_content` (OpenAI o-series, OpenRouter alias)
+ * - `reasoning` (OpenRouter primary field)
+ * - `reasoning_details` (OpenRouter structured array with type:"reasoning.text")
+ */
+function extractReasoningDelta(delta: ProviderDelta): string | undefined {
+  // OpenRouter primary field
+  if (typeof delta.reasoning === 'string' && delta.reasoning) {
+    return delta.reasoning;
+  }
+  // OpenAI o-series / OpenRouter alias
+  if (typeof delta.reasoning_content === 'string' && delta.reasoning_content) {
+    return delta.reasoning_content;
+  }
+  // OpenRouter structured array format
+  if (Array.isArray(delta.reasoning_details)) {
+    const texts: string[] = [];
+    for (const d of delta.reasoning_details) {
+      if (d?.type === 'reasoning.text' && typeof d.text === 'string') {
+        texts.push(d.text);
+      }
+    }
+    if (texts.length > 0) return texts.join('');
+  }
+  return undefined;
+}
+
 // ─── Adapter ────────────────────────────────────────────────────────────────
 
 export class OpenAIAdapter implements ProviderAdapter {
   async *run(input: AdapterInput): AsyncGenerator<AgentEvent> {
+    // Buffered log messages that get yielded as adapter_stderr events
+    const logBuffer: string[] = [];
+    const bufLog = (msg: string) => { log(msg); logBuffer.push(msg); };
+
     const client = new OpenAI({
       baseURL: input.baseUrl || process.env.OPENAI_BASE_URL || undefined,
     });
     const model = input.model || 'gpt-4o';
     const reasoningEffort = resolveReasoningEffort(input.enableThinking);
+
+    const effectiveBaseUrl = input.baseUrl || process.env.OPENAI_BASE_URL || '(default)';
+    bufLog(`Client config: model=${model}, baseURL=${effectiveBaseUrl}, thinking=${input.enableThinking !== false}`);
+    bufLog(`Reasoning effort: ${reasoningEffort || 'disabled'}`);
 
     yield { type: 'session_init', sessionId: `openai-${Date.now()}` };
 
@@ -203,12 +259,19 @@ export class OpenAIAdapter implements ProviderAdapter {
 
     const systemPrompt = buildSystemPrompt(input);
     const tools = buildOpenAITools();
+    bufLog(`System prompt: ${systemPrompt.length} chars, tools: ${tools.length}`);
+
+    // Drain initial log buffer
+    while (logBuffer.length > 0) {
+      yield { type: 'adapter_stderr', message: logBuffer.shift()! };
+    }
 
     const messages: OpenAI.ChatCompletionMessageParam[] = [
       { role: 'system', content: systemPrompt },
     ];
 
     // Add conversation history as proper role-based messages
+    let imageCount = 0;
     for (const msg of conversationMessages) {
       if (msg.role === 'assistant') {
         messages.push({ role: 'assistant', content: msg.content });
@@ -234,6 +297,7 @@ export class OpenAIAdapter implements ProviderAdapter {
                   { type: 'text', text: textContent },
                 ],
               } as OpenAI.ChatCompletionMessageParam);
+              imageCount++;
               continue;
             }
           } catch {
@@ -250,14 +314,15 @@ export class OpenAIAdapter implements ProviderAdapter {
       messages.push({ role: 'user', content: remainingPrompt });
     }
 
-    log(`Starting with ${messages.length} messages (${conversationMessages.length} from history)`);
-    if (reasoningEffort) {
-      log(`Reasoning effort: ${reasoningEffort}`);
-    }
+    bufLog(`Conversation: ${messages.length} messages (${conversationMessages.length} from history, ${imageCount} images)`);
+    bufLog(`Remaining prompt blocks: ${remainingPrompt.length} chars`);
 
     // Thinking state (mirrors Claude adapter pattern)
     let thinkingBuffer = '';
     let lastThinkingYield = 0;
+
+    // Response streaming state
+    let lastResponseYield = 0;
 
     let iterations = 0;
     let consecutiveToolErrors = 0;
@@ -266,23 +331,23 @@ export class OpenAIAdapter implements ProviderAdapter {
     while (true) {
       iterations++;
       if (iterations > MAX_ITERATIONS) {
-        log(`Hit max iterations (${MAX_ITERATIONS}), stopping`);
+        bufLog(`Hit max iterations (${MAX_ITERATIONS}), stopping`);
         break;
       }
 
       // Check for user interrupt
       if (isCancelled()) {
-        log('Cancel detected, stopping OpenAI loop');
+        bufLog('Cancel detected, stopping OpenAI loop');
         const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant');
         const partial = lastAssistant && 'content' in lastAssistant ? String(lastAssistant.content) : null;
         if (partial) yield { type: 'result', result: partial };
         return;
       }
 
-      log(`Iteration ${iterations}, sending ${messages.length} messages to ${model} (stream)`);
+      bufLog(`Iteration ${iterations}, sending ${messages.length} messages to ${model} (stream)`);
 
-      // Build create params, conditionally including reasoning_effort
-      const createParams: Record<string, unknown> = {
+      // Build create params, conditionally including reasoning config
+      const createParams: ExtendedCreateParams = {
         model,
         messages,
         tools: tools.length > 0 ? tools : undefined,
@@ -290,11 +355,47 @@ export class OpenAIAdapter implements ProviderAdapter {
       };
       if (reasoningEffort) {
         createParams.reasoning_effort = reasoningEffort;
+        // Only send OpenRouter-style reasoning object for non-OpenAI endpoints
+        // to avoid potential validation errors with the official OpenAI API
+        const baseUrl = input.baseUrl || process.env.OPENAI_BASE_URL || '';
+        if (baseUrl && !baseUrl.includes('api.openai.com')) {
+          createParams.reasoning = { effort: reasoningEffort };
+        }
       }
 
-      const stream = (await client.chat.completions.create(
-        createParams as any,
-      )) as unknown as AsyncIterable<any>;
+      const reqParamKeys = Object.keys(createParams).filter(k => k !== 'messages');
+      const paramsRecord = createParams as unknown as Record<string, unknown>;
+      bufLog(`Request params: ${JSON.stringify(Object.fromEntries(reqParamKeys.map(k => [k, k === 'tools' ? `[${createParams.tools?.length || 0} tools]` : paramsRecord[k]])))}`);
+
+      // Drain log buffer before API call
+      while (logBuffer.length > 0) {
+        yield { type: 'adapter_stderr', message: logBuffer.shift()! };
+      }
+
+      const streamStartTime = Date.now();
+      let chunkCount = 0;
+      let firstChunkTime = 0;
+
+      let stream: AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>;
+      try {
+        stream = (await client.chat.completions.create(
+          createParams as OpenAI.ChatCompletionCreateParamsStreaming,
+        )) as unknown as AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>;
+        bufLog(`Stream created in ${Date.now() - streamStartTime}ms`);
+      } catch (apiErr) {
+        const errMsg = apiErr instanceof Error ? apiErr.message : String(apiErr);
+        const errObj = apiErr as Record<string, unknown>;
+        const status = errObj?.status || (errObj?.response as Record<string, unknown>)?.status || 'unknown';
+        bufLog(`API request failed: status=${status}, error=${errMsg}`);
+        if (errObj?.error) {
+          bufLog(`API error body: ${JSON.stringify(errObj.error).slice(0, 500)}`);
+        }
+        // Drain error logs before throwing
+        while (logBuffer.length > 0) {
+          yield { type: 'adapter_stderr', message: logBuffer.shift()! };
+        }
+        throw apiErr;
+      }
 
       // Accumulate the complete assistant message from stream chunks
       let contentBuffer = '';
@@ -308,18 +409,30 @@ export class OpenAIAdapter implements ProviderAdapter {
       for await (const chunk of stream) {
         // Check for cancellation mid-stream
         if (isCancelled()) {
-          log('Cancel detected mid-stream, aborting');
-          try { (stream as any).controller?.abort(); } catch {}
+          bufLog('Cancel detected mid-stream, aborting');
+          try { (stream as { controller?: { abort(): void } }).controller?.abort(); } catch {}
           const partial = contentBuffer || null;
           if (partial) yield { type: 'result', result: partial };
           return;
         }
 
-        const delta = chunk.choices?.[0]?.delta;
+        chunkCount++;
+        if (chunkCount === 1) firstChunkTime = Date.now();
+
+        const delta = chunk.choices?.[0]?.delta as ProviderDelta | undefined;
         if (!delta) continue;
 
-        // 1. Accumulate reasoning content (not in official SDK types)
-        const reasoningDelta = (delta as any).reasoning_content;
+        // Log delta keys on first few chunks for debugging provider compatibility
+        if (chunkCount <= 3) {
+          const deltaRecord = delta as Record<string, unknown>;
+          const deltaKeys = Object.keys(deltaRecord).filter(k => deltaRecord[k] != null && deltaRecord[k] !== '');
+          if (deltaKeys.length > 0) {
+            bufLog(`Chunk #${chunkCount} delta keys: [${deltaKeys.join(', ')}]`);
+          }
+        }
+
+        // 1. Accumulate reasoning content (handles multiple provider formats)
+        const reasoningDelta = extractReasoningDelta(delta);
         if (reasoningDelta && input.enableThinking !== false) {
           thinkingBuffer += reasoningDelta;
           reasoningBuffer += reasoningDelta;
@@ -334,6 +447,13 @@ export class OpenAIAdapter implements ProviderAdapter {
         // 2. Accumulate text content
         if (delta.content) {
           contentBuffer += delta.content;
+
+          // Yield accumulated response for progressive display
+          const now2 = Date.now();
+          if (now2 - lastResponseYield >= RESPONSE_YIELD_INTERVAL) {
+            yield { type: 'response_delta', content: contentBuffer };
+            lastResponseYield = now2;
+          }
         }
 
         // 3. Accumulate tool calls (streamed as indexed deltas)
@@ -351,6 +471,11 @@ export class OpenAIAdapter implements ProviderAdapter {
           }
         }
       }
+
+      // Log stream completion stats
+      const streamDuration = Date.now() - streamStartTime;
+      const ttft = firstChunkTime ? firstChunkTime - streamStartTime : 0;
+      bufLog(`Stream complete: ${chunkCount} chunks in ${streamDuration}ms (TTFT: ${ttft}ms), content: ${contentBuffer.length} chars, reasoning: ${reasoningBuffer.length} chars, tool_calls: ${toolCallAccumulators.size}`);
 
       // Flush remaining thinking buffer at end of stream
       if (thinkingBuffer.length > 0 && input.enableThinking !== false) {
@@ -384,15 +509,28 @@ export class OpenAIAdapter implements ProviderAdapter {
 
       // No tool calls = final response
       if (toolCalls.length === 0) {
+        bufLog(`Final response: ${contentBuffer.length} chars (total reasoning: ${reasoningBuffer.length} chars, iterations: ${iterations})`);
+        // Drain log buffer before final result
+        while (logBuffer.length > 0) {
+          yield { type: 'adapter_stderr', message: logBuffer.shift()! };
+        }
         if (contentBuffer) {
           yield { type: 'result', result: contentBuffer };
+        } else {
+          bufLog('Warning: empty final response (no content and no tool calls)');
         }
         break;
       }
 
       // Execute each tool call
+      bufLog(`Executing ${toolCalls.length} tool call(s): [${toolCalls.map(tc => tc.function.name).join(', ')}]`);
+      // Drain log buffer before tool execution
+      while (logBuffer.length > 0) {
+        yield { type: 'adapter_stderr', message: logBuffer.shift()! };
+      }
       for (const toolCall of toolCalls) {
         const toolName = toolCall.function.name;
+        bufLog(`Tool call: ${toolName}(${toolCall.function.arguments.slice(0, 300)})`);
         yield {
           type: 'tool_start',
           toolName,
@@ -402,13 +540,18 @@ export class OpenAIAdapter implements ProviderAdapter {
         let args: Record<string, unknown>;
         try {
           args = JSON.parse(toolCall.function.arguments);
-        } catch {
+        } catch (parseErr) {
+          bufLog(`Tool args parse error for ${toolName}: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`);
           args = {};
         }
 
+        const toolStartTime = Date.now();
         const toolResult = await executeNanoToolFull(toolName, args, input.ipcContext);
+        const toolDuration = Date.now() - toolStartTime;
 
+        bufLog(`Tool result: ${toolName} ${toolResult.isError ? 'ERROR' : 'OK'} in ${toolDuration}ms, ${toolResult.content.length} chars${toolResult.imageBase64 ? ', +image' : ''}`);
         if (toolResult.isError) {
+          bufLog(`Tool error detail: ${toolResult.content.slice(0, 500)}`);
           consecutiveToolErrors++;
         } else {
           consecutiveToolErrors = 0;
@@ -443,7 +586,7 @@ export class OpenAIAdapter implements ProviderAdapter {
 
       // Break out of retry loops: if multiple consecutive tool calls failed, nudge the model
       if (consecutiveToolErrors >= MAX_CONSECUTIVE_TOOL_ERRORS) {
-        log(`${consecutiveToolErrors} consecutive tool errors, injecting guidance`);
+        bufLog(`${consecutiveToolErrors} consecutive tool errors, injecting guidance`);
         messages.push({
           role: 'user' as const,
           content:
