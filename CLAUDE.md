@@ -318,6 +318,11 @@ Requires `SUPERMEMORY_API_KEY`. When enabled, memories are also automatically re
 | `CUA_SANDBOX_PERSIST`       | `true`                   | Persist sandbox state across restarts   |
 | `CUA_SANDBOX_HOME_VOLUME`   | `nanoclaw-cua-home`      | Docker volume for CUA home dir          |
 | `CUA_API_KEY`               | --                       | Optional CUA API key passed to sandbox  |
+| `OMNIPARSER_ENABLED`        | `false`                  | Enable OmniParser vision-based element detection (replaces a11y tree) |
+| `OMNIPARSER_REPLICATE_TOKEN`| --                       | Replicate API token (falls back to `REPLICATE_API_TOKEN`) |
+| `OMNIPARSER_BOX_THRESHOLD`  | `0.05`                   | Detection confidence threshold          |
+| `OMNIPARSER_IOU_THRESHOLD`  | `0.1`                    | IOU threshold for box deduplication     |
+| `OMNIPARSER_TIMEOUT_MS`     | `10000`                  | Request timeout (ms), falls back to a11y tree on timeout |
 | `MAX_THINKING_TOKENS`       | `10000`                  | Claude extended thinking token budget   |
 | `LOG_LEVEL`                 | `info`                   | Pino log level                          |
 | `TZ`                        | system                   | Timezone for scheduled tasks            |

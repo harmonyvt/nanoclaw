@@ -1,11 +1,13 @@
 import fs from 'fs';
 import path from 'path';
 import { randomBytes } from 'crypto';
-import { GROUPS_DIR, DATA_DIR } from './config.js';
+import { GROUPS_DIR, DATA_DIR, OMNIPARSER_ENABLED } from './config.js';
 import { CuaClient } from './cua-client.js';
 import { logger } from './logger.js';
 import { resolveMediaOpenAIConfig, type MediaOpenAIConfig } from './media-ai-config.js';
 import { ensureSandbox, resetIdleTimer, rotateSandboxVncPassword } from './sandbox-manager.js';
+import { annotateScreenshot } from './screenshot-annotator.js';
+import { isOmniParserEnabled, detectElements as omniParserDetect, type OmniParserResult } from './omniparser.js';
 
 type PendingWaitForUser = {
   requestId: string;
@@ -1486,8 +1488,12 @@ function formatAnalysisSummary(
   lines.push(
     `Grid: ${analysis.grid.cols}x${analysis.grid.rows} (${analysis.grid.width}x${analysis.grid.height})`,
   );
+  const omniCount = analysis.elements.filter(
+    (e) => e.role === 'omniparser',
+  ).length;
+  const sourceLabel = omniCount > 0 ? ' via OmniParser' : '';
   lines.push(
-    `Detected elements: ${analysis.elementCount}${analysis.truncated ? ` (showing ${analysis.elements.length})` : ''}`,
+    `Detected elements: ${analysis.elementCount}${sourceLabel}${analysis.truncated ? ` (showing ${analysis.elements.length})` : ''}`,
   );
 
   if (analysis.elements.length > 0) {
@@ -1505,9 +1511,10 @@ function formatAnalysisSummary(
       );
     }
   } else {
-    lines.push(
-      'Labeled elements: none (accessibility tree did not expose element bounds).',
-    );
+    const noElementsSource = isOmniParserEnabled()
+      ? 'OmniParser did not detect any elements'
+      : 'accessibility tree did not expose element bounds';
+    lines.push(`Labeled elements: none (${noElementsSource}).`);
     lines.push(
       'IMPORTANT: Use the Read tool on the screenshot path above to visually identify elements, then use browse_click_xy with pixel coordinates.',
     );
@@ -1642,6 +1649,39 @@ export function buildScreenshotAnalysis(
     elementCount: candidates.length,
     truncated: candidates.length > limited.length,
     elements: limited,
+    summary: '',
+  };
+}
+
+function buildOmniParserAnalysis(
+  omniResult: OmniParserResult,
+  imageDimensions: { width: number; height: number },
+): ScreenshotAnalysis {
+  const grid: ScreenshotGrid = {
+    rows: SCREENSHOT_GRID_ROWS,
+    cols: SCREENSHOT_GRID_COLS,
+    width: Math.max(1, Math.round(imageDimensions.width)),
+    height: Math.max(1, Math.round(imageDimensions.height)),
+  };
+
+  const elements: ScreenshotAnalysisElement[] = omniResult.elements
+    .slice(0, SCREENSHOT_MAX_ELEMENTS)
+    .map((el, index) => ({
+      id: index + 1,
+      label: el.label,
+      role: 'omniparser' as const,
+      interactive: true,
+      center: el.center,
+      bounds: el.bbox,
+      grid: toGridCell(el.center.x, el.center.y, grid),
+    }));
+
+  return {
+    capturedAt: new Date().toISOString(),
+    grid,
+    elementCount: omniResult.elements.length,
+    truncated: omniResult.elements.length > elements.length,
+    elements,
     summary: '',
   };
 }
@@ -1879,17 +1919,34 @@ async function processCuaRequest(
       const filename = `screenshot-${Date.now()}.png`;
       const filePath = path.join(mediaDir, filename);
       const screenshotBytes = Buffer.from(base64, 'base64');
-      fs.writeFileSync(filePath, screenshotBytes);
 
       const screenshotPath = `/workspace/group/media/${filename}`;
       const imageSize = getImageDimensionsFromBytes(screenshotBytes) ||
         (await getScreenSizeSafe()) || { width: 1024, height: 768 };
-      const snapshot = await getAccessibilitySnapshotSafe();
-      const analysis = buildScreenshotAnalysis(snapshot, imageSize);
+
+      let analysis: ScreenshotAnalysis;
+      if (isOmniParserEnabled()) {
+        const omniResult = await omniParserDetect(screenshotBytes, imageSize);
+        if (omniResult && omniResult.elements.length > 0) {
+          analysis = buildOmniParserAnalysis(omniResult, imageSize);
+        } else {
+          // No fallback — return empty analysis so the agent knows OmniParser failed
+          analysis = buildOmniParserAnalysis(
+            { elements: [], latencyMs: 0 },
+            imageSize,
+          );
+        }
+      } else {
+        const snapshot = await getAccessibilitySnapshotSafe();
+        analysis = buildScreenshotAnalysis(snapshot, imageSize);
+      }
       const metadataFilename = filename.replace(/\.png$/, '.labels.json');
       const metadataPath = `/workspace/group/media/${metadataFilename}`;
       analysis.metadataPath = metadataPath;
       analysis.summary = formatAnalysisSummary(screenshotPath, analysis);
+
+      const annotatedBytes = annotateScreenshot(screenshotBytes, analysis);
+      fs.writeFileSync(filePath, annotatedBytes);
       fs.writeFileSync(
         path.join(mediaDir, metadataFilename),
         JSON.stringify(analysis, null, 2),
