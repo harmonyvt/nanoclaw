@@ -11,7 +11,7 @@ import Supermemory from 'supermemory';
 import type { NanoTool, IpcMcpContext, ToolResult } from './types.js';
 import { isCancelled } from './cancel.js';
 import { getHostRpcBridge } from './host-rpc.js';
-import { resolveMediaOpenAIConfig } from './media-ai-config.js';
+
 
 /** Spawn a command with Bun.spawn(), capture stdout/stderr, respect timeout. */
 async function runCommand(
@@ -2049,9 +2049,9 @@ If a skill with the same name already exists, it will be overwritten.`,
   {
     name: 'transcribe_audio',
     description:
-      'Transcribe an audio file to text using OpenAI Whisper. Useful for getting ' +
+      'Transcribe an audio file to text using Replicate GPT-4o-transcribe. Useful for getting ' +
       'transcripts of voice recordings or reference audio for voice cloning. ' +
-      'Uses OPENAI_API_KEY by default, or OPENAI_MEDIA_* when COMPOSITE_AI_ENABLED=true.',
+      'Requires REPLICATE_API_TOKEN.',
     schema: z.object({
       path: z
         .string()
@@ -2060,14 +2060,10 @@ If a skill with the same name already exists, it will be overwritten.`,
         ),
     }),
     handler: async (args): Promise<ToolResult> => {
-      const mediaConfig = resolveMediaOpenAIConfig();
-      const useCompositeMedia = mediaConfig.compositeEnabled;
-      const apiKey = mediaConfig.apiKey;
-      if (!apiKey) {
+      const apiToken = process.env.REPLICATE_API_TOKEN || '';
+      if (!apiToken) {
         return {
-          content: useCompositeMedia
-            ? 'OPENAI_MEDIA_API_KEY/OPENAI_API_KEY not configured. Ask the user for a transcript instead.'
-            : 'OPENAI_API_KEY not configured. Ask the user for a transcript instead.',
+          content: 'REPLICATE_API_TOKEN not configured. Ask the user for a transcript instead.',
           isError: true,
         };
       }
@@ -2077,33 +2073,76 @@ If a skill with the same name already exists, it will be overwritten.`,
         return { content: `File not found: ${filePath}`, isError: true };
       }
 
+      const AUDIO_MIME: Record<string, string> = {
+        '.flac': 'audio/flac', '.mp3': 'audio/mpeg', '.mp4': 'audio/mp4',
+        '.mpeg': 'audio/mpeg', '.mpga': 'audio/mpeg', '.m4a': 'audio/mp4',
+        '.ogg': 'audio/ogg', '.oga': 'audio/ogg', '.wav': 'audio/wav',
+        '.webm': 'audio/webm',
+      };
+
       try {
         const fileBuffer = fs.readFileSync(filePath);
-        const blob = new Blob([fileBuffer]);
-        const formData = new FormData();
-        formData.append('model', useCompositeMedia ? mediaConfig.audioModel : 'whisper-1');
-        formData.append('file', blob, path.basename(filePath));
+        const ext = path.extname(filePath).toLowerCase();
+        const mime = AUDIO_MIME[ext] || 'audio/wav';
+        const base64 = fileBuffer.toString('base64');
+        const dataUri = `data:${mime};base64,${base64}`;
 
-        const transcriptionEndpoint = useCompositeMedia
-          ? `${mediaConfig.baseUrl}/audio/transcriptions`
-          : 'https://api.openai.com/v1/audio/transcriptions';
-
-        const resp = await fetch(transcriptionEndpoint, {
+        // Create prediction
+        const createResp = await fetch('https://api.replicate.com/v1/predictions', {
           method: 'POST',
-          headers: { Authorization: `Bearer ${apiKey}` },
-          body: formData,
+          headers: {
+            'Authorization': `Bearer ${apiToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: 'openai/gpt-4o-transcribe',
+            input: { audio: dataUri },
+          }),
         });
 
-        if (!resp.ok) {
-          const detail = await resp.text().catch(() => '');
+        if (!createResp.ok) {
+          const detail = await createResp.text().catch(() => '');
           return {
-            content: `Whisper API error ${resp.status}: ${detail.slice(0, 200)}`,
+            content: `Replicate API error ${createResp.status}: ${detail.slice(0, 200)}`,
             isError: true,
           };
         }
 
-        const result = (await resp.json()) as { text: string };
-        return { content: result.text };
+        const prediction = (await createResp.json()) as {
+          id: string;
+          status: string;
+          output: { text: string } | null;
+          error: string | null;
+          urls: { get: string };
+        };
+
+        // If already completed (unlikely but possible)
+        if (prediction.status === 'succeeded' && prediction.output?.text) {
+          return { content: prediction.output.text };
+        }
+        if (prediction.status === 'failed') {
+          return { content: `Transcription failed: ${prediction.error || 'unknown error'}`, isError: true };
+        }
+
+        // Poll for completion (max 120s)
+        const pollUrl = prediction.urls?.get || `https://api.replicate.com/v1/predictions/${prediction.id}`;
+        const deadline = Date.now() + 120_000;
+        while (Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 1000));
+          const pollResp = await fetch(pollUrl, {
+            headers: { 'Authorization': `Bearer ${apiToken}` },
+          });
+          if (!pollResp.ok) continue;
+          const result = (await pollResp.json()) as typeof prediction;
+          if (result.status === 'succeeded' && result.output?.text) {
+            return { content: result.output.text };
+          }
+          if (result.status === 'failed' || result.status === 'canceled') {
+            return { content: `Transcription failed: ${result.error || 'unknown error'}`, isError: true };
+          }
+        }
+
+        return { content: 'Transcription timed out after 120s', isError: true };
       } catch (err) {
         return {
           content: `Transcription failed: ${err instanceof Error ? err.message : String(err)}`,
