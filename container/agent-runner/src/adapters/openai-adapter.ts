@@ -189,6 +189,20 @@ export function buildSystemPrompt(input: AdapterInput): string {
   return parts.join('\n');
 }
 
+// ─── Provider-Specific Types ────────────────────────────────────────────
+
+/** Delta shape extended with reasoning fields from various providers */
+type ProviderDelta = OpenAI.Chat.Completions.ChatCompletionChunk.Choice.Delta & {
+  reasoning?: string;
+  reasoning_content?: string;
+  reasoning_details?: Array<{ type: string; text?: string }>;
+};
+
+/** OpenAI create params extended with OpenRouter-specific fields */
+type ExtendedCreateParams = OpenAI.ChatCompletionCreateParamsStreaming & {
+  reasoning?: { effort: string };
+};
+
 // ─── Reasoning Delta Extraction ─────────────────────────────────────────
 
 /**
@@ -198,7 +212,7 @@ export function buildSystemPrompt(input: AdapterInput): string {
  * - `reasoning` (OpenRouter primary field)
  * - `reasoning_details` (OpenRouter structured array with type:"reasoning.text")
  */
-function extractReasoningDelta(delta: any): string | undefined {
+function extractReasoningDelta(delta: ProviderDelta): string | undefined {
   // OpenRouter primary field
   if (typeof delta.reasoning === 'string' && delta.reasoning) {
     return delta.reasoning;
@@ -332,8 +346,8 @@ export class OpenAIAdapter implements ProviderAdapter {
 
       bufLog(`Iteration ${iterations}, sending ${messages.length} messages to ${model} (stream)`);
 
-      // Build create params, conditionally including reasoning_effort
-      const createParams: Record<string, unknown> = {
+      // Build create params, conditionally including reasoning config
+      const createParams: ExtendedCreateParams = {
         model,
         messages,
         tools: tools.length > 0 ? tools : undefined,
@@ -341,12 +355,17 @@ export class OpenAIAdapter implements ProviderAdapter {
       };
       if (reasoningEffort) {
         createParams.reasoning_effort = reasoningEffort;
-        // OpenRouter uses a reasoning config object
-        createParams.reasoning = { effort: reasoningEffort };
+        // Only send OpenRouter-style reasoning object for non-OpenAI endpoints
+        // to avoid potential validation errors with the official OpenAI API
+        const baseUrl = input.baseUrl || process.env.OPENAI_BASE_URL || '';
+        if (baseUrl && !baseUrl.includes('api.openai.com')) {
+          createParams.reasoning = { effort: reasoningEffort };
+        }
       }
 
       const reqParamKeys = Object.keys(createParams).filter(k => k !== 'messages');
-      bufLog(`Request params: ${JSON.stringify(Object.fromEntries(reqParamKeys.map(k => [k, k === 'tools' ? `[${(createParams.tools as any[])?.length || 0} tools]` : createParams[k]])))}`);
+      const paramsRecord = createParams as unknown as Record<string, unknown>;
+      bufLog(`Request params: ${JSON.stringify(Object.fromEntries(reqParamKeys.map(k => [k, k === 'tools' ? `[${createParams.tools?.length || 0} tools]` : paramsRecord[k]])))}`);
 
       // Drain log buffer before API call
       while (logBuffer.length > 0) {
@@ -357,18 +376,19 @@ export class OpenAIAdapter implements ProviderAdapter {
       let chunkCount = 0;
       let firstChunkTime = 0;
 
-      let stream: AsyncIterable<any>;
+      let stream: AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>;
       try {
         stream = (await client.chat.completions.create(
-          createParams as any,
-        )) as unknown as AsyncIterable<any>;
+          createParams as OpenAI.ChatCompletionCreateParamsStreaming,
+        )) as unknown as AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>;
         bufLog(`Stream created in ${Date.now() - streamStartTime}ms`);
       } catch (apiErr) {
         const errMsg = apiErr instanceof Error ? apiErr.message : String(apiErr);
-        const status = (apiErr as any)?.status || (apiErr as any)?.response?.status || 'unknown';
+        const errObj = apiErr as Record<string, unknown>;
+        const status = errObj?.status || (errObj?.response as Record<string, unknown>)?.status || 'unknown';
         bufLog(`API request failed: status=${status}, error=${errMsg}`);
-        if ((apiErr as any)?.error) {
-          bufLog(`API error body: ${JSON.stringify((apiErr as any).error).slice(0, 500)}`);
+        if (errObj?.error) {
+          bufLog(`API error body: ${JSON.stringify(errObj.error).slice(0, 500)}`);
         }
         // Drain error logs before throwing
         while (logBuffer.length > 0) {
@@ -390,7 +410,7 @@ export class OpenAIAdapter implements ProviderAdapter {
         // Check for cancellation mid-stream
         if (isCancelled()) {
           bufLog('Cancel detected mid-stream, aborting');
-          try { (stream as any).controller?.abort(); } catch {}
+          try { (stream as { controller?: { abort(): void } }).controller?.abort(); } catch {}
           const partial = contentBuffer || null;
           if (partial) yield { type: 'result', result: partial };
           return;
@@ -399,12 +419,13 @@ export class OpenAIAdapter implements ProviderAdapter {
         chunkCount++;
         if (chunkCount === 1) firstChunkTime = Date.now();
 
-        const delta = chunk.choices?.[0]?.delta;
+        const delta = chunk.choices?.[0]?.delta as ProviderDelta | undefined;
         if (!delta) continue;
 
         // Log delta keys on first few chunks for debugging provider compatibility
         if (chunkCount <= 3) {
-          const deltaKeys = Object.keys(delta).filter(k => delta[k] != null && delta[k] !== '');
+          const deltaRecord = delta as Record<string, unknown>;
+          const deltaKeys = Object.keys(deltaRecord).filter(k => deltaRecord[k] != null && deltaRecord[k] !== '');
           if (deltaKeys.length > 0) {
             bufLog(`Chunk #${chunkCount} delta keys: [${deltaKeys.join(', ')}]`);
           }
