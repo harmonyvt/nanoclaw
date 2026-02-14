@@ -1202,13 +1202,25 @@ async function updateCuaScreenshot(
 
   if (entry.screenshotMessageId) {
     const edited = await editTelegramPhoto(chatJid, entry.screenshotMessageId, hostPath, 'Screenshot');
-    if (edited) return;
-    // Edit failed, fall through to send new
+    if (edited) {
+      logDebugEvent('telegram', 'screenshot_edited', groupFolder, { chatId: chatJid, messageId: entry.screenshotMessageId });
+      return;
+    }
+    // Edit failed — clear stale ID and fall through to send new
+    logDebugEvent('telegram', 'screenshot_edit_failed', groupFolder, { chatId: chatJid, messageId: entry.screenshotMessageId });
+    entry.screenshotMessageId = null;
   }
 
-  const msgId = await sendTelegramPhoto(chatJid, hostPath, 'Screenshot');
-  if (msgId) {
-    entry.screenshotMessageId = msgId;
+  try {
+    const msgId = await sendTelegramPhoto(chatJid, hostPath, 'Screenshot');
+    if (msgId) {
+      entry.screenshotMessageId = msgId;
+    }
+  } catch (err) {
+    logDebugEvent('telegram', 'screenshot_send_failed', groupFolder, {
+      chatId: chatJid,
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 
