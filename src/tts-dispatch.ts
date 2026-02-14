@@ -71,7 +71,14 @@ export function loadUnifiedVoiceProfile(
       );
       return null;
     }
-    return loadVoiceProfile(groupFolder);
+    const profile = loadVoiceProfile(groupFolder);
+    if (profile) {
+      logger.info(
+        { module: 'tts-dispatch', groupFolder, provider, mode: profile.mode },
+        'Loaded voice profile (self-hosted qwen3-tts)',
+      );
+    }
+    return profile;
   }
 
   // Replicate provider
@@ -138,6 +145,10 @@ export function loadUnifiedVoiceProfile(
       };
     }
 
+    logger.info(
+      { module: 'tts-dispatch', groupFolder, provider, mode },
+      'Loaded voice profile (Replicate qwen3-tts)',
+    );
     return profile;
   }
 
@@ -169,6 +180,10 @@ export function loadUnifiedVoiceProfile(
       profile.extras = parsed.extras as ChatterboxExtrasType;
     }
 
+    logger.info(
+      { module: 'tts-dispatch', groupFolder, provider, mode },
+      'Loaded voice profile (Replicate chatterbox-turbo)',
+    );
     return profile;
   }
 
@@ -192,6 +207,10 @@ export function loadUnifiedVoiceProfile(
       profile.extras = parsed.extras as MinimaxExtrasType;
     }
 
+    logger.info(
+      { module: 'tts-dispatch', groupFolder, provider, mode: 'custom_voice' },
+      'Loaded voice profile (Replicate minimax)',
+    );
     return profile;
   }
 
@@ -216,12 +235,18 @@ type MinimaxExtrasType = NonNullable<
  */
 export function defaultUnifiedVoiceProfile(): UnifiedVoiceProfile {
   if (isReplicateTTSEnabled()) {
-    return defaultReplicateVoiceProfile();
+    const profile = defaultReplicateVoiceProfile();
+    logger.debug(
+      { module: 'tts-dispatch', provider: profile.provider, mode: profile.mode },
+      'Using default Replicate voice profile',
+    );
+    return profile;
   }
   if (isQwenTTSEnabled()) {
+    logger.debug({ module: 'tts-dispatch' }, 'Using default self-hosted Qwen voice profile');
     return defaultVoiceProfile();
   }
-  // Fallback to self-hosted default (caller will handle the disabled state)
+  logger.debug({ module: 'tts-dispatch' }, 'No TTS provider enabled, using fallback default');
   return defaultVoiceProfile();
 }
 
@@ -248,9 +273,17 @@ export async function synthesizeTTS(
   groupFolder: string,
 ): Promise<string> {
   if (profile.provider === 'qwen3-tts') {
+    logger.info(
+      { module: 'tts-dispatch', groupFolder, provider: 'qwen3-tts', mode: profile.mode, textLength: text.length },
+      'Dispatching TTS to self-hosted Qwen',
+    );
     return synthesizeQwenTTS(text, profile, mediaDir, groupFolder);
   }
 
   // All providers with a '/' are Replicate-hosted
+  logger.info(
+    { module: 'tts-dispatch', groupFolder, provider: profile.provider, mode: profile.mode, textLength: text.length },
+    'Dispatching TTS to Replicate',
+  );
   return synthesizeReplicateTTS(text, profile as ReplicateVoiceProfile, mediaDir, groupFolder);
 }
