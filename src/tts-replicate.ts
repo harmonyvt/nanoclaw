@@ -1,10 +1,8 @@
-import Replicate from 'replicate';
 import fs from 'fs';
 import path from 'path';
 import { execFileSync } from 'child_process';
 import {
   REPLICATE_TTS_ENABLED,
-  REPLICATE_TTS_TOKEN,
   REPLICATE_TTS_RATE_LIMIT_PER_MIN,
   REPLICATE_TTS_TIMEOUT_MS,
   REPLICATE_TTS_DEFAULT_PROVIDER,
@@ -12,6 +10,7 @@ import {
   QWEN_TTS_DEFAULT_LANGUAGE,
   GROUPS_DIR,
 } from './config.js';
+import { isReplicateConfigured, runModel } from './replicate-client.js';
 import { logger } from './logger.js';
 import { logDebugEvent } from './debug-log.js';
 
@@ -302,7 +301,7 @@ function buildMinimaxInput(
 // ---------------------------------------------------------------------------
 
 export function isReplicateTTSEnabled(): boolean {
-  return REPLICATE_TTS_ENABLED && REPLICATE_TTS_TOKEN.length > 0;
+  return REPLICATE_TTS_ENABLED && isReplicateConfigured();
 }
 
 /**
@@ -355,7 +354,7 @@ export async function synthesizeReplicateTTS(
   mediaDir: string,
   groupFolder: string,
 ): Promise<string> {
-  if (!REPLICATE_TTS_TOKEN) {
+  if (!isReplicateConfigured()) {
     throw new Error('Replicate TTS token is not configured');
   }
 
@@ -401,15 +400,10 @@ export async function synthesizeReplicateTTS(
   );
 
   // Call Replicate API
-  const replicate = new Replicate({ auth: REPLICATE_TTS_TOKEN });
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), REPLICATE_TTS_TIMEOUT_MS);
-
   let oggPath: string;
-  try {
-    const output = await replicate.run(profile.provider, {
-      input,
-      signal: controller.signal,
+  {
+    const output = await runModel(profile.provider, input, {
+      timeoutMs: REPLICATE_TTS_TIMEOUT_MS,
     });
 
     // Replicate TTS output is typically a URL string or a FileOutput with url()
@@ -477,8 +471,6 @@ export async function synthesizeReplicateTTS(
 
     // Download from URL and convert to OGG
     oggPath = await downloadAndConvertToOgg(audioUrl, mediaDir);
-  } finally {
-    clearTimeout(timeoutId);
   }
 
   const ttsDurationMs = Date.now() - ttsStartMs;
