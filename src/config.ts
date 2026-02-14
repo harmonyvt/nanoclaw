@@ -153,7 +153,7 @@ export const QWEN_TTS_RATE_LIMIT_PER_MIN = parseInt(
 
 // Replicate-hosted TTS (Qwen, Chatterbox, MiniMax)
 export const REPLICATE_TTS_ENABLED =
-  process.env.REPLICATE_TTS_ENABLED === 'true';
+  process.env.REPLICATE_TTS_ENABLED !== 'false';
 export const REPLICATE_TTS_TOKEN =
   process.env.REPLICATE_TTS_TOKEN ||
   process.env.OMNIPARSER_REPLICATE_TOKEN ||

@@ -212,14 +212,14 @@ type MinimaxExtrasType = NonNullable<
 
 /**
  * Return a default voice profile based on which providers are enabled.
- * Priority: self-hosted Qwen > Replicate.
+ * Priority: Replicate > self-hosted Qwen (Replicate is preferred when both enabled).
  */
 export function defaultUnifiedVoiceProfile(): UnifiedVoiceProfile {
-  if (isQwenTTSEnabled()) {
-    return defaultVoiceProfile();
-  }
   if (isReplicateTTSEnabled()) {
     return defaultReplicateVoiceProfile();
+  }
+  if (isQwenTTSEnabled()) {
+    return defaultVoiceProfile();
   }
   // Fallback to self-hosted default (caller will handle the disabled state)
   return defaultVoiceProfile();

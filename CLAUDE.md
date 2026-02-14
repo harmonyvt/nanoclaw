@@ -296,7 +296,7 @@ Requires `SUPERMEMORY_API_KEY`. When enabled, memories are also automatically re
 | `QWEN_TTS_DEFAULT_LANGUAGE` | `English`                | Default TTS language                    |
 | `QWEN_TTS_DEFAULT_SPEAKER`  | `Vivian`                 | Default preset speaker                  |
 | `QWEN_TTS_RATE_LIMIT_PER_MIN`| `10`                   | Max TTS requests per minute             |
-| `REPLICATE_TTS_ENABLED`     | `false`                  | Enable Replicate-hosted TTS providers   |
+| `REPLICATE_TTS_ENABLED`     | `true`                   | Replicate-hosted TTS (set `false` to disable) |
 | `REPLICATE_TTS_TOKEN`       | --                       | Replicate API token (falls back to `OMNIPARSER_REPLICATE_TOKEN` / `REPLICATE_API_TOKEN`) |
 | `REPLICATE_TTS_RATE_LIMIT_PER_MIN`| `10`               | Max Replicate TTS requests per minute   |
 | `REPLICATE_TTS_TIMEOUT_MS`  | `120000`                 | Replicate TTS request timeout (ms)      |
