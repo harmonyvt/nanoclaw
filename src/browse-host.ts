@@ -6,6 +6,7 @@ import { CuaClient } from './cua-client.js';
 import { logger } from './logger.js';
 import { resolveMediaOpenAIConfig, type MediaOpenAIConfig } from './media-ai-config.js';
 import { ensureSandbox, resetIdleTimer, rotateSandboxVncPassword } from './sandbox-manager.js';
+import { annotateScreenshot } from './screenshot-annotator.js';
 
 type PendingWaitForUser = {
   requestId: string;
@@ -1879,7 +1880,6 @@ async function processCuaRequest(
       const filename = `screenshot-${Date.now()}.png`;
       const filePath = path.join(mediaDir, filename);
       const screenshotBytes = Buffer.from(base64, 'base64');
-      fs.writeFileSync(filePath, screenshotBytes);
 
       const screenshotPath = `/workspace/group/media/${filename}`;
       const imageSize = getImageDimensionsFromBytes(screenshotBytes) ||
@@ -1890,6 +1890,9 @@ async function processCuaRequest(
       const metadataPath = `/workspace/group/media/${metadataFilename}`;
       analysis.metadataPath = metadataPath;
       analysis.summary = formatAnalysisSummary(screenshotPath, analysis);
+
+      const annotatedBytes = annotateScreenshot(screenshotBytes, analysis);
+      fs.writeFileSync(filePath, annotatedBytes);
       fs.writeFileSync(
         path.join(mediaDir, metadataFilename),
         JSON.stringify(analysis, null, 2),
