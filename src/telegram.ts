@@ -9,25 +9,31 @@ import type { LanguageCode } from 'grammy/types';
 
 import {
   ASSISTANT_NAME,
+  DEFAULT_MODEL,
   GROUPS_DIR,
   TELEGRAM_BOT_TOKEN,
   TELEGRAM_OWNER_ID,
   makeTelegramChatId,
   extractTelegramChatId,
   DEFAULT_PROVIDER,
-  DEFAULT_MODEL,
   MAX_CONVERSATION_MESSAGES,
 } from './config.js';
 
 import {
+  addModelToMenu,
+  clearActiveModelOverride,
   clearMessages,
+  getActiveModelOverride,
   getConversationHistory,
   getConversationStatus,
+  getModelMenu,
   getAllTasks,
   getTaskById,
   getTaskByShortId,
   getTaskRunLogs,
   getTasksForGroup,
+  removeModelFromMenu,
+  setActiveModelOverride,
   updateTask,
   deleteTask,
   insertConversationReset,
@@ -344,6 +350,7 @@ type SlashCommandSpec = {
     | 'mute'
     | 'voice'
     | 'soul'
+    | 'model'
     | 'help'
     | 'skills';
   description: string;
@@ -430,6 +437,11 @@ const TELEGRAM_SLASH_COMMANDS: SlashCommandSpec[] = [
     command: 'soul',
     description: 'View or edit SOUL.md persona',
     help: 'Manage persona: /soul [show|reset|<change request>]',
+  },
+  {
+    command: 'model',
+    description: 'Switch AI model',
+    help: 'Switch AI model: /model [add <model_id> [label] | remove]',
   },
   {
     command: 'help',
@@ -905,7 +917,10 @@ export async function connectTelegram(
     const uptimeMinutes = Math.floor((uptimeMs % 3600000) / 60000);
 
     const provider = group?.providerConfig?.provider || DEFAULT_PROVIDER;
-    const model = group?.providerConfig?.model || DEFAULT_MODEL || '(default)';
+    const statusOverride = getActiveModelOverride(chatId);
+    const model = statusOverride
+      ? `${statusOverride.label} (override, default: ${group?.providerConfig?.model || DEFAULT_MODEL || '(none)'})`
+      : (group?.providerConfig?.model || DEFAULT_MODEL || '(default)');
     const assistantIdentity = group
       ? resolveAssistantIdentity(group.folder, ASSISTANT_NAME)
       : ASSISTANT_NAME;
@@ -1193,6 +1208,96 @@ export async function connectTelegram(
     );
   });
 
+  // --- Model swap command ---
+
+  function buildModelMenuText(
+    chatId: string,
+    group: RegisteredGroup | undefined,
+  ): string {
+    const override = getActiveModelOverride(chatId);
+    const defaultModel = group?.providerConfig?.model || DEFAULT_MODEL || '(none)';
+    const provider = group?.providerConfig?.provider || DEFAULT_PROVIDER;
+    if (override) {
+      return `<b>Model:</b> ${escapeHtml(override.label)} (override)\n<b>Default:</b> ${escapeHtml(String(defaultModel))}\n<b>Provider:</b> ${provider}`;
+    }
+    return `<b>Model:</b> ${escapeHtml(String(defaultModel))} (default)\n<b>Provider:</b> ${provider}`;
+  }
+
+  function buildModelMenuKeyboard(chatId: string): InlineKeyboard {
+    const menu = getModelMenu(chatId);
+    const override = getActiveModelOverride(chatId);
+    const kb = new InlineKeyboard();
+    for (const item of menu) {
+      const prefix = item.is_active ? '\u2713 ' : '';
+      kb.text(`${prefix}${item.label}`, `m:sel:${item.id}`).row();
+    }
+    if (override) {
+      kb.text('Use Default', 'm:def').row();
+    }
+    if (menu.length > 0) {
+      kb.text('Remove...', 'm:rml');
+    }
+    return kb;
+  }
+
+  bot.command('model', async (ctx) => {
+    if (!shouldAccept(ctx)) return;
+    const chatId = makeTelegramChatId(ctx.chat.id);
+    const group = registeredGroups()[chatId];
+    const args = ctx.match?.trim() || '';
+
+    // /model add <model_id> [label]
+    if (args.startsWith('add ')) {
+      const parts = args.slice(4).trim().split(/\s+/);
+      const modelId = parts[0];
+      if (!modelId) {
+        await ctx.reply('Usage: /model add <model_id> [label]');
+        return;
+      }
+      const label = parts.slice(1).join(' ') || modelId;
+      try {
+        addModelToMenu(chatId, label, modelId);
+        await ctx.reply(`Added <b>${escapeHtml(label)}</b> (${escapeHtml(modelId)}) to model menu.`, { parse_mode: 'HTML' });
+      } catch (err: any) {
+        if (err?.message?.includes('UNIQUE constraint')) {
+          await ctx.reply(`Model ${escapeHtml(modelId)} is already in the menu.`, { parse_mode: 'HTML' });
+        } else {
+          throw err;
+        }
+      }
+      return;
+    }
+
+    // /model remove — show delete UI
+    if (args === 'remove') {
+      const menu = getModelMenu(chatId);
+      if (menu.length === 0) {
+        await ctx.reply('Model menu is empty. Add models with /model add <model_id> [label]');
+        return;
+      }
+      const kb = new InlineKeyboard();
+      for (const item of menu) {
+        kb.text(`\u2717 ${item.label}`, `m:del:${item.id}`).row();
+      }
+      kb.text('Back', 'm:back');
+      await ctx.reply('<b>Remove a model:</b>', { parse_mode: 'HTML', reply_markup: kb });
+      return;
+    }
+
+    // /model — show menu
+    const menu = getModelMenu(chatId);
+    const text = buildModelMenuText(chatId, group);
+    if (menu.length === 0) {
+      await ctx.reply(
+        `${text}\n\nNo models in menu. Add with:\n/model add <model_id> [label]`,
+        { parse_mode: 'HTML' },
+      );
+      return;
+    }
+    const kb = buildModelMenuKeyboard(chatId);
+    await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb });
+  });
+
   // --- Task commands ---
 
   bot.command('tasks', async (ctx) => {
@@ -1435,6 +1540,134 @@ export async function connectTelegram(
       return;
     }
 
+    // --- Model menu inline button callbacks ---
+    if (data.startsWith('m:')) {
+      const mParts = data.split(':');
+      const mAction = mParts[1];
+      const mArg = mParts[2];
+      const mChatId = makeTelegramChatId(ctx.chat.id);
+      const mGroup = registeredGroups()[mChatId];
+
+      if (mAction === 'sel' && mArg) {
+        const menuId = Number(mArg);
+        const menu = getModelMenu(mChatId);
+        const item = menu.find((m) => m.id === menuId);
+        if (!item) {
+          await ctx.answerCallbackQuery({ text: 'Model not found' });
+          return;
+        }
+        if (item.is_active) {
+          await ctx.answerCallbackQuery({ text: 'Already active' });
+          return;
+        }
+        setActiveModelOverride(mChatId, menuId);
+        insertConversationReset(mChatId);
+        if (interruptHandler) interruptHandler.interrupt(mChatId);
+        await ctx.editMessageText(
+          `Switched to <b>${escapeHtml(item.label)}</b> (${escapeHtml(item.model)}). Conversation cleared.`,
+          { parse_mode: 'HTML' },
+        );
+        await ctx.answerCallbackQuery();
+        return;
+      }
+
+      if (mAction === 'def') {
+        clearActiveModelOverride(mChatId);
+        insertConversationReset(mChatId);
+        if (interruptHandler) interruptHandler.interrupt(mChatId);
+        const defaultModel = mGroup?.providerConfig?.model || DEFAULT_MODEL || '(none)';
+        await ctx.editMessageText(
+          `Reverted to default model (${escapeHtml(String(defaultModel))}). Conversation cleared.`,
+          { parse_mode: 'HTML' },
+        );
+        await ctx.answerCallbackQuery();
+        return;
+      }
+
+      if (mAction === 'rml') {
+        const menu = getModelMenu(mChatId);
+        if (menu.length === 0) {
+          await ctx.editMessageText('Model menu is empty.');
+          await ctx.answerCallbackQuery();
+          return;
+        }
+        const kb = new InlineKeyboard();
+        for (const item of menu) {
+          kb.text(`\u2717 ${item.label}`, `m:del:${item.id}`).row();
+        }
+        kb.text('Back', 'm:back');
+        await ctx.editMessageText('<b>Remove a model:</b>', {
+          parse_mode: 'HTML',
+          reply_markup: kb,
+        });
+        await ctx.answerCallbackQuery();
+        return;
+      }
+
+      if (mAction === 'del' && mArg) {
+        const menuId = Number(mArg);
+        const menu = getModelMenu(mChatId);
+        const item = menu.find((m) => m.id === menuId);
+        if (!item) {
+          await ctx.answerCallbackQuery({ text: 'Model not found' });
+          return;
+        }
+        const kb = new InlineKeyboard()
+          .text('Yes, Remove', `m:cdl:${menuId}`)
+          .text('Cancel', 'm:back');
+        await ctx.editMessageText(
+          `Remove <b>${escapeHtml(item.label)}</b> (${escapeHtml(item.model)}) from menu?`,
+          { parse_mode: 'HTML', reply_markup: kb },
+        );
+        await ctx.answerCallbackQuery();
+        return;
+      }
+
+      if (mAction === 'cdl' && mArg) {
+        const menuId = Number(mArg);
+        removeModelFromMenu(mChatId, menuId);
+        // Show updated menu
+        const text = buildModelMenuText(mChatId, mGroup);
+        const menu = getModelMenu(mChatId);
+        if (menu.length === 0) {
+          await ctx.editMessageText(
+            `Model removed.\n\n${text}\n\nNo models in menu. Add with:\n/model add <model_id> [label]`,
+            { parse_mode: 'HTML' },
+          );
+        } else {
+          const kb = buildModelMenuKeyboard(mChatId);
+          await ctx.editMessageText(`Model removed.\n\n${text}`, {
+            parse_mode: 'HTML',
+            reply_markup: kb,
+          });
+        }
+        await ctx.answerCallbackQuery({ text: 'Removed' });
+        return;
+      }
+
+      if (mAction === 'back') {
+        const text = buildModelMenuText(mChatId, mGroup);
+        const menu = getModelMenu(mChatId);
+        if (menu.length === 0) {
+          await ctx.editMessageText(
+            `${text}\n\nNo models in menu. Add with:\n/model add <model_id> [label]`,
+            { parse_mode: 'HTML' },
+          );
+        } else {
+          const kb = buildModelMenuKeyboard(mChatId);
+          await ctx.editMessageText(text, {
+            parse_mode: 'HTML',
+            reply_markup: kb,
+          });
+        }
+        await ctx.answerCallbackQuery();
+        return;
+      }
+
+      await ctx.answerCallbackQuery({ text: 'Unknown model action' });
+      return;
+    }
+
     if (!data.startsWith('t:')) return;
 
     const parts = data.split(':');
@@ -1601,7 +1834,7 @@ export async function connectTelegram(
   const grammyHandledCommands = new Set([
     'new', 'clear', 'status', 'takeover', 'dashboard', 'help', 'skills',
     'verbose', 'thinking', 'stop', 'update', 'rebuild', 'tasks', 'runtask',
-    'reset',
+    'reset', 'model',
   ]);
 
   bot.on('message:text', async (ctx) => {
