@@ -400,78 +400,76 @@ export async function synthesizeReplicateTTS(
   );
 
   // Call Replicate API
+  const output = await runModel(profile.provider, input, {
+    timeoutMs: REPLICATE_TTS_TIMEOUT_MS,
+  });
+
+  // Replicate TTS output is typically a URL string or a FileOutput with url()
   let oggPath: string;
-  {
-    const output = await runModel(profile.provider, input, {
-      timeoutMs: REPLICATE_TTS_TIMEOUT_MS,
-    });
-
-    // Replicate TTS output is typically a URL string or a FileOutput with url()
-    let audioUrl: string;
-    if (typeof output === 'string') {
-      audioUrl = output;
-    } else if (output && typeof output === 'object' && 'url' in output) {
-      audioUrl = String((output as { url: () => string }).url());
-    } else if (output instanceof ReadableStream || (output && typeof (output as { getReader?: unknown }).getReader === 'function')) {
-      // Stream output — collect into buffer and save directly
-      const reader = (output as ReadableStream).getReader();
-      const chunks: Uint8Array[] = [];
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        chunks.push(value);
-      }
-      const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
-      const buffer = Buffer.alloc(totalLength);
-      let offset = 0;
-      for (const chunk of chunks) {
-        buffer.set(chunk, offset);
-        offset += chunk.length;
-      }
-
-      // Save raw audio and convert
-      fs.mkdirSync(mediaDir, { recursive: true });
-      const tempPath = path.join(mediaDir, `tts-tmp-${Date.now()}.raw`);
-      fs.writeFileSync(tempPath, buffer);
-
-      const oggFilename = `tts-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.ogg`;
-      oggPath = path.join(mediaDir, oggFilename);
-      try {
-        execFileSync('ffmpeg', ['-i', tempPath, '-c:a', 'libopus', '-b:a', '64k', '-vn', '-y', oggPath], {
-          timeout: 30_000,
-          stdio: 'pipe',
-        });
-      } finally {
-        try { fs.unlinkSync(tempPath); } catch {}
-      }
-
-      const ttsDurationMs = Date.now() - ttsStartMs;
-      logDebugEvent('tts', 'replicate_synthesis_complete', groupFolder, {
-        provider: profile.provider,
-        mode: profile.mode,
-        textLength: inputText.length,
-        durationMs: ttsDurationMs,
-      });
-
-      logger.info(
-        {
-          module: 'tts-replicate',
-          provider: profile.provider,
-          filePath: oggPath,
-          size: fs.statSync(oggPath).size,
-          durationMs: ttsDurationMs,
-        },
-        'Replicate TTS audio synthesized (stream)',
-      );
-
-      return oggPath;
-    } else {
-      throw new Error(`Unexpected Replicate output type: ${typeof output}`);
+  let audioUrl: string;
+  if (typeof output === 'string') {
+    audioUrl = output;
+  } else if (output && typeof output === 'object' && 'url' in output) {
+    audioUrl = String((output as { url: () => string }).url());
+  } else if (output instanceof ReadableStream || (output && typeof (output as { getReader?: unknown }).getReader === 'function')) {
+    // Stream output — collect into buffer and save directly
+    const reader = (output as ReadableStream).getReader();
+    const chunks: Uint8Array[] = [];
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+    }
+    const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
+    const buffer = Buffer.alloc(totalLength);
+    let offset = 0;
+    for (const chunk of chunks) {
+      buffer.set(chunk, offset);
+      offset += chunk.length;
     }
 
-    // Download from URL and convert to OGG
-    oggPath = await downloadAndConvertToOgg(audioUrl, mediaDir);
+    // Save raw audio and convert
+    fs.mkdirSync(mediaDir, { recursive: true });
+    const tempPath = path.join(mediaDir, `tts-tmp-${Date.now()}.raw`);
+    fs.writeFileSync(tempPath, buffer);
+
+    const oggFilename = `tts-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.ogg`;
+    oggPath = path.join(mediaDir, oggFilename);
+    try {
+      execFileSync('ffmpeg', ['-i', tempPath, '-c:a', 'libopus', '-b:a', '64k', '-vn', '-y', oggPath], {
+        timeout: 30_000,
+        stdio: 'pipe',
+      });
+    } finally {
+      try { fs.unlinkSync(tempPath); } catch {}
+    }
+
+    const ttsDurationMs = Date.now() - ttsStartMs;
+    logDebugEvent('tts', 'replicate_synthesis_complete', groupFolder, {
+      provider: profile.provider,
+      mode: profile.mode,
+      textLength: inputText.length,
+      durationMs: ttsDurationMs,
+    });
+
+    logger.info(
+      {
+        module: 'tts-replicate',
+        provider: profile.provider,
+        filePath: oggPath,
+        size: fs.statSync(oggPath).size,
+        durationMs: ttsDurationMs,
+      },
+      'Replicate TTS audio synthesized (stream)',
+    );
+
+    return oggPath;
+  } else {
+    throw new Error(`Unexpected Replicate output type: ${typeof output}`);
   }
+
+  // Download from URL and convert to OGG
+  oggPath = await downloadAndConvertToOgg(audioUrl, mediaDir);
 
   const ttsDurationMs = Date.now() - ttsStartMs;
   logDebugEvent('tts', 'replicate_synthesis_complete', groupFolder, {

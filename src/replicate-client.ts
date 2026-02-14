@@ -37,7 +37,7 @@ export async function runModel<T = unknown>(
   const controller = new AbortController();
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
-  if (options?.timeoutMs) {
+  if (options?.timeoutMs !== undefined && options.timeoutMs > 0) {
     timeoutId = setTimeout(() => controller.abort(), options.timeoutMs);
   }
 
