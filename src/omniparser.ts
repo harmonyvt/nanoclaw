@@ -20,6 +20,11 @@ export type OmniParserResult = {
   latencyMs: number;
 };
 
+type OmniParserApiOutput = {
+  parsed_content_list?: string;
+  label_coordinates?: Record<string, number[]> | string;
+};
+
 /**
  * Check if OmniParser is enabled and configured.
  */
@@ -83,14 +88,14 @@ async function callReplicate(
         iou_threshold: OMNIPARSER_IOU_THRESHOLD,
       },
       signal: controller.signal,
-    })) as Record<string, unknown>;
+    })) as OmniParserApiOutput;
 
     if (!output) {
       logger.warn('Replicate prediction succeeded but output is empty');
       return null;
     }
 
-    const parsedContentList = String(output.parsed_content_list || '');
+    const parsedContentList = output.parsed_content_list ?? '';
     const labelCoordinates = output.label_coordinates;
 
     const elements = parseOmniParserOutput(
@@ -120,7 +125,7 @@ async function callReplicate(
  */
 export function parseOmniParserOutput(
   parsedContentList: string,
-  labelCoordinates: unknown,
+  labelCoordinates: Record<string, number[]> | string | undefined,
   imageWidth: number,
   imageHeight: number,
 ): OmniParserElement[] {
@@ -133,12 +138,8 @@ export function parseOmniParserOutput(
       logger.warn('Failed to parse OmniParser label_coordinates string');
       return [];
     }
-  } else if (
-    labelCoordinates &&
-    typeof labelCoordinates === 'object' &&
-    !Array.isArray(labelCoordinates)
-  ) {
-    coordsMap = labelCoordinates as Record<string, number[]>;
+  } else if (labelCoordinates && typeof labelCoordinates === 'object') {
+    coordsMap = labelCoordinates;
   } else {
     logger.warn(
       { type: typeof labelCoordinates },
