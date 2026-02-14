@@ -1,3 +1,4 @@
+import Replicate from 'replicate';
 import { logger } from './logger.js';
 import {
   OMNIPARSER_ENABLED,
@@ -17,6 +18,11 @@ export type OmniParserElement = {
 export type OmniParserResult = {
   elements: OmniParserElement[];
   latencyMs: number;
+};
+
+type OmniParserApiOutput = {
+  parsed_content_list?: string;
+  label_coordinates?: Record<string, number[]> | string;
 };
 
 /**
@@ -59,14 +65,15 @@ export async function detectElements(
   }
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+const OMNIPARSER_MODEL =
+  'microsoft/omniparser-v2:49cf3d41b8d3aca1360514e83be4c97131ce8f0d99abfc365526d8384caa88df' as const;
 
 async function callReplicate(
   screenshotPng: Buffer,
   imageSize: { width: number; height: number },
 ): Promise<OmniParserResult | null> {
+  const replicate = new Replicate({ auth: OMNIPARSER_REPLICATE_TOKEN });
+
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), OMNIPARSER_TIMEOUT_MS);
 
@@ -74,88 +81,22 @@ async function callReplicate(
     const base64Image = screenshotPng.toString('base64');
     const dataUri = `data:image/png;base64,${base64Image}`;
 
-    // Create prediction
-    const createResponse = await fetch(
-      'https://api.replicate.com/v1/models/microsoft/omniparser-v2/predictions',
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${OMNIPARSER_REPLICATE_TOKEN}`,
-          'Content-Type': 'application/json',
-          Prefer: 'wait',
-        },
-        body: JSON.stringify({
-          input: {
-            image: dataUri,
-            box_threshold: OMNIPARSER_BOX_THRESHOLD,
-            iou_threshold: OMNIPARSER_IOU_THRESHOLD,
-          },
-        }),
-        signal: controller.signal,
+    const output = (await replicate.run(OMNIPARSER_MODEL, {
+      input: {
+        image: dataUri,
+        box_threshold: OMNIPARSER_BOX_THRESHOLD,
+        iou_threshold: OMNIPARSER_IOU_THRESHOLD,
       },
-    );
+      signal: controller.signal,
+    })) as OmniParserApiOutput;
 
-    if (!createResponse.ok) {
-      const body = await createResponse.text().catch(() => '');
-      logger.warn(
-        { status: createResponse.status, body: body.slice(0, 200) },
-        'Replicate prediction create failed',
-      );
-      return null;
-    }
-
-    let prediction = (await createResponse.json()) as {
-      id: string;
-      status: string;
-      output?: Record<string, unknown>;
-      error?: string;
-    };
-
-    // If not completed via Prefer: wait, poll for result
-    const deadline = Date.now() + OMNIPARSER_TIMEOUT_MS;
-    while (
-      prediction.status !== 'succeeded' &&
-      prediction.status !== 'failed' &&
-      prediction.status !== 'canceled' &&
-      Date.now() < deadline
-    ) {
-      await sleep(500);
-      const pollResponse = await fetch(
-        `https://api.replicate.com/v1/predictions/${prediction.id}`,
-        {
-          headers: {
-            Authorization: `Bearer ${OMNIPARSER_REPLICATE_TOKEN}`,
-          },
-          signal: controller.signal,
-        },
-      );
-      if (!pollResponse.ok) {
-        logger.warn(
-          { status: pollResponse.status },
-          'Replicate prediction poll failed',
-        );
-        return null;
-      }
-      prediction = (await pollResponse.json()) as typeof prediction;
-    }
-
-    if (prediction.status !== 'succeeded') {
-      logger.warn(
-        { status: prediction.status, error: prediction.error },
-        'Replicate prediction did not succeed',
-      );
-      return null;
-    }
-
-    if (!prediction.output) {
+    if (!output) {
       logger.warn('Replicate prediction succeeded but output is empty');
       return null;
     }
 
-    const parsedContentList = String(
-      prediction.output.parsed_content_list || '',
-    );
-    const labelCoordinates = prediction.output.label_coordinates;
+    const parsedContentList = output.parsed_content_list ?? '';
+    const labelCoordinates = output.label_coordinates;
 
     const elements = parseOmniParserOutput(
       parsedContentList,
@@ -184,7 +125,7 @@ async function callReplicate(
  */
 export function parseOmniParserOutput(
   parsedContentList: string,
-  labelCoordinates: unknown,
+  labelCoordinates: Record<string, number[]> | string | undefined,
   imageWidth: number,
   imageHeight: number,
 ): OmniParserElement[] {
@@ -197,12 +138,8 @@ export function parseOmniParserOutput(
       logger.warn('Failed to parse OmniParser label_coordinates string');
       return [];
     }
-  } else if (
-    labelCoordinates &&
-    typeof labelCoordinates === 'object' &&
-    !Array.isArray(labelCoordinates)
-  ) {
-    coordsMap = labelCoordinates as Record<string, number[]>;
+  } else if (labelCoordinates && typeof labelCoordinates === 'object') {
+    coordsMap = labelCoordinates;
   } else {
     logger.warn(
       { type: typeof labelCoordinates },
