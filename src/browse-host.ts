@@ -5,7 +5,6 @@ import { GROUPS_DIR } from './config.js';
 import { CuaClient } from './cua-client.js';
 import { logger } from './logger.js';
 import { ensureSandbox, resetIdleTimer, rotateSandboxVncPassword } from './sandbox-manager.js';
-import { annotateScreenshot } from './screenshot-annotator.js';
 import { isOmniParserEnabled, detectElements as omniParserDetect, type OmniParserResult } from './omniparser.js';
 
 type PendingWaitForUser = {
@@ -37,6 +36,15 @@ type BrowseResponse = {
   result?: unknown;
   error?: string;
   analysis?: ScreenshotAnalysis;
+  screenshot?: ScreenshotPayload;
+};
+
+export type ScreenshotPayload = {
+  path: string;
+  mimeType: string;
+  base64: string;
+  analysisSource: 'omniparser' | 'accessibility';
+  metadataPath?: string;
 };
 
 export type ScreenshotGrid = {
@@ -1655,7 +1663,9 @@ async function processCuaRequest(
         (await getScreenSizeSafe()) || { width: 1024, height: 768 };
 
       let analysis: ScreenshotAnalysis;
+      let analysisSource: ScreenshotPayload['analysisSource'] = 'accessibility';
       if (isOmniParserEnabled()) {
+        analysisSource = 'omniparser';
         const omniResult = await omniParserDetect(screenshotBytes, imageSize);
         if (omniResult && omniResult.elements.length > 0) {
           analysis = buildOmniParserAnalysis(omniResult, imageSize);
@@ -1675,14 +1685,24 @@ async function processCuaRequest(
       analysis.metadataPath = metadataPath;
       analysis.summary = formatAnalysisSummary(screenshotPath, analysis);
 
-      const annotatedBytes = annotateScreenshot(screenshotBytes, analysis);
-      fs.writeFileSync(filePath, annotatedBytes);
+      fs.writeFileSync(filePath, screenshotBytes);
       fs.writeFileSync(
         path.join(mediaDir, metadataFilename),
         JSON.stringify(analysis, null, 2),
       );
 
-      return { status: 'ok', result: screenshotPath, analysis };
+      return {
+        status: 'ok',
+        result: screenshotPath,
+        analysis,
+        screenshot: {
+          path: screenshotPath,
+          mimeType: 'image/png',
+          base64,
+          analysisSource,
+          metadataPath,
+        },
+      };
     }
     case 'go_back': {
       await runCuaCommandWithFallback([
