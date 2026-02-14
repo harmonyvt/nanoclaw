@@ -186,6 +186,9 @@ async function runQuery(
           case 'thinking':
             emitStatusEvent({ type: 'thinking', content: event.content }, bridge);
             break;
+          case 'response_delta':
+            emitStatusEvent({ type: 'response_delta', content: event.content }, bridge);
+            break;
           case 'adapter_stderr':
             emitStatusEvent(
               { type: 'adapter_stderr', message: event.message },

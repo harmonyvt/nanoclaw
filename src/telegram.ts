@@ -919,8 +919,8 @@ export async function connectTelegram(
     const provider = group?.providerConfig?.provider || DEFAULT_PROVIDER;
     const statusOverride = getActiveModelOverride(chatId);
     const model = statusOverride
-      ? `${statusOverride.label} (override, default: ${group?.providerConfig?.model || '(none)'})`
-      : (group?.providerConfig?.model || '(default)');
+      ? `${statusOverride.label} (override, default: ${group?.providerConfig?.model || DEFAULT_MODEL || '(none)'})`
+      : (group?.providerConfig?.model || DEFAULT_MODEL || '(default)');
     const assistantIdentity = group
       ? resolveAssistantIdentity(group.folder, ASSISTANT_NAME)
       : ASSISTANT_NAME;

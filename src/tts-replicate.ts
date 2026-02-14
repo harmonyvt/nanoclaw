@@ -56,8 +56,6 @@ export interface ChatterboxProfile {
     top_p?: number;
     top_k?: number;
     repetition_penalty?: number;
-    exaggeration?: number;
-    cfg_weight?: number;
   };
   created_at: string;
   updated_at: string;
@@ -138,10 +136,27 @@ function checkRateLimit(): boolean {
   }
 
   if (requestTimestamps.length >= REPLICATE_TTS_RATE_LIMIT_PER_MIN) {
+    logger.warn(
+      {
+        module: 'tts-replicate',
+        currentCount: requestTimestamps.length,
+        limit: REPLICATE_TTS_RATE_LIMIT_PER_MIN,
+        oldestRequestAgeMs: requestTimestamps.length > 0 ? now - requestTimestamps[0] : 0,
+      },
+      'Replicate TTS rate limit exceeded',
+    );
     return false;
   }
 
   requestTimestamps.push(now);
+  logger.debug(
+    {
+      module: 'tts-replicate',
+      requestsInWindow: requestTimestamps.length,
+      limit: REPLICATE_TTS_RATE_LIMIT_PER_MIN,
+    },
+    'Replicate TTS rate limit check passed',
+  );
   return true;
 }
 
@@ -150,6 +165,12 @@ function checkRateLimit(): boolean {
 // ---------------------------------------------------------------------------
 
 const MAX_TEXT_LENGTH = 2000;
+
+const PROVIDER_MAX_TEXT: Record<ReplicateTTSProvider, number> = {
+  'qwen/qwen3-tts': 2000,
+  'resemble-ai/chatterbox-turbo': 500,
+  'minimax/speech-2.8-turbo': 2000,
+};
 
 /**
  * Download audio from URL, convert to OGG/Opus via ffmpeg, return OGG path.
@@ -161,11 +182,23 @@ async function downloadAndConvertToOgg(
   fs.mkdirSync(mediaDir, { recursive: true });
 
   // Download audio bytes
+  const downloadStart = Date.now();
   const response = await fetch(audioUrl);
   if (!response.ok) {
     throw new Error(`Audio download failed: ${response.status}`);
   }
   const audioBuffer = Buffer.from(await response.arrayBuffer());
+  const downloadMs = Date.now() - downloadStart;
+
+  logger.debug(
+    {
+      module: 'tts-replicate',
+      downloadMs,
+      rawSize: audioBuffer.length,
+      audioUrl: audioUrl.slice(0, 120),
+    },
+    'TTS audio downloaded',
+  );
 
   // Write to temp file
   const tempFilename = `tts-tmp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.wav`;
@@ -176,6 +209,7 @@ async function downloadAndConvertToOgg(
   const oggFilename = `tts-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.ogg`;
   const oggPath = path.join(mediaDir, oggFilename);
 
+  const ffmpegStart = Date.now();
   try {
     execFileSync('ffmpeg', [
       '-i', tempPath,
@@ -188,6 +222,18 @@ async function downloadAndConvertToOgg(
   } finally {
     try { fs.unlinkSync(tempPath); } catch {}
   }
+
+  const ffmpegMs = Date.now() - ffmpegStart;
+  const oggSize = fs.statSync(oggPath).size;
+  logger.debug(
+    {
+      module: 'tts-replicate',
+      ffmpegMs,
+      rawSize: audioBuffer.length,
+      oggSize,
+    },
+    'TTS audio converted to OGG',
+  );
 
   return oggPath;
 }
@@ -210,16 +256,17 @@ function buildQwenInput(
 
   const input: Record<string, unknown> = {
     text,
+    mode: profile.mode,
     language,
   };
 
   if (profile.mode === 'custom_voice' && profile.custom_voice) {
     input.speaker = profile.custom_voice.speaker || REPLICATE_TTS_DEFAULT_SPEAKER;
     if (profile.custom_voice.instruct) {
-      input.instruct = profile.custom_voice.instruct;
+      input.style_instruction = profile.custom_voice.instruct;
     }
   } else if (profile.mode === 'voice_design' && profile.voice_design) {
-    input.instruct = profile.voice_design.description;
+    input.voice_description = profile.voice_design.description;
   } else if (profile.mode === 'voice_clone' && profile.voice_clone) {
     const refPath = path.join(
       GROUPS_DIR,
@@ -231,9 +278,9 @@ function buildQwenInput(
     }
     const audioBuffer = fs.readFileSync(refPath);
     const ext = path.extname(refPath).replace('.', '') || 'wav';
-    input.ref_audio = `data:audio/${ext};base64,${audioBuffer.toString('base64')}`;
+    input.reference_audio = `data:audio/${ext};base64,${audioBuffer.toString('base64')}`;
     if (profile.voice_clone.ref_text) {
-      input.ref_text = profile.voice_clone.ref_text;
+      input.reference_text = profile.voice_clone.ref_text;
     }
   }
 
@@ -263,14 +310,12 @@ function buildChatterboxInput(
     input.reference_audio = `data:audio/${ext};base64,${audioBuffer.toString('base64')}`;
   }
 
-  // Apply extras
+  // Apply extras (only params supported by chatterbox-turbo API)
   if (profile.extras) {
     if (profile.extras.temperature !== undefined) input.temperature = profile.extras.temperature;
     if (profile.extras.top_p !== undefined) input.top_p = profile.extras.top_p;
     if (profile.extras.top_k !== undefined) input.top_k = profile.extras.top_k;
     if (profile.extras.repetition_penalty !== undefined) input.repetition_penalty = profile.extras.repetition_penalty;
-    if (profile.extras.exaggeration !== undefined) input.exaggeration = profile.extras.exaggeration;
-    if (profile.extras.cfg_weight !== undefined) input.cfg_weight = profile.extras.cfg_weight;
   }
 
   return input;
@@ -362,14 +407,15 @@ export async function synthesizeReplicateTTS(
     throw new Error('Replicate TTS rate limit exceeded, try again later');
   }
 
-  // Truncate overly long text
+  // Truncate overly long text (per-provider limits)
+  const maxLen = PROVIDER_MAX_TEXT[profile.provider] ?? MAX_TEXT_LENGTH;
   let inputText = text;
-  if (inputText.length > MAX_TEXT_LENGTH) {
+  if (inputText.length > maxLen) {
     logger.warn(
-      { module: 'tts-replicate', length: inputText.length, max: MAX_TEXT_LENGTH },
+      { module: 'tts-replicate', provider: profile.provider, length: inputText.length, max: maxLen },
       'TTS text too long, truncating',
     );
-    inputText = inputText.slice(0, MAX_TEXT_LENGTH) + '...';
+    inputText = inputText.slice(0, maxLen) + '...';
   }
 
   // Build provider-specific input
@@ -388,21 +434,58 @@ export async function synthesizeReplicateTTS(
       throw new Error(`Unknown Replicate TTS provider: ${(profile as ReplicateVoiceProfile).provider}`);
   }
 
-  const ttsStartMs = Date.now();
+  // Log input params (redact base64 audio data)
+  const logInput = { ...input };
+  if (typeof logInput.reference_audio === 'string' && (logInput.reference_audio as string).startsWith('data:')) {
+    logInput.reference_audio = `[base64 audio, ${(logInput.reference_audio as string).length} chars]`;
+  }
   logger.info(
     {
       module: 'tts-replicate',
       provider: profile.provider,
       mode: profile.mode,
       textLength: inputText.length,
+      input: logInput,
     },
     'Calling Replicate TTS',
   );
 
+  const ttsStartMs = Date.now();
+
   // Call Replicate API
-  const output = await runModel(profile.provider, input, {
-    timeoutMs: REPLICATE_TTS_TIMEOUT_MS,
-  });
+  let output: unknown;
+  try {
+    output = await runModel(profile.provider, input, {
+      timeoutMs: REPLICATE_TTS_TIMEOUT_MS,
+    });
+  } catch (err) {
+    const durationMs = Date.now() - ttsStartMs;
+    logger.error(
+      {
+        module: 'tts-replicate',
+        provider: profile.provider,
+        mode: profile.mode,
+        textLength: inputText.length,
+        durationMs,
+        error: err instanceof Error ? err.message : String(err),
+      },
+      'Replicate TTS API call failed',
+    );
+    throw err;
+  }
+
+  // Log output type for diagnostics
+  const outputType = output instanceof ReadableStream
+    ? 'ReadableStream'
+    : typeof output === 'string'
+      ? 'string'
+      : output && typeof output === 'object' && 'url' in output
+        ? 'FileOutput'
+        : typeof output;
+  logger.debug(
+    { module: 'tts-replicate', provider: profile.provider, outputType },
+    'Replicate TTS output received',
+  );
 
   // Replicate TTS output is typically a URL string or a FileOutput with url()
   let oggPath: string;
