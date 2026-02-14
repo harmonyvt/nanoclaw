@@ -221,6 +221,27 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
   cancel_task: 'cancelling task', register_group: 'registering group',
 };
 
+/**
+ * Per-run voice dedup: tracks which chats had voice sent during the current
+ * agent run. Prevents auto-TTS from double-voicing when the agent already
+ * used send_voice during the same run. The set is populated by IPC/RPC
+ * send_voice handlers and checked by auto-TTS after the run completes.
+ */
+const voiceSentDuringRun = new Set<string>();
+
+function markVoiceSentForRun(chatJid: string): void {
+  voiceSentDuringRun.add(chatJid);
+}
+
+function consumeVoiceSentForRun(chatJid: string): boolean {
+  return voiceSentDuringRun.delete(chatJid);
+}
+
+/**
+ * Time-based fallback dedup for rapid sequential voice sends (e.g., IPC
+ * messages arriving close together). Shorter window since this only guards
+ * against near-simultaneous sends, not cross-run dedup.
+ */
 const VOICE_DEDUPE_WINDOW_MS = 2500;
 const lastVoiceSentAtByChat = new Map<string, number>();
 
@@ -241,6 +262,16 @@ function humanizeToolName(rawName: string): string {
 
 async function setTyping(jid: string, isTyping: boolean): Promise<void> {
   if (isTyping) await setTelegramTyping(jid);
+}
+
+// ─── Think-Tag Stripping ─────────────────────────────────────────────────────
+
+/**
+ * Strip `<think>...</think>` blocks from response text.
+ * Safety net for models that embed reasoning in inline tags.
+ */
+function stripThinkTags(text: string): string {
+  return text.replace(/<think>[\s\S]*?(<\/think>|$)/g, '').trim();
 }
 
 // ─── Conversation History Helper ─────────────────────────────────────────────
@@ -722,12 +753,13 @@ After any SOUL.md modification:
           getAssistantIdentity(),
         );
 
-        // Strip voice separator if present (skill responses are typically text)
+        // Strip <think> tags and voice separator if present (skill responses are typically text)
+        const strippedResponse = stripThinkTags(response);
         const voiceSep = '---voice---';
-        const sepIndex = response.indexOf(voiceSep);
+        const sepIndex = strippedResponse.indexOf(voiceSep);
         const cleanText = sepIndex !== -1
-          ? response.replace(voiceSep, '').trim()
-          : response;
+          ? strippedResponse.replace(voiceSep, '').trim()
+          : strippedResponse;
         if (cleanText && !cleanText.startsWith('[') && !cleanText.endsWith('queued')) {
           await sendMessage(msg.chat_jid, cleanText);
         }
@@ -837,7 +869,8 @@ After any SOUL.md modification:
       getAssistantIdentity(),
     );
 
-    const text = response;
+    // Strip any leaked <think> tags from the response before TTS/Telegram
+    const text = stripThinkTags(response);
 
     // Auto-TTS: voice-first with text transcription
     // Mute state: groups/{folder}/.tts_muted file presence = muted (default: not muted)
@@ -871,8 +904,10 @@ After any SOUL.md modification:
         textPart = text;
       }
 
+      // Skip auto-TTS if the agent already sent voice during this run
+      const agentAlreadySpoke = consumeVoiceSentForRun(msg.chat_jid);
       let voiceSent = false;
-      if (voicePart) {
+      if (voicePart && !agentAlreadySpoke) {
         const ttsStatusId = await sendTelegramStatusMessage(msg.chat_jid, 'speaking');
         try {
           const mediaDir = path.join(GROUPS_DIR, group.folder, 'media');
@@ -1632,6 +1667,7 @@ async function handleContainerRpcRequest(
             return 'Voice suppressed (duplicate within dedupe window).';
           }
           await sendTelegramVoice(chatJid, oggPath);
+          markVoiceSentForRun(chatJid);
           logDebugEvent('ipc', 'rpc_voice_sent', rpcSourceGroup, { chatJid, provider: rpcVoiceProfile.provider });
           return `Voice sent (${rpcVoiceProfile.provider}).`;
         } finally {
@@ -1660,6 +1696,7 @@ async function handleContainerRpcRequest(
             return 'Voice suppressed (duplicate within dedupe window).';
           }
           await sendTelegramVoice(chatJid, oggPath);
+          markVoiceSentForRun(chatJid);
           logDebugEvent('ipc', 'rpc_voice_sent', rpcSourceGroup, { chatJid, provider: 'freya' });
           return 'Voice sent (Freya).';
         } finally {
@@ -1807,6 +1844,7 @@ function startIpcWatcher(): void {
                         });
                       } else {
                         await sendTelegramVoice(data.chatJid, oggPath);
+                        markVoiceSentForRun(data.chatJid);
                         logDebugEvent('ipc', 'voice_sent', sourceGroup, { chatJid: data.chatJid, provider: ipcVoiceProfile.provider });
                       }
                       logger.info(
@@ -1858,6 +1896,7 @@ function startIpcWatcher(): void {
                         });
                       } else {
                         await sendTelegramVoice(data.chatJid, oggPath);
+                        markVoiceSentForRun(data.chatJid);
                         logDebugEvent('ipc', 'voice_sent', sourceGroup, { chatJid: data.chatJid, provider: 'freya' });
                       }
                       logger.info(
