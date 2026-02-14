@@ -185,12 +185,17 @@ async function downloadAndConvertToOgg(
   const downloadStart = Date.now();
   const response = await fetch(audioUrl);
   if (!response.ok) {
+    const downloadMs = Date.now() - downloadStart;
+    logger.error(
+      { module: 'tts-replicate', status: response.status, downloadMs, audioUrl: audioUrl.slice(0, 120) },
+      'TTS audio download failed',
+    );
     throw new Error(`Audio download failed: ${response.status}`);
   }
   const audioBuffer = Buffer.from(await response.arrayBuffer());
   const downloadMs = Date.now() - downloadStart;
 
-  logger.debug(
+  logger.info(
     {
       module: 'tts-replicate',
       downloadMs,
@@ -496,6 +501,7 @@ export async function synthesizeReplicateTTS(
     audioUrl = String((output as { url: () => string }).url());
   } else if (output instanceof ReadableStream || (output && typeof (output as { getReader?: unknown }).getReader === 'function')) {
     // Stream output — collect into buffer and save directly
+    const streamStart = Date.now();
     const reader = (output as ReadableStream).getReader();
     const chunks: Uint8Array[] = [];
     while (true) {
@@ -504,6 +510,11 @@ export async function synthesizeReplicateTTS(
       chunks.push(value);
     }
     const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
+    const streamMs = Date.now() - streamStart;
+    logger.info(
+      { module: 'tts-replicate', provider: profile.provider, streamMs, chunkCount: chunks.length, totalBytes: totalLength },
+      'TTS stream chunks collected',
+    );
     const buffer = Buffer.alloc(totalLength);
     let offset = 0;
     for (const chunk of chunks) {
@@ -548,6 +559,11 @@ export async function synthesizeReplicateTTS(
 
     return oggPath;
   } else {
+    const durationMs = Date.now() - ttsStartMs;
+    logger.error(
+      { module: 'tts-replicate', provider: profile.provider, outputType: typeof output, durationMs },
+      'Unexpected Replicate output type',
+    );
     throw new Error(`Unexpected Replicate output type: ${typeof output}`);
   }
 

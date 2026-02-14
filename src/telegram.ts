@@ -50,7 +50,12 @@ import { createSessionForOwner } from './dashboard-auth.js';
 import { getDashboardUrl } from './dashboard-server.js';
 import { downloadTelegramFile, transcribeAudio } from './media.js';
 import { logger } from './logger.js';
-import { logDebugEvent } from './debug-log.js';
+import { logDebugEvent, exportDebugReport } from './debug-log.js';
+import {
+  buildDebugOverview,
+  buildDebugServiceKeyboard,
+  buildServiceLogView,
+} from './debug-ui.js';
 import { ensureSandbox } from './sandbox-manager.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
 import {
@@ -1353,6 +1358,56 @@ export async function connectTelegram(
     }
   });
 
+  // --- /debug command: interactive service log viewer ---
+  bot.command('debug', async (ctx) => {
+    if (!shouldAccept(ctx)) return;
+    const params = (ctx.match || '').trim();
+    const chatId = makeTelegramChatId(ctx.chat.id);
+    const group = registeredGroups()[chatId];
+    const isMainGroup = group && group.folder === 'main';
+
+    // Legacy export mode: /debug 24h, /debug export, /debug 2d
+    const durationMatch = params.match(/^(\d+)([hdm])$/);
+    if (durationMatch || params === 'export') {
+      let since: number | undefined;
+      if (durationMatch) {
+        const val = parseInt(durationMatch[1], 10);
+        const unit = durationMatch[2];
+        const multipliers: Record<string, number> = { h: 3600000, d: 86400000, m: 60000 };
+        since = Date.now() - val * multipliers[unit];
+      } else {
+        since = Date.now() - 24 * 60 * 60 * 1000;
+      }
+
+      const report = exportDebugReport({
+        since,
+        group: isMainGroup ? undefined : group?.folder,
+      });
+      const reportJson = JSON.stringify(report, null, 2);
+
+      const mediaDir = path.join(GROUPS_DIR, group?.folder || 'main', 'media');
+      fs.mkdirSync(mediaDir, { recursive: true });
+      const tmpPath = path.join(mediaDir, `debug-${Date.now()}.json`);
+      fs.writeFileSync(tmpPath, reportJson);
+
+      try {
+        const caption = `Debug events: ${report.stats.total} total, exported ${report.events.length}`;
+        await sendTelegramDocument(chatId, tmpPath, caption);
+      } finally {
+        try { fs.unlinkSync(tmpPath); } catch {}
+      }
+      logDebugEvent('telegram', 'command_invoked', group?.folder || null, { command: 'debug', params });
+      return;
+    }
+
+    // Interactive mode: show service picker
+    await ctx.reply(buildDebugOverview(), {
+      parse_mode: 'HTML',
+      reply_markup: buildDebugServiceKeyboard(),
+    });
+    logDebugEvent('telegram', 'command_invoked', group?.folder || null, { command: 'debug', params: 'interactive' });
+  });
+
   // --- Inline keyboard callback handler ---
 
   bot.on('callback_query:data', async (ctx) => {
@@ -1668,6 +1723,96 @@ export async function connectTelegram(
       return;
     }
 
+    // --- Debug UI inline button callbacks ---
+    if (data.startsWith('d:')) {
+      const dParts = data.split(':');
+      const dAction = dParts[1];
+
+      if (dAction === 'back') {
+        await ctx.editMessageText(buildDebugOverview(), {
+          parse_mode: 'HTML',
+          reply_markup: buildDebugServiceKeyboard(),
+        });
+        await ctx.answerCallbackQuery();
+        return;
+      }
+
+      if (dAction === 'export') {
+        const chatId = makeTelegramChatId(ctx.chat.id);
+        const group = registeredGroups()[chatId];
+        const isMainGroup = group && group.folder === 'main';
+        const report = exportDebugReport({
+          since: Date.now() - 24 * 60 * 60 * 1000,
+          group: isMainGroup ? undefined : group?.folder,
+        });
+        const reportJson = JSON.stringify(report, null, 2);
+
+        const mediaDir = path.join(GROUPS_DIR, group?.folder || 'main', 'media');
+        fs.mkdirSync(mediaDir, { recursive: true });
+        const tmpPath = path.join(mediaDir, `debug-${Date.now()}.json`);
+        fs.writeFileSync(tmpPath, reportJson);
+
+        try {
+          const caption = `Debug events: ${report.stats.total} total, exported ${report.events.length}`;
+          await sendTelegramDocument(chatId, tmpPath, caption);
+        } finally {
+          try { fs.unlinkSync(tmpPath); } catch {}
+        }
+        await ctx.answerCallbackQuery({ text: 'Report exported' });
+        return;
+      }
+
+      if (dAction === 'svc') {
+        const service = dParts[2];
+        const { text, keyboard } = buildServiceLogView(service);
+        await ctx.editMessageText(text, {
+          parse_mode: 'HTML',
+          reply_markup: keyboard,
+        });
+        await ctx.answerCallbackQuery();
+        return;
+      }
+
+      if (dAction === 'err') {
+        const service = dParts[2];
+        const { text, keyboard } = buildServiceLogView(service, { minLevel: 50 });
+        await ctx.editMessageText(text, {
+          parse_mode: 'HTML',
+          reply_markup: keyboard,
+        });
+        await ctx.answerCallbackQuery();
+        return;
+      }
+
+      if (dAction === 'wrn') {
+        const service = dParts[2];
+        const { text, keyboard } = buildServiceLogView(service, { minLevel: 40 });
+        await ctx.editMessageText(text, {
+          parse_mode: 'HTML',
+          reply_markup: keyboard,
+        });
+        await ctx.answerCallbackQuery();
+        return;
+      }
+
+      if (dAction === 'pg') {
+        const service = dParts[2];
+        const page = parseInt(dParts[3] || '0', 10);
+        const filter = dParts[4]; // optional: 'err' or 'wrn'
+        const minLevel = filter === 'err' ? 50 : filter === 'wrn' ? 40 : undefined;
+        const { text, keyboard } = buildServiceLogView(service, { page, minLevel });
+        await ctx.editMessageText(text, {
+          parse_mode: 'HTML',
+          reply_markup: keyboard,
+        });
+        await ctx.answerCallbackQuery();
+        return;
+      }
+
+      await ctx.answerCallbackQuery({ text: 'Unknown debug action' });
+      return;
+    }
+
     if (!data.startsWith('t:')) return;
 
     const parts = data.split(':');
@@ -1834,7 +1979,7 @@ export async function connectTelegram(
   const grammyHandledCommands = new Set([
     'new', 'clear', 'status', 'takeover', 'dashboard', 'help', 'skills',
     'verbose', 'thinking', 'stop', 'update', 'rebuild', 'tasks', 'runtask',
-    'reset', 'model',
+    'reset', 'model', 'debug',
   ]);
 
   bot.on('message:text', async (ctx) => {

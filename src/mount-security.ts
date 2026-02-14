@@ -8,15 +8,10 @@
  */
 import fs from 'fs';
 import path from 'path';
-import pino from 'pino';
 
 import { MOUNT_ALLOWLIST_PATH } from './config.js';
+import { logger } from './logger.js';
 import { AdditionalMount, AllowedRoot, MountAllowlist } from './types.js';
-
-const logger = pino({
-  level: process.env.LOG_LEVEL || 'info',
-  transport: { target: 'pino-pretty', options: { colorize: true } },
-});
 
 // Cache the allowlist in memory - only reloads on process restart
 let cachedAllowlist: MountAllowlist | null = null;
@@ -67,7 +62,7 @@ export function loadMountAllowlist(): MountAllowlist | null {
     if (!fs.existsSync(MOUNT_ALLOWLIST_PATH)) {
       allowlistLoadError = `Mount allowlist not found at ${MOUNT_ALLOWLIST_PATH}`;
       logger.warn(
-        { path: MOUNT_ALLOWLIST_PATH },
+        { module: 'mount-security', path: MOUNT_ALLOWLIST_PATH },
         'Mount allowlist not found - additional mounts will be BLOCKED. ' +
           'Create the file to enable additional mounts.',
       );
@@ -99,6 +94,7 @@ export function loadMountAllowlist(): MountAllowlist | null {
     cachedAllowlist = allowlist;
     logger.info(
       {
+        module: 'mount-security',
         path: MOUNT_ALLOWLIST_PATH,
         allowedRoots: allowlist.allowedRoots.length,
         blockedPatterns: allowlist.blockedPatterns.length,
@@ -111,6 +107,7 @@ export function loadMountAllowlist(): MountAllowlist | null {
     allowlistLoadError = err instanceof Error ? err.message : String(err);
     logger.error(
       {
+        module: 'mount-security',
         path: MOUNT_ALLOWLIST_PATH,
         error: allowlistLoadError,
       },
@@ -297,6 +294,7 @@ export function validateMount(
       effectiveReadonly = true;
       logger.info(
         {
+          module: 'mount-security',
           mount: mount.hostPath,
         },
         'Mount forced to read-only for non-main group',
@@ -306,6 +304,7 @@ export function validateMount(
       effectiveReadonly = true;
       logger.info(
         {
+          module: 'mount-security',
           mount: mount.hostPath,
           root: allowedRoot.path,
         },
@@ -357,6 +356,7 @@ export function validateAdditionalMounts(
 
       logger.debug(
         {
+          module: 'mount-security',
           group: groupName,
           hostPath: result.realHostPath,
           containerPath: mount.containerPath,
@@ -368,6 +368,7 @@ export function validateAdditionalMounts(
     } else {
       logger.warn(
         {
+          module: 'mount-security',
           group: groupName,
           requestedPath: mount.hostPath,
           containerPath: mount.containerPath,

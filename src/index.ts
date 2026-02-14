@@ -136,7 +136,8 @@ import { emitCuaActivity } from './cua-activity.js';
 import { initTrajectoryPersistence } from './cua-trajectory.js';
 import { agentSemaphore } from './concurrency.js';
 import { MAX_CONVERSATION_MESSAGES } from './config.js';
-import { logDebugEvent, exportDebugReport, pruneDebugEventEntries } from './debug-log.js';
+import { logDebugEvent, pruneDebugEventEntries } from './debug-log.js';
+import { closeServiceLogHandles, rotateServiceLogs } from './service-log-writer.js';
 import { hasSoulConfigured, resolveAssistantIdentity } from './soul.js';
 
 let lastTimestamp = '';
@@ -529,43 +530,6 @@ async function processMessage(msg: NewMessage): Promise<void> {
       await sendMessage(msg.chat_jid, 'TTS muted — text only.');
     }
     logDebugEvent('telegram', 'command_invoked', group.folder, { command: 'mute', wasMuted });
-    return;
-  }
-
-  // Handle /debug — export debug event log (host-level, no agent needed)
-  const debugMatch = content.match(/^\/debug(?:\s+(.*))?$/i);
-  if (debugMatch) {
-    const params = (debugMatch[1] || '').trim();
-
-    let since: number | undefined;
-    const durationMatch = params.match(/^(\d+)([hdm])$/);
-    if (durationMatch) {
-      const val = parseInt(durationMatch[1], 10);
-      const unit = durationMatch[2];
-      const multipliers: Record<string, number> = { h: 3600000, d: 86400000, m: 60000 };
-      since = Date.now() - val * multipliers[unit];
-    } else if (!params) {
-      since = Date.now() - 24 * 60 * 60 * 1000; // Default: last 24h
-    }
-
-    const report = exportDebugReport({
-      since,
-      group: isMainGroup ? undefined : group.folder,
-    });
-    const reportJson = JSON.stringify(report, null, 2);
-
-    const mediaDir = path.join(GROUPS_DIR, group.folder, 'media');
-    fs.mkdirSync(mediaDir, { recursive: true });
-    const tmpPath = path.join(mediaDir, `debug-${Date.now()}.json`);
-    fs.writeFileSync(tmpPath, reportJson);
-
-    try {
-      const caption = `Debug events: ${report.stats.total} total, exported ${report.events.length}`;
-      await sendTelegramDocument(msg.chat_jid, tmpPath, caption);
-    } finally {
-      try { fs.unlinkSync(tmpPath); } catch {}
-    }
-    logDebugEvent('telegram', 'command_invoked', group.folder, { command: 'debug', params });
     return;
   }
 
@@ -2514,6 +2478,7 @@ async function main(): Promise<void> {
   initLogSync();
   pruneOldLogEntries();
   pruneDebugEventEntries();
+  rotateServiceLogs(10);
   loadState();
   // Clean up old media files on startup (7 day retention)
   for (const group of Object.values(registeredGroups)) {
@@ -2595,6 +2560,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     stopLogSync();
     stopCuaTakeoverServer();
     cleanupSandbox();
+    closeServiceLogHandles();
     process.exit(0);
   });
 }

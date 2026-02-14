@@ -108,30 +108,31 @@ function startCuaSandbox(forceRecreate = false): void {
   if (CUA_SANDBOX_PERSIST && !forceRecreate && containerExists(name)) {
     if (isContainerImageStale(name, CUA_SANDBOX_IMAGE)) {
       logger.info(
+        { module: 'sandbox' },
         'CUA sandbox image is stale (image updated), recreating container',
       );
       removeContainerIfPresent(name);
       // Fall through to docker run
     } else if (!isContainerRunning(name)) {
-      logger.info('Restarting existing CUA desktop sandbox (state preserved)');
+      logger.info({ module: 'sandbox' }, 'Restarting existing CUA desktop sandbox (state preserved)');
       try {
         execSync(`docker start ${name}`, { stdio: 'pipe' });
-        logger.info('CUA desktop sandbox restarted');
+        logger.info({ module: 'sandbox' }, 'CUA desktop sandbox restarted');
         return;
       } catch (err) {
-        logger.warn({ err }, 'Failed to restart CUA sandbox, will recreate');
+        logger.warn({ module: 'sandbox', err }, 'Failed to restart CUA sandbox, will recreate');
         removeContainerIfPresent(name);
         // Fall through to docker run
       }
     } else {
-      logger.debug('CUA desktop sandbox is already running');
+      logger.debug({ module: 'sandbox' }, 'CUA desktop sandbox is already running');
       return;
     }
   } else {
     removeContainerIfPresent(name);
   }
 
-  logger.info('Creating new CUA desktop sandbox container');
+  logger.info({ module: 'sandbox' }, 'Creating new CUA desktop sandbox container');
   const resolution = `${CUA_SANDBOX_SCREEN_WIDTH}x${CUA_SANDBOX_SCREEN_HEIGHT}`;
   const args = [
     'docker run -d',
@@ -162,15 +163,15 @@ function startCuaSandbox(forceRecreate = false): void {
 
   try {
     execSync(args.join(' '), { stdio: 'pipe' });
-    logger.info('CUA desktop sandbox started');
+    logger.info({ module: 'sandbox' }, 'CUA desktop sandbox started');
   } catch (err) {
-    logger.error({ err }, 'Failed to start CUA desktop sandbox');
+    logger.error({ module: 'sandbox', err }, 'Failed to start CUA desktop sandbox');
     throw err;
   }
 }
 
 function stopCuaSandbox(): void {
-  logger.info('Stopping CUA desktop sandbox');
+  logger.info({ module: 'sandbox' }, 'Stopping CUA desktop sandbox');
   currentVncPassword = null;
   try {
     execSync(`docker stop ${CUA_SANDBOX_CONTAINER_NAME}`, { stdio: 'pipe' });
@@ -196,11 +197,12 @@ function waitForCuaReady(): void {
           timeout: 3000,
         },
       );
-      logger.info('CUA sandbox command server is reachable from host');
+      logger.info({ module: 'sandbox' }, 'CUA sandbox command server is reachable from host');
       return;
     } catch {
       if (i === 19) {
         logger.warn(
+          { module: 'sandbox' },
           'CUA sandbox server not reachable after 20 attempts, proceeding anyway',
         );
       }
@@ -240,10 +242,10 @@ function getTailscaleIp(): string {
     cachedTailscaleIp = execSync('tailscale ip -4', { stdio: 'pipe' })
       .toString()
       .trim();
-    logger.info({ ip: cachedTailscaleIp }, 'Tailscale IP resolved');
+    logger.info({ module: 'sandbox', ip: cachedTailscaleIp }, 'Tailscale IP resolved');
     return cachedTailscaleIp;
   } catch {
-    logger.warn('Could not resolve Tailscale IP, falling back to 127.0.0.1');
+    logger.warn({ module: 'sandbox' }, 'Could not resolve Tailscale IP, falling back to 127.0.0.1');
     return '127.0.0.1';
   }
 }
@@ -260,12 +262,12 @@ export function startIdleWatcher(): void {
       Date.now() - lastBrowseActivity > SANDBOX_IDLE_TIMEOUT_MS &&
       isSandboxRunning()
     ) {
-      logger.info('Sandbox idle timeout reached, stopping CUA desktop sandbox');
+      logger.info({ module: 'sandbox' }, 'Sandbox idle timeout reached, stopping CUA desktop sandbox');
       stopCuaSandbox();
       lastBrowseActivity = 0;
     }
   }, 60_000);
-  logger.info('Sandbox idle watcher started (CUA mode)');
+  logger.info({ module: 'sandbox' }, 'Sandbox idle watcher started (CUA mode)');
 }
 
 export function cleanupSandbox(): void {
@@ -280,7 +282,7 @@ export function cleanupSandbox(): void {
 
 /** Force-recreate the sandbox container. Named volume is preserved. */
 export function resetSandbox(): void {
-  logger.info('Force-resetting CUA desktop sandbox (will recreate)');
+  logger.info({ module: 'sandbox' }, 'Force-resetting CUA desktop sandbox (will recreate)');
   try {
     execSync(`docker stop ${CUA_SANDBOX_CONTAINER_NAME}`, { stdio: 'pipe' });
   } catch {
@@ -291,7 +293,7 @@ export function resetSandbox(): void {
 
 /** Full reset: remove container AND wipe the home volume data. */
 export function resetSandboxFull(): void {
-  logger.info('Full CUA sandbox reset (container + volume data)');
+  logger.info({ module: 'sandbox' }, 'Full CUA sandbox reset (container + volume data)');
   resetSandbox();
   if (CUA_SANDBOX_PERSIST) {
     try {
@@ -300,7 +302,7 @@ export function resetSandboxFull(): void {
         timeout: 5000,
       });
       logger.info(
-        { volume: CUA_SANDBOX_HOME_VOLUME },
+        { module: 'sandbox', volume: CUA_SANDBOX_HOME_VOLUME },
         'Removed CUA home volume',
       );
     } catch {
@@ -330,7 +332,7 @@ export async function rotateSandboxVncPassword(): Promise<string | null> {
       `docker exec ${container} /rotate-vnc-pw.sh ${shellQuote(newPassword)}`,
     );
     currentVncPassword = newPassword;
-    logger.info('VNC password rotated via /rotate-vnc-pw.sh');
+    logger.info({ module: 'sandbox' }, 'VNC password rotated via /rotate-vnc-pw.sh');
     return newPassword;
   } catch {
     // Helper script not available (e.g. trycua image) — try inline rotation
@@ -346,11 +348,11 @@ export async function rotateSandboxVncPassword(): Promise<string | null> {
     ].join(' && ');
     await execAsync(`docker exec ${container} bash -c ${shellQuote(cmd)}`);
     currentVncPassword = newPassword;
-    logger.info('VNC password rotated via inline exec');
+    logger.info({ module: 'sandbox' }, 'VNC password rotated via inline exec');
     return newPassword;
   } catch (err) {
     logger.warn(
-      { err: err instanceof Error ? err.message : String(err) },
+      { module: 'sandbox', err: err instanceof Error ? err.message : String(err) },
       'Failed to rotate VNC password — sandbox may not support x11vnc password rotation',
     );
     return null;

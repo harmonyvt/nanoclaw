@@ -35,6 +35,7 @@ export type UnifiedVoiceProfile = QwenSelfHostedProfile | ReplicateVoiceProfile;
 export function loadUnifiedVoiceProfile(
   groupFolder: string,
 ): UnifiedVoiceProfile | null {
+  const loadStart = Date.now();
   const profilePath = path.join(GROUPS_DIR, groupFolder, 'voice_profile.json');
   if (!fs.existsSync(profilePath)) return null;
 
@@ -72,11 +73,15 @@ export function loadUnifiedVoiceProfile(
       return null;
     }
     const profile = loadVoiceProfile(groupFolder);
+    const loadMs = Date.now() - loadStart;
     if (profile) {
       logger.info(
         { module: 'tts-dispatch', groupFolder, provider, mode: profile.mode },
         'Loaded voice profile (self-hosted qwen3-tts)',
       );
+    }
+    if (loadMs > 0) {
+      logger.debug({ module: 'tts-dispatch', groupFolder, loadMs }, 'Voice profile load duration');
     }
     return profile;
   }
@@ -145,10 +150,14 @@ export function loadUnifiedVoiceProfile(
       };
     }
 
+    const loadMs = Date.now() - loadStart;
     logger.info(
       { module: 'tts-dispatch', groupFolder, provider, mode },
       'Loaded voice profile (Replicate qwen3-tts)',
     );
+    if (loadMs > 0) {
+      logger.debug({ module: 'tts-dispatch', groupFolder, loadMs }, 'Voice profile load duration');
+    }
     return profile;
   }
 
@@ -180,10 +189,14 @@ export function loadUnifiedVoiceProfile(
       profile.extras = parsed.extras as ChatterboxExtrasType;
     }
 
+    const loadMs = Date.now() - loadStart;
     logger.info(
       { module: 'tts-dispatch', groupFolder, provider, mode },
       'Loaded voice profile (Replicate chatterbox-turbo)',
     );
+    if (loadMs > 0) {
+      logger.debug({ module: 'tts-dispatch', groupFolder, loadMs }, 'Voice profile load duration');
+    }
     return profile;
   }
 
@@ -207,10 +220,14 @@ export function loadUnifiedVoiceProfile(
       profile.extras = parsed.extras as MinimaxExtrasType;
     }
 
+    const loadMs = Date.now() - loadStart;
     logger.info(
       { module: 'tts-dispatch', groupFolder, provider, mode: 'custom_voice' },
       'Loaded voice profile (Replicate minimax)',
     );
+    if (loadMs > 0) {
+      logger.debug({ module: 'tts-dispatch', groupFolder, loadMs }, 'Voice profile load duration');
+    }
     return profile;
   }
 
@@ -272,12 +289,26 @@ export async function synthesizeTTS(
   mediaDir: string,
   groupFolder: string,
 ): Promise<string> {
+  const dispatchStart = Date.now();
+
   if (profile.provider === 'qwen3-tts') {
     logger.info(
       { module: 'tts-dispatch', groupFolder, provider: 'qwen3-tts', mode: profile.mode, textLength: text.length },
       'Dispatching TTS to self-hosted Qwen',
     );
-    return synthesizeQwenTTS(text, profile, mediaDir, groupFolder);
+    try {
+      const result = await synthesizeQwenTTS(text, profile, mediaDir, groupFolder);
+      const durationMs = Date.now() - dispatchStart;
+      logger.info({ module: 'tts-dispatch', provider: 'qwen3-tts', durationMs, textLength: text.length }, 'TTS synthesis completed');
+      return result;
+    } catch (err) {
+      const durationMs = Date.now() - dispatchStart;
+      logger.error(
+        { module: 'tts-dispatch', provider: 'qwen3-tts', durationMs, textLength: text.length, error: err instanceof Error ? err.message : String(err) },
+        'TTS synthesis failed',
+      );
+      throw err;
+    }
   }
 
   // All providers with a '/' are Replicate-hosted
@@ -285,5 +316,17 @@ export async function synthesizeTTS(
     { module: 'tts-dispatch', groupFolder, provider: profile.provider, mode: profile.mode, textLength: text.length },
     'Dispatching TTS to Replicate',
   );
-  return synthesizeReplicateTTS(text, profile as ReplicateVoiceProfile, mediaDir, groupFolder);
+  try {
+    const result = await synthesizeReplicateTTS(text, profile as ReplicateVoiceProfile, mediaDir, groupFolder);
+    const durationMs = Date.now() - dispatchStart;
+    logger.info({ module: 'tts-dispatch', provider: profile.provider, durationMs, textLength: text.length }, 'TTS synthesis completed');
+    return result;
+  } catch (err) {
+    const durationMs = Date.now() - dispatchStart;
+    logger.error(
+      { module: 'tts-dispatch', provider: profile.provider, durationMs, textLength: text.length, error: err instanceof Error ? err.message : String(err) },
+      'TTS synthesis failed',
+    );
+    throw err;
+  }
 }
