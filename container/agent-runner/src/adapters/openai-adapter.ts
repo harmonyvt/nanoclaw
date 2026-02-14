@@ -408,11 +408,11 @@ export class OpenAIAdapter implements ProviderAdapter {
             stream: true,
           };
           stream = (await client.chat.completions.create(
-            fallbackParams as any,
+            fallbackParams as OpenAI.ChatCompletionCreateParamsStreaming,
           )) as unknown as AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>;
           bufLog(`Stream created (fallback) in ${Date.now() - streamStartTime}ms`);
         } else {
-          const errMsg = apiErr instanceof Error ? (apiErr as Error).message : String(apiErr);
+          const errMsg = apiErr instanceof Error ? apiErr.message : String(apiErr);
           const errObj = apiErr as Record<string, unknown>;
           const status = errObj?.status || (errObj?.response as Record<string, unknown>)?.status || 'unknown';
           bufLog(`API request failed: status=${status}, error=${errMsg}`);

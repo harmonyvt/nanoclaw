@@ -1003,7 +1003,7 @@ async function runAgent(
     if (e.includes('timed out') || e.includes('socket error') || e.includes('connection closed')) {
       return false;
     }
-    if (e.includes('400')) return true;
+    if (/\bstatus[=:\s]+400\b/.test(e)) return true;
     if (e.includes('bad request')) return true;
     if (e.includes('invalid api parameter')) return true;
     if (e.includes('only one of "reasoning" and "reasoning_effort"')) return true;
@@ -1087,6 +1087,19 @@ async function runAgent(
 
       return output.result;
     } catch (err) {
+      if (isNonRetryableError(String(err))) {
+        logDebugEvent('sdk', 'agent_exception', group.folder, {
+          error: String(err),
+          attempts: attempt + 1,
+          nonRetryable: true,
+        });
+        logger.error(
+          { module: 'index', group: group.name, err, attempts: attempt + 1 },
+          'Agent exception (non-retryable)',
+        );
+        await notifyFailure(String(err));
+        return null;
+      }
       if (attempt < MAX_AGENT_RETRIES) continue;
       logDebugEvent('sdk', 'agent_exception', group.folder, {
         error: String(err),
