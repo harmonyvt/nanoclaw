@@ -1057,7 +1057,7 @@ export function removeModelFromMenu(chatJid: string, id: number): void {
  * Get the full model menu for a chat, with is_active flag.
  */
 export function getModelMenu(chatJid: string): ModelMenuItem[] {
-  return db
+  const rows = db
     .prepare(
       `
       SELECT mm.id, mm.label, mm.model,
@@ -1069,13 +1069,19 @@ export function getModelMenu(chatJid: string): ModelMenuItem[] {
       ORDER BY mm.sort_order, mm.id
     `,
     )
-    .all(chatJid)
-    .map((row: any) => ({
-      id: row.id as number,
-      label: row.label as string,
-      model: row.model as string,
-      is_active: row.is_active === 1,
-    }));
+    .all(chatJid) as Array<{
+    id: number;
+    label: string;
+    model: string;
+    is_active: number;
+  }>;
+
+  return rows.map((row) => ({
+    id: row.id,
+    label: row.label,
+    model: row.model,
+    is_active: row.is_active === 1,
+  }));
 }
 
 /**
