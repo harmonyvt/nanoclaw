@@ -158,6 +158,26 @@ interface ActiveStatusMessage {
 /** Active italic status messages keyed by group folder */
 const activeStatusMessages = new Map<string, ActiveStatusMessage>();
 
+// ─── Response Streaming Message Tracking ─────────────────────────────────────
+
+interface ActiveStreamingMessage {
+  chatJid: string;
+  messageId: number;
+  currentText: string;
+  lastEditTime: number;
+}
+
+/** Active streaming response messages keyed by group folder (plain text, edit-in-place) */
+const activeStreamingMessages = new Map<string, ActiveStreamingMessage>();
+
+async function cleanupStreamingMessage(groupFolder: string): Promise<void> {
+  const entry = activeStreamingMessages.get(groupFolder);
+  if (entry) {
+    activeStreamingMessages.delete(groupFolder);
+    await deleteTelegramMessage(entry.chatJid, entry.messageId);
+  }
+}
+
 // ─── CUA Log Message Tracking ────────────────────────────────────────────────
 
 interface ActiveCuaLogMessage {
@@ -566,6 +586,7 @@ For minimax/speech-2.8-turbo:
     await setTyping(msg.chat_jid, true);
     const response = await runAgent(group, prompt, msg.chat_jid, { isSkillInvocation: true });
     await setTyping(msg.chat_jid, false);
+    await cleanupStreamingMessage(group.folder);
 
     if (response) {
       storeAssistantMessage(
@@ -638,6 +659,7 @@ After any SOUL.md modification:
     await setTyping(msg.chat_jid, true);
     const response = await runAgent(group, prompt, msg.chat_jid, { isSkillInvocation: true });
     await setTyping(msg.chat_jid, false);
+    await cleanupStreamingMessage(group.folder);
 
     if (response) {
       storeAssistantMessage(
@@ -689,6 +711,7 @@ After any SOUL.md modification:
       await setTyping(msg.chat_jid, true);
       const response = await runAgent(group, prompt, msg.chat_jid, { isSkillInvocation: true });
       await setTyping(msg.chat_jid, false);
+      await cleanupStreamingMessage(group.folder);
 
       if (response) {
         storeAssistantMessage(
@@ -778,6 +801,9 @@ After any SOUL.md modification:
   });
 
   await setTyping(msg.chat_jid, false);
+
+  // Clean up the streaming response message (before thinking, before final response)
+  await cleanupStreamingMessage(group.folder);
 
   // Clean up the thinking status message(s)
   const statusEntry = activeStatusMessages.get(group.folder);
@@ -1230,13 +1256,16 @@ async function processStatusEvents(
 ): Promise<void> {
   if (events.length === 0) return;
 
-  // Always log adapter_stderr events to Pino
+  // Always log adapter_stderr events to Pino and debug events
   for (const evt of events) {
     if (evt.type === 'adapter_stderr') {
       logger.warn(
         { module: 'claude-cli', group_folder: sourceGroup },
         `[stderr] ${evt.message}`,
       );
+      logDebugEvent('sdk', 'adapter_log', sourceGroup, {
+        message: String(evt.message),
+      });
     }
     if (evt.type === 'tool_start') {
       logDebugEvent('sdk', 'tool_call', sourceGroup, {
@@ -1311,6 +1340,48 @@ async function processStatusEvents(
               statusEntry.extraMessageIds.push(extraId);
             }
           }
+        }
+      }
+    }
+  }
+
+  // Update streaming response message (progressive text display)
+  const lastResponseDelta = [...events].reverse().find((e) => e.type === 'response_delta');
+  if (lastResponseDelta) {
+    const content = String(lastResponseDelta.content);
+    const responseChatJid = statusEntry?.chatJid ||
+      Object.entries(registeredGroups).find(([, g]) => g.folder === sourceGroup)?.[0];
+
+    if (responseChatJid && content) {
+      let streamEntry = activeStreamingMessages.get(sourceGroup);
+      const now = Date.now();
+
+      if (!streamEntry) {
+        // Create the streaming message (plain text, not italic)
+        const truncated = content.length > 4000 ? content.slice(-4000) : content;
+        const msgId = await sendTelegramMessageWithId(responseChatJid, truncated);
+        if (msgId) {
+          activeStreamingMessages.set(sourceGroup, {
+            chatJid: responseChatJid,
+            messageId: msgId,
+            currentText: content,
+            lastEditTime: now,
+          });
+        }
+      } else if (
+        content !== streamEntry.currentText &&
+        now - streamEntry.lastEditTime >= STATUS_EDIT_INTERVAL_MS
+      ) {
+        // Edit the existing streaming message with updated content
+        const truncated = content.length > 4000 ? content.slice(-4000) : content;
+        const edited = await editTelegramMessageText(
+          streamEntry.chatJid,
+          streamEntry.messageId,
+          truncated,
+        );
+        if (edited) {
+          streamEntry.currentText = content;
+          streamEntry.lastEditTime = now;
         }
       }
     }

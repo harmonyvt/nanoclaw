@@ -40,6 +40,7 @@ export interface NanoTool {
 export type AgentEvent =
   | { type: 'session_init'; sessionId: string }
   | { type: 'result'; result: string }
+  | { type: 'response_delta'; content: string }
   | { type: 'tool_start'; toolName: string; preview: string }
   | { type: 'tool_progress'; toolName: string; elapsedSeconds?: number }
   | { type: 'thinking'; content: string }
