@@ -408,7 +408,7 @@ export class OpenAIAdapter implements ProviderAdapter {
             stream: true,
           };
           stream = (await client.chat.completions.create(
-            fallbackParams as OpenAI.ChatCompletionCreateParamsStreaming,
+            fallbackParams as unknown as OpenAI.ChatCompletionCreateParamsStreaming,
           )) as unknown as AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>;
           bufLog(`Stream created (fallback) in ${Date.now() - streamStartTime}ms`);
         } else {
