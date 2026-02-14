@@ -988,6 +988,28 @@ async function runAgent(
     enableThinking: isThinkingEnabled(chatJid),
   };
 
+  const summarizeError = (error: string): string =>
+    error.replace(/\s+/g, ' ').trim().slice(0, 600);
+
+  const notifyFailure = async (error: string): Promise<void> => {
+    await sendMessage(
+      chatJid,
+      `I couldn't complete that request.\nReason: ${summarizeError(error)}`,
+    );
+  };
+
+  const isNonRetryableError = (error: string): boolean => {
+    const e = error.toLowerCase();
+    if (e.includes('timed out') || e.includes('socket error') || e.includes('connection closed')) {
+      return false;
+    }
+    if (/\bstatus[=:\s]+400\b/.test(e)) return true;
+    if (e.includes('bad request')) return true;
+    if (e.includes('invalid api parameter')) return true;
+    if (e.includes('only one of "reasoning" and "reasoning_effort"')) return true;
+    return false;
+  };
+
   for (let attempt = 0; attempt <= MAX_AGENT_RETRIES; attempt++) {
     if (attempt > 0) {
       // Check if group was interrupted before retrying
@@ -1036,6 +1058,20 @@ async function runAgent(
       }
 
       if (output.status === 'error') {
+        if (isNonRetryableError(output.error || '')) {
+          logDebugEvent('sdk', 'agent_error', group.folder, {
+            error: output.error,
+            attempts: attempt + 1,
+            nonRetryable: true,
+          });
+          logger.error(
+            { module: 'index', group: group.name, error: output.error, attempts: attempt + 1 },
+            'Container agent error (non-retryable)',
+          );
+          await notifyFailure(output.error || 'Unknown error');
+          return null;
+        }
+
         if (attempt < MAX_AGENT_RETRIES) continue;
         logDebugEvent('sdk', 'agent_error', group.folder, {
           error: output.error,
@@ -1045,11 +1081,25 @@ async function runAgent(
           { module: 'index', group: group.name, error: output.error, attempts: attempt + 1 },
           'Container agent error (retries exhausted)',
         );
+        await notifyFailure(output.error || 'Unknown error');
         return null;
       }
 
       return output.result;
     } catch (err) {
+      if (isNonRetryableError(String(err))) {
+        logDebugEvent('sdk', 'agent_exception', group.folder, {
+          error: String(err),
+          attempts: attempt + 1,
+          nonRetryable: true,
+        });
+        logger.error(
+          { module: 'index', group: group.name, err, attempts: attempt + 1 },
+          'Agent exception (non-retryable)',
+        );
+        await notifyFailure(String(err));
+        return null;
+      }
       if (attempt < MAX_AGENT_RETRIES) continue;
       logDebugEvent('sdk', 'agent_exception', group.folder, {
         error: String(err),
@@ -1059,6 +1109,7 @@ async function runAgent(
         { module: 'index', group: group.name, err, attempts: attempt + 1 },
         'Agent error (retries exhausted)',
       );
+      await notifyFailure(String(err));
       return null;
     }
   }

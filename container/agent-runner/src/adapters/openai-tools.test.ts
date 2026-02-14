@@ -201,6 +201,18 @@ describe('openai-tools', () => {
       expect(parsed.error).toContain('nonexistent_tool');
     });
 
+    test('trims whitespace around tool names before lookup', async () => {
+      const ctx = makeMockCtx();
+      const result = await executeNanoTool(
+        '  send_message  ',
+        { text: 'Trimmed tool call' },
+        ctx,
+      );
+
+      expect(typeof result).toBe('string');
+      expect(result).toContain('Message queued for delivery');
+    });
+
     test('returns error string when handler throws', async () => {
       // schedule_task with invalid cron should return an isError result,
       // but we want to test the catch path. We can trigger it by calling

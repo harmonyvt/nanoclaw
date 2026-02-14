@@ -54,6 +54,7 @@ function log(message: string): void {
 // ─── Reasoning Effort ───────────────────────────────────────────────────────
 
 type ReasoningEffort = 'low' | 'medium' | 'high';
+type ReasoningParamMode = 'none' | 'reasoning_effort' | 'reasoning_object';
 
 /**
  * Resolve the reasoning_effort parameter for the API call.
@@ -68,6 +69,21 @@ export function resolveReasoningEffort(
     return envVal;
   }
   return 'medium';
+}
+
+function chooseReasoningParamMode(
+  baseUrl: string | undefined,
+  reasoningEffort: ReasoningEffort | undefined,
+): ReasoningParamMode {
+  if (!reasoningEffort) return 'none';
+  // OpenRouter can reject requests when both styles are present. Prefer `reasoning`.
+  if (baseUrl?.includes('openrouter.ai')) return 'reasoning_object';
+  return 'reasoning_effort';
+}
+
+function isReasoningParamConflictError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /only one of ["']?reasoning["']? and ["']?reasoning_effort["']?/i.test(msg);
 }
 
 // ─── XML Conversation Parser ────────────────────────────────────────────────
@@ -247,6 +263,7 @@ export class OpenAIAdapter implements ProviderAdapter {
     });
     const model = input.model || 'gpt-4o';
     const reasoningEffort = resolveReasoningEffort(input.enableThinking);
+    let reasoningParamMode = chooseReasoningParamMode(input.baseUrl || process.env.OPENAI_BASE_URL, reasoningEffort);
 
     const effectiveBaseUrl = input.baseUrl || process.env.OPENAI_BASE_URL || '(default)';
     bufLog(`Client config: model=${model}, baseURL=${effectiveBaseUrl}, thinking=${input.enableThinking !== false}`);
@@ -353,14 +370,10 @@ export class OpenAIAdapter implements ProviderAdapter {
         tools: tools.length > 0 ? tools : undefined,
         stream: true,
       };
-      if (reasoningEffort) {
+      if (reasoningEffort && reasoningParamMode === 'reasoning_effort') {
         createParams.reasoning_effort = reasoningEffort;
-        // Only send OpenRouter-style reasoning object for non-OpenAI endpoints
-        // to avoid potential validation errors with the official OpenAI API
-        const baseUrl = input.baseUrl || process.env.OPENAI_BASE_URL || '';
-        if (baseUrl && !baseUrl.includes('api.openai.com')) {
-          createParams.reasoning = { effort: reasoningEffort };
-        }
+      } else if (reasoningEffort && reasoningParamMode === 'reasoning_object') {
+        createParams.reasoning = { effort: reasoningEffort };
       }
 
       const reqParamKeys = Object.keys(createParams).filter(k => k !== 'messages');
@@ -383,18 +396,35 @@ export class OpenAIAdapter implements ProviderAdapter {
         )) as unknown as AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>;
         bufLog(`Stream created in ${Date.now() - streamStartTime}ms`);
       } catch (apiErr) {
-        const errMsg = apiErr instanceof Error ? apiErr.message : String(apiErr);
-        const errObj = apiErr as Record<string, unknown>;
-        const status = errObj?.status || (errObj?.response as Record<string, unknown>)?.status || 'unknown';
-        bufLog(`API request failed: status=${status}, error=${errMsg}`);
-        if (errObj?.error) {
-          bufLog(`API error body: ${JSON.stringify(errObj.error).slice(0, 500)}`);
+        // Some providers (notably OpenRouter) reject mixed reasoning params.
+        // If that happens, disable reasoning params for this run and retry once.
+        if (reasoningParamMode !== 'none' && isReasoningParamConflictError(apiErr)) {
+          bufLog('Reasoning parameter conflict detected; retrying request with reasoning disabled');
+          reasoningParamMode = 'none';
+          const fallbackParams: Record<string, unknown> = {
+            model,
+            messages,
+            tools: tools.length > 0 ? tools : undefined,
+            stream: true,
+          };
+          stream = (await client.chat.completions.create(
+            fallbackParams as OpenAI.ChatCompletionCreateParamsStreaming,
+          )) as unknown as AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>;
+          bufLog(`Stream created (fallback) in ${Date.now() - streamStartTime}ms`);
+        } else {
+          const errMsg = apiErr instanceof Error ? apiErr.message : String(apiErr);
+          const errObj = apiErr as Record<string, unknown>;
+          const status = errObj?.status || (errObj?.response as Record<string, unknown>)?.status || 'unknown';
+          bufLog(`API request failed: status=${status}, error=${errMsg}`);
+          if (errObj?.error) {
+            bufLog(`API error body: ${JSON.stringify(errObj.error).slice(0, 500)}`);
+          }
+          // Drain error logs before throwing
+          while (logBuffer.length > 0) {
+            yield { type: 'adapter_stderr', message: logBuffer.shift()! };
+          }
+          throw apiErr;
         }
-        // Drain error logs before throwing
-        while (logBuffer.length > 0) {
-          yield { type: 'adapter_stderr', message: logBuffer.shift()! };
-        }
-        throw apiErr;
       }
 
       // Accumulate the complete assistant message from stream chunks
