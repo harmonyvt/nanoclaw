@@ -66,6 +66,13 @@ type HostBrowseResult = {
   result?: unknown;
   error?: string;
   analysis?: { summary?: string; metadataPath?: string };
+  screenshot?: {
+    path?: string;
+    mimeType?: string;
+    base64?: string;
+    analysisSource?: 'omniparser' | 'accessibility';
+    metadataPath?: string;
+  };
 };
 
 async function requestHost<T = unknown>(
@@ -1648,26 +1655,49 @@ If a skill with the same name already exists, it will be overwritten.`,
         res.analysis && typeof res.analysis.summary === 'string'
           ? res.analysis.summary
           : null;
-      const screenshotPath = typeof res.result === 'string' ? res.result : '';
+      const payloadPath =
+        res.screenshot && typeof res.screenshot.path === 'string'
+          ? res.screenshot.path
+          : '';
+      const screenshotPath = typeof res.result === 'string' ? res.result : payloadPath;
       const hint = screenshotPath
         ? `\n\nTo visually inspect this screenshot, use the Read tool on: ${screenshotPath}`
         : '';
+      const sourceHint =
+        res.screenshot?.analysisSource === 'omniparser'
+          ? '\n\nElement detection source: OmniParser.'
+          : '';
 
       // Attach screenshot image bytes for vision-capable adapters (e.g. OpenAI)
       let imageBase64: string | undefined;
+      let imageMimeType: string | undefined;
+      if (
+        res.screenshot &&
+        typeof res.screenshot.base64 === 'string' &&
+        res.screenshot.base64.length > 0
+      ) {
+        imageBase64 = res.screenshot.base64;
+        imageMimeType =
+          typeof res.screenshot.mimeType === 'string'
+            ? res.screenshot.mimeType
+            : 'image/png';
+      }
       if (screenshotPath) {
         try {
-          const imgBytes = fs.readFileSync(screenshotPath);
-          imageBase64 = imgBytes.toString('base64');
+          if (!imageBase64) {
+            const imgBytes = fs.readFileSync(screenshotPath);
+            imageBase64 = imgBytes.toString('base64');
+            imageMimeType = 'image/png';
+          }
         } catch {
           // Ignore -- image will still be available via Read tool for Claude
         }
       }
 
       return {
-        content: (summary || `Screenshot saved: ${res.result}`) + hint,
+        content: (summary || `Screenshot saved: ${res.result}`) + sourceHint + hint,
         imageBase64,
-        imageMimeType: 'image/png',
+        imageMimeType,
       };
     },
   },
