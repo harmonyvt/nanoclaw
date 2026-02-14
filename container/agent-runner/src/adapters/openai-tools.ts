@@ -75,7 +75,8 @@ export async function executeNanoToolFull(
   args: Record<string, unknown>,
   ctx: IpcMcpContext,
 ): Promise<ToolResult> {
-  const tool = NANOCLAW_TOOLS.find((t) => t.name === toolName);
+  const normalizedToolName = toolName.trim();
+  const tool = NANOCLAW_TOOLS.find((t) => t.name === normalizedToolName);
   if (!tool) {
     return { content: JSON.stringify({ error: `Unknown tool: ${toolName}` }), isError: true };
   }
