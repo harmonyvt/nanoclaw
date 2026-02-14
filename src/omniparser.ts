@@ -2,7 +2,7 @@ import Replicate from 'replicate';
 import { logger } from './logger.js';
 import {
   OMNIPARSER_ENABLED,
-  OMNIPARSER_REPLICATE_TOKEN,
+  REPLICATE_API_TOKEN,
   OMNIPARSER_BOX_THRESHOLD,
   OMNIPARSER_IOU_THRESHOLD,
   OMNIPARSER_TIMEOUT_MS,
@@ -29,7 +29,7 @@ type OmniParserApiOutput = {
  * Check if OmniParser is enabled and configured.
  */
 export function isOmniParserEnabled(): boolean {
-  return OMNIPARSER_ENABLED && OMNIPARSER_REPLICATE_TOKEN.length > 0;
+  return OMNIPARSER_ENABLED && REPLICATE_API_TOKEN.length > 0;
 }
 
 /**
@@ -40,8 +40,8 @@ export async function detectElements(
   screenshotPng: Buffer,
   imageSize: { width: number; height: number },
 ): Promise<OmniParserResult | null> {
-  if (!OMNIPARSER_REPLICATE_TOKEN) {
-    logger.warn('OmniParser enabled but OMNIPARSER_REPLICATE_TOKEN not set');
+  if (!REPLICATE_API_TOKEN) {
+    logger.warn('OmniParser enabled but REPLICATE_API_TOKEN not set');
     return null;
   }
 
@@ -72,7 +72,7 @@ async function callReplicate(
   screenshotPng: Buffer,
   imageSize: { width: number; height: number },
 ): Promise<OmniParserResult | null> {
-  const replicate = new Replicate({ auth: OMNIPARSER_REPLICATE_TOKEN });
+  const replicate = new Replicate({ auth: REPLICATE_API_TOKEN });
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), OMNIPARSER_TIMEOUT_MS);

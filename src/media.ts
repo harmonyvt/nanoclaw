@@ -1,9 +1,10 @@
 import fs from 'fs';
 import path from 'path';
 import { Bot } from 'grammy';
+import Replicate from 'replicate';
 
 import { logger } from './logger.js';
-import { resolveMediaOpenAIConfig } from './media-ai-config.js';
+import { REPLICATE_API_TOKEN } from './config.js';
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB Telegram limit
 
@@ -59,58 +60,53 @@ export async function downloadTelegramFile(
 }
 
 /**
- * Transcribe an audio file using OpenAI Whisper API.
+ * MIME type lookup for common audio extensions.
+ */
+const AUDIO_MIME: Record<string, string> = {
+  '.flac': 'audio/flac',
+  '.mp3': 'audio/mpeg',
+  '.mp4': 'audio/mp4',
+  '.mpeg': 'audio/mpeg',
+  '.mpga': 'audio/mpeg',
+  '.m4a': 'audio/mp4',
+  '.ogg': 'audio/ogg',
+  '.oga': 'audio/ogg',
+  '.wav': 'audio/wav',
+  '.webm': 'audio/webm',
+};
+
+/**
+ * Transcribe an audio file using Replicate GPT-4o-transcribe.
  * Returns the transcription text.
  */
 export async function transcribeAudio(filePath: string): Promise<string> {
-  const mediaConfig = resolveMediaOpenAIConfig();
-  const useCompositeMedia = mediaConfig.compositeEnabled;
-  const apiKey = useCompositeMedia
-    ? mediaConfig.apiKey
-    : process.env.OPENAI_API_KEY || '';
-  if (!apiKey) {
-    logger.warn(
-      useCompositeMedia
-        ? 'OPENAI_MEDIA_API_KEY/OPENAI_API_KEY not set, cannot transcribe audio'
-        : 'OPENAI_API_KEY not set, cannot transcribe audio',
-    );
+  if (!REPLICATE_API_TOKEN) {
+    logger.warn('REPLICATE_API_TOKEN not set, cannot transcribe audio');
     return '[transcription unavailable]';
   }
 
-  const fileBuffer = fs.readFileSync(filePath);
-  const fileName = path.basename(filePath);
+  try {
+    const fileBuffer = fs.readFileSync(filePath);
+    const ext = path.extname(filePath).toLowerCase();
+    const mime = AUDIO_MIME[ext] || 'audio/wav';
+    const base64 = fileBuffer.toString('base64');
+    const dataUri = `data:${mime};base64,${base64}`;
 
-  const formData = new FormData();
-  formData.append(
-    'model',
-    useCompositeMedia ? mediaConfig.audioModel : 'whisper-1',
-  );
-  formData.append('file', new Blob([fileBuffer]), fileName);
+    const replicate = new Replicate({ auth: REPLICATE_API_TOKEN });
+    const output = (await replicate.run('openai/gpt-4o-transcribe', {
+      input: { audio: dataUri },
+    })) as { text: string };
 
-  const transcriptionEndpoint = useCompositeMedia
-    ? `${mediaConfig.baseUrl}/audio/transcriptions`
-    : 'https://api.openai.com/v1/audio/transcriptions';
-
-  const response = await fetch(transcriptionEndpoint, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: formData,
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
+    const text = output?.text ?? '';
+    logger.debug({ filePath, length: text.length }, 'Audio transcribed');
+    return text;
+  } catch (err) {
     logger.error(
-      { status: response.status, error: errorText },
-      'Whisper transcription failed',
+      { err: err instanceof Error ? err.message : String(err) },
+      'Replicate transcription failed',
     );
     return '[transcription failed]';
   }
-
-  const result = (await response.json()) as { text: string };
-  logger.debug({ filePath, length: result.text.length }, 'Audio transcribed');
-  return result.text;
 }
 
 /**

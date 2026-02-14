@@ -30,7 +30,7 @@ Telegram <-> Host (Bun) <-> SQLite
 | `src/task-scheduler.ts`   | Polls for due tasks, runs them in containers                       |
 | `src/db.ts`               | SQLite operations (bun:sqlite): messages, chats, tasks, run logs   |
 | `src/telegram.ts`         | grammY bot: text, voice, audio, photo, document handlers           |
-| `src/media.ts`            | File download (Telegram API), Whisper transcription, media cleanup |
+| `src/media.ts`            | File download (Telegram API), audio transcription (Replicate), media cleanup |
 | `src/browse-host.ts`      | Host-side browse bridge for CUA `/cmd` actions                     |
 | `src/sandbox-manager.ts`  | CUA sandbox lifecycle: start/stop/idle timeout (Docker)            |
 | `src/mount-security.ts`   | Validates additional mounts against external allowlist             |
@@ -117,11 +117,11 @@ Uses **Docker CLI** (`docker run -i --rm`). The codebase was originally written 
 
 Voice, audio, photos, and documents sent via Telegram are processed automatically:
 
-- **Voice/Audio**: Downloaded, transcribed via OpenAI Whisper API, stored as `[Voice message: ...]`
+- **Voice/Audio**: Downloaded, transcribed via Replicate GPT-4o-transcribe, stored as `[Voice message: ...]`
 - **Photos**: Saved to `groups/{name}/media/`, path included in prompt (agent uses Claude's Read tool for vision)
 - **Documents**: Saved to `groups/{name}/media/`, filename/caption included in prompt
 
-Media path is translated from host path to container path in the XML prompt (`media_path` attribute). Requires `OPENAI_API_KEY` for transcription. Old media cleaned up after 7 days on startup.
+Media path is translated from host path to container path in the XML prompt (`media_path` attribute). Requires `REPLICATE_API_TOKEN` for transcription. Old media cleaned up after 7 days on startup.
 
 ## Browser Sandbox
 
@@ -163,7 +163,7 @@ Per-group IPC directories prevent cross-group access. Non-main groups can only s
 
 - `download_audio` -- Download audio from URL via yt-dlp (YouTube, Twitch, SoundCloud, etc.). Returns path to downloaded WAV file.
 - `convert_audio` -- Convert audio with ffmpeg (format, sample rate, mono, trim duration). Ideal for preparing voice clone reference audio (24kHz mono WAV, max 10s).
-- `transcribe_audio` -- Transcribe an audio file to text using OpenAI Whisper (requires OPENAI_API_KEY)
+- `transcribe_audio` -- Transcribe an audio file to text using Replicate GPT-4o-transcribe (requires REPLICATE_API_TOKEN)
 
 ### Task Scheduling
 
@@ -280,10 +280,11 @@ Requires `SUPERMEMORY_API_KEY`. When enabled, memories are also automatically re
 
 | Variable                    | Default                  | Purpose                                         |
 | --------------------------- | ------------------------ | ------------------------------------------------ |
-| `OPENAI_API_KEY`            | --                       | Whisper transcription + OpenAI provider API key  |
+| `OPENAI_API_KEY`            | --                       | OpenAI provider API key                          |
 | `OPENAI_BASE_URL`           | --                       | Custom OpenAI-compatible API endpoint            |
 | `OPENAI_REASONING_EFFORT`   | `medium`                 | Reasoning effort for OpenAI reasoning models (`low`, `medium`, `high`) |
 | `ANTHROPIC_BASE_URL`        | --                       | Custom Anthropic-compatible API endpoint         |
+| `REPLICATE_API_TOKEN`       | --                       | Replicate API (transcription, OmniParser)        |
 | `FIRECRAWL_API_KEY`         | --                       | Firecrawl web scraping                  |
 | `SUPERMEMORY_API_KEY`       | --                       | Supermemory long-term memory (preferred) |
 | `SUPERMEMORY_OPENCLAW_API_KEY` | --                    | Supermemory key alias (accepted fallback) |
@@ -319,7 +320,7 @@ Requires `SUPERMEMORY_API_KEY`. When enabled, memories are also automatically re
 | `CUA_SANDBOX_HOME_VOLUME`   | `nanoclaw-cua-home`      | Docker volume for CUA home dir          |
 | `CUA_API_KEY`               | --                       | Optional CUA API key passed to sandbox  |
 | `OMNIPARSER_ENABLED`        | `false`                  | Enable OmniParser vision-based element detection (replaces a11y tree) |
-| `OMNIPARSER_REPLICATE_TOKEN`| --                       | Replicate API token (falls back to `REPLICATE_API_TOKEN`) |
+| `OMNIPARSER_REPLICATE_TOKEN`| --                       | OmniParser-specific Replicate token override (falls back to `REPLICATE_API_TOKEN`) |
 | `OMNIPARSER_BOX_THRESHOLD`  | `0.05`                   | Detection confidence threshold          |
 | `OMNIPARSER_IOU_THRESHOLD`  | `0.1`                    | IOU threshold for box deduplication     |
 | `OMNIPARSER_TIMEOUT_MS`     | `10000`                  | Request timeout (ms), falls back to a11y tree on timeout |

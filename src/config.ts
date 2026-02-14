@@ -111,12 +111,14 @@ export const CUA_SANDBOX_PERSIST = process.env.CUA_SANDBOX_PERSIST !== 'false';
 export const CUA_SANDBOX_HOME_VOLUME =
   process.env.CUA_SANDBOX_HOME_VOLUME || 'nanoclaw-cua-home';
 
+// Replicate API token (shared across OmniParser, transcription, etc.)
+export const REPLICATE_API_TOKEN =
+  process.env.REPLICATE_API_TOKEN ||
+  process.env.OMNIPARSER_REPLICATE_TOKEN ||
+  '';
+
 // OmniParser vision-based element detection (optional, replaces a11y tree when enabled)
 export const OMNIPARSER_ENABLED = process.env.OMNIPARSER_ENABLED !== 'false';
-export const OMNIPARSER_REPLICATE_TOKEN =
-  process.env.OMNIPARSER_REPLICATE_TOKEN ||
-  process.env.REPLICATE_API_TOKEN ||
-  '';
 export const OMNIPARSER_BOX_THRESHOLD = parseFloat(
   process.env.OMNIPARSER_BOX_THRESHOLD || '0.05',
 );

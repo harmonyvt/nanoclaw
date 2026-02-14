@@ -479,6 +479,7 @@ function resolveCredentials(): CredentialResult {
     'OPENAI_MEDIA_API_KEY',
     'MINIMAX_API_KEY',
     'FIRECRAWL_API_KEY',
+    'REPLICATE_API_TOKEN',
     'SUPERMEMORY_API_KEY',
     'SUPERMEMORY_OPENCLAW_API_KEY',
     'SUPERMEMORY_CC_API_KEY',
