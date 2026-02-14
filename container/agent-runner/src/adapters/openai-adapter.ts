@@ -73,6 +73,8 @@ export interface ParsedConversationMessage {
   role: 'user' | 'assistant';
   senderName: string;
   content: string;
+  mediaType?: string;
+  mediaPath?: string;
 }
 
 /**
@@ -103,6 +105,8 @@ export function parseConversationXml(prompt: string): {
     // Parse attributes
     const roleMatch = attrs.match(/role="([^"]*)"/);
     const senderMatch = attrs.match(/sender="([^"]*)"/);
+    const mediaTypeMatch = attrs.match(/media_type="([^"]*)"/);
+    const mediaPathMatch = attrs.match(/media_path="([^"]*)"/);
 
     const role = roleMatch?.[1] === 'assistant' ? 'assistant' as const : 'user' as const;
     const senderName = senderMatch?.[1] || 'User';
@@ -114,7 +118,10 @@ export function parseConversationXml(prompt: string): {
       .replace(/&gt;/g, '>')
       .replace(/&quot;/g, '"');
 
-    conversationMessages.push({ role, senderName, content: unescaped });
+    const parsed: ParsedConversationMessage = { role, senderName, content: unescaped };
+    if (mediaTypeMatch?.[1]) parsed.mediaType = mediaTypeMatch[1];
+    if (mediaPathMatch?.[1]) parsed.mediaPath = mediaPathMatch[1];
+    conversationMessages.push(parsed);
   }
 
   return { conversationMessages, remainingPrompt };
@@ -207,7 +214,34 @@ export class OpenAIAdapter implements ProviderAdapter {
         messages.push({ role: 'assistant', content: msg.content });
       } else {
         const prefix = msg.senderName ? `${msg.senderName}: ` : '';
-        messages.push({ role: 'user', content: `${prefix}${msg.content}` });
+        const textContent = `${prefix}${msg.content}`;
+
+        // Inject image as multimodal content for photo messages
+        if (msg.mediaType === 'photo' && msg.mediaPath) {
+          try {
+            if (fs.existsSync(msg.mediaPath)) {
+              const imageData = fs.readFileSync(msg.mediaPath);
+              const base64 = imageData.toString('base64');
+              const ext = msg.mediaPath.split('.').pop()?.toLowerCase() || 'jpg';
+              const mimeType = ext === 'png' ? 'image/png'
+                : ext === 'webp' ? 'image/webp'
+                : ext === 'gif' ? 'image/gif'
+                : 'image/jpeg';
+              messages.push({
+                role: 'user',
+                content: [
+                  { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64}`, detail: 'auto' } },
+                  { type: 'text', text: textContent },
+                ],
+              } as OpenAI.ChatCompletionMessageParam);
+              continue;
+            }
+          } catch {
+            // Fall through to text-only if image can't be read
+          }
+        }
+
+        messages.push({ role: 'user', content: textContent });
       }
     }
 
