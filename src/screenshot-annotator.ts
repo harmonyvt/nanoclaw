@@ -194,6 +194,7 @@ const LABEL_BG: RGBA = { r: 0, g: 0, b: 0, a: 0.5 };
 const LABEL_TEXT: RGBA = { r: 255, g: 255, b: 255, a: 0.85 };
 const INTERACTIVE_COLOR: RGBA = { r: 0, g: 200, b: 255, a: 0.8 };
 const NON_INTERACTIVE_COLOR: RGBA = { r: 255, g: 180, b: 0, a: 0.7 };
+const OMNIPARSER_COLOR: RGBA = { r: 0, g: 220, b: 100, a: 0.8 };
 const MARKER_ID_BG: RGBA = { r: 0, g: 0, b: 0, a: 0.65 };
 const MARKER_ID_TEXT: RGBA = { r: 255, g: 255, b: 255, a: 0.9 };
 
@@ -250,7 +251,12 @@ export function annotateScreenshot(
     const cy = el.center.y;
     if (cx < 0 || cx >= width || cy < 0 || cy >= height) continue;
 
-    const color = el.interactive ? INTERACTIVE_COLOR : NON_INTERACTIVE_COLOR;
+    const color =
+      el.role === 'omniparser'
+        ? OMNIPARSER_COLOR
+        : el.interactive
+          ? INTERACTIVE_COLOR
+          : NON_INTERACTIVE_COLOR;
 
     // Circle outline at element center
     drawCircleOutline(data, width, height, cx, cy, MARKER_RADIUS, color);

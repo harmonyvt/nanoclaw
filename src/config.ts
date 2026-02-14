@@ -111,6 +111,23 @@ export const CUA_SANDBOX_PERSIST = process.env.CUA_SANDBOX_PERSIST !== 'false';
 export const CUA_SANDBOX_HOME_VOLUME =
   process.env.CUA_SANDBOX_HOME_VOLUME || 'nanoclaw-cua-home';
 
+// OmniParser vision-based element detection (optional, replaces a11y tree when enabled)
+export const OMNIPARSER_ENABLED = process.env.OMNIPARSER_ENABLED !== 'false';
+export const OMNIPARSER_REPLICATE_TOKEN =
+  process.env.OMNIPARSER_REPLICATE_TOKEN ||
+  process.env.REPLICATE_API_TOKEN ||
+  '';
+export const OMNIPARSER_BOX_THRESHOLD = parseFloat(
+  process.env.OMNIPARSER_BOX_THRESHOLD || '0.05',
+);
+export const OMNIPARSER_IOU_THRESHOLD = parseFloat(
+  process.env.OMNIPARSER_IOU_THRESHOLD || '0.1',
+);
+export const OMNIPARSER_TIMEOUT_MS = parseInt(
+  process.env.OMNIPARSER_TIMEOUT_MS || '10000',
+  10,
+);
+
 // Freya TTS configuration (archived — kept as fallback, disabled by default)
 export const FREYA_TTS_ENABLED = process.env.FREYA_TTS_ENABLED === 'true';
 export const FREYA_API_KEY = process.env.FREYA_API_KEY || '';
