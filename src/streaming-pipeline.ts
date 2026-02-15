@@ -36,6 +36,7 @@ export function isPipelineEvent(value: unknown): value is PipelineEvent {
   );
 }
 
+
 export interface TelegramOps {
   sendStatusMessage(chatJid: string, text: string): Promise<number | null>;
   editStatusMessage(chatJid: string, messageId: number, text: string): Promise<boolean>;

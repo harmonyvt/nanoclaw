@@ -10,7 +10,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { buildSystemPrompt, OpenAIAdapter, resolveReasoningEffort } from './openai-adapter.js';
+import { buildSystemPrompt, OpenAIAdapter, resolveReasoningEffort, parseConversationXml, stripThinkTags } from './openai-adapter.js';
 import { NANOCLAW_TOOLS } from '../tool-registry.js';
 import type { AdapterInput, ProviderAdapter, IpcMcpContext } from '../types.js';
 
@@ -356,6 +356,134 @@ describe('openai-adapter', () => {
       // TypeScript compile-time check: assign to ProviderAdapter type
       const adapter: ProviderAdapter = new OpenAIAdapter();
       expect(typeof adapter.run).toBe('function');
+    });
+  });
+
+  // -- parseConversationXml() -----------------------------------------------
+
+  describe('parseConversationXml()', () => {
+    test('parses single user message', () => {
+      const prompt = '<messages>\n<message sender="Alice" time="2026-01-01T00:00:00Z">hello</message>\n</messages>';
+      const { conversationMessages } = parseConversationXml(prompt);
+      expect(conversationMessages.length).toBe(1);
+      expect(conversationMessages[0].role).toBe('user');
+      expect(conversationMessages[0].senderName).toBe('Alice');
+      expect(conversationMessages[0].content).toBe('hello');
+    });
+
+    test('parses multiple messages', () => {
+      const prompt = `<messages>
+<message sender="Alice" time="t1">hi</message>
+<message sender="Bob" time="t2">hey</message>
+<message sender="Alice" time="t3">bye</message>
+</messages>`;
+      const { conversationMessages } = parseConversationXml(prompt);
+      expect(conversationMessages.length).toBe(3);
+    });
+
+    test('parses assistant role correctly', () => {
+      const prompt = '<messages>\n<message role="assistant" sender="Bot" time="t1">I can help</message>\n</messages>';
+      const { conversationMessages } = parseConversationXml(prompt);
+      expect(conversationMessages[0].role).toBe('assistant');
+    });
+
+    test('defaults to user role when no role attribute', () => {
+      const prompt = '<messages>\n<message sender="Alice" time="t1">hi</message>\n</messages>';
+      const { conversationMessages } = parseConversationXml(prompt);
+      expect(conversationMessages[0].role).toBe('user');
+    });
+
+    test('extracts media_type and media_path attributes', () => {
+      const prompt = '<messages>\n<message sender="Alice" time="t1" media_type="photo" media_path="/tmp/img.jpg">look at this</message>\n</messages>';
+      const { conversationMessages } = parseConversationXml(prompt);
+      expect(conversationMessages[0].mediaType).toBe('photo');
+      expect(conversationMessages[0].mediaPath).toBe('/tmp/img.jpg');
+    });
+
+    test('unescapes XML entities in content', () => {
+      const prompt = '<messages>\n<message sender="Alice" time="t1">a &lt; b &amp; c &gt; d &quot;e&quot;</message>\n</messages>';
+      const { conversationMessages } = parseConversationXml(prompt);
+      expect(conversationMessages[0].content).toBe('a < b & c > d "e"');
+    });
+
+    test('returns empty array when no messages block', () => {
+      const { conversationMessages, remainingPrompt } = parseConversationXml('Just a plain prompt');
+      expect(conversationMessages.length).toBe(0);
+      expect(remainingPrompt).toBe('Just a plain prompt');
+    });
+
+    test('returns remainingPrompt without messages block', () => {
+      const prompt = '<soul>Be helpful</soul>\n<messages>\n<message sender="Alice" time="t1">hi</message>\n</messages>\nExtra stuff';
+      const { conversationMessages, remainingPrompt } = parseConversationXml(prompt);
+      expect(conversationMessages.length).toBe(1);
+      expect(remainingPrompt).toContain('<soul>Be helpful</soul>');
+      expect(remainingPrompt).toContain('Extra stuff');
+      expect(remainingPrompt).not.toContain('<messages>');
+    });
+
+    test('defaults senderName to User when not specified', () => {
+      const prompt = '<messages>\n<message time="t1">hi</message>\n</messages>';
+      const { conversationMessages } = parseConversationXml(prompt);
+      expect(conversationMessages[0].senderName).toBe('User');
+    });
+
+    test('handles empty messages block', () => {
+      const prompt = '<messages></messages>';
+      const { conversationMessages } = parseConversationXml(prompt);
+      expect(conversationMessages.length).toBe(0);
+    });
+  });
+
+  // -- stripThinkTags() -----------------------------------------------------
+
+  describe('stripThinkTags()', () => {
+    test('strips single think block', () => {
+      const result = stripThinkTags('Hello <think>internal reasoning</think> world');
+      expect(result.cleaned).toBe('Hello  world');
+      expect(result.thinking).toBe('internal reasoning');
+    });
+
+    test('strips multiple think blocks', () => {
+      const result = stripThinkTags('A <think>first</think> B <think>second</think> C');
+      expect(result.cleaned).toBe('A  B  C');
+      expect(result.thinking).toContain('first');
+      expect(result.thinking).toContain('second');
+    });
+
+    test('handles unclosed think tag at end', () => {
+      const result = stripThinkTags('text <think>still thinking');
+      expect(result.cleaned).toBe('text');
+      expect(result.thinking).toBe('still thinking');
+    });
+
+    test('returns original content when no think tags', () => {
+      const result = stripThinkTags('Hello world');
+      expect(result.cleaned).toBe('Hello world');
+      expect(result.thinking).toBe('');
+    });
+
+    test('handles empty string', () => {
+      const result = stripThinkTags('');
+      expect(result.cleaned).toBe('');
+      expect(result.thinking).toBe('');
+    });
+
+    test('handles empty think block', () => {
+      const result = stripThinkTags('<think></think>');
+      expect(result.cleaned).toBe('');
+      expect(result.thinking).toBe('');
+    });
+
+    test('handles multiline think content', () => {
+      const result = stripThinkTags('<think>line1\nline2\nline3</think>');
+      expect(result.thinking).toContain('line1');
+      expect(result.thinking).toContain('line2');
+      expect(result.thinking).toContain('line3');
+    });
+
+    test('trims whitespace from cleaned content', () => {
+      const result = stripThinkTags('  <think>reasoning</think>  ');
+      expect(result.cleaned).toBe('');
     });
   });
 });
