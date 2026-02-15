@@ -99,7 +99,7 @@ export type ReplicateVoiceProfile =
 // Mode compatibility per provider
 // ---------------------------------------------------------------------------
 
-const SUPPORTED_MODES: Record<ReplicateTTSProvider, readonly string[]> = {
+export const SUPPORTED_MODES: Record<ReplicateTTSProvider, readonly string[]> = {
   'qwen/qwen3-tts': ['voice_design', 'custom_voice', 'voice_clone'],
   'resemble-ai/chatterbox-turbo': ['custom_voice', 'voice_clone'],
   'minimax/speech-2.8-turbo': ['custom_voice'],

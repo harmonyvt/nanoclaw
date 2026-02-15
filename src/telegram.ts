@@ -22,6 +22,7 @@ import {
   REPLICATE_TTS_PROVIDERS,
   PROVIDER_SPEAKERS,
   PROVIDER_SHORTHANDS,
+  SUPPORTED_MODES,
   isReplicateTTSProvider,
 } from './tts-replicate.js';
 import type { ReplicateVoiceProfile } from './tts-replicate.js';
@@ -1323,8 +1324,16 @@ export async function connectTelegram(
     const profile = loadUnifiedVoiceProfile(groupFolder);
     let text = '<b>TTS Configuration</b>\n\n';
     if (profile && 'provider' in profile && isReplicateTTSProvider(profile.provider)) {
-      const speaker = (profile as ReplicateVoiceProfile).custom_voice?.speaker ?? '(none)';
-      text += `Provider: <code>${profile.provider}</code>\nMode: ${profile.mode}\nSpeaker: ${speaker}`;
+      const rp = profile as ReplicateVoiceProfile;
+      const modeName = MODE_LABELS[rp.mode] ?? rp.mode;
+      text += `Provider: <code>${rp.provider}</code>\nMode: ${modeName}`;
+      if (rp.mode === 'custom_voice' && rp.custom_voice?.speaker) {
+        text += `\nSpeaker: ${rp.custom_voice.speaker}`;
+      } else if (rp.mode === 'voice_design' && 'voice_design' in rp && rp.voice_design?.description) {
+        text += `\nDescription: <i>"${rp.voice_design.description}"</i>`;
+      } else if (rp.mode === 'voice_clone') {
+        text += `\nSource: reference audio`;
+      }
     } else if (profile) {
       text += `Provider: <code>qwen3-tts (self-hosted)</code>\nMode: ${(profile as { mode: string }).mode}`;
     } else {
@@ -1344,12 +1353,32 @@ export async function connectTelegram(
   function buildTTSSpeakerKeyboard(shorthand: string): InlineKeyboard {
     const provider = PROVIDER_SHORTHANDS[shorthand];
     const speakers = PROVIDER_SPEAKERS[provider];
+    const modes = SUPPORTED_MODES[provider] ?? [];
+    const hasMultipleModes = modes.length > 1;
     const kb = new InlineKeyboard();
     for (let i = 0; i < speakers.length; i++) {
       kb.text(speakers[i], `tts:s:${shorthand}:${speakers[i]}`);
       if ((i + 1) % 3 === 0) kb.row();
     }
-    kb.row().text('\u2190 Back', 'tts:back');
+    // Back goes to mode picker if provider has multiple modes, else to provider picker
+    kb.row().text('\u2190 Back', hasMultipleModes ? `tts:backm:${shorthand}` : 'tts:back');
+    return kb;
+  }
+
+  const MODE_LABELS: Record<string, string> = {
+    custom_voice: 'Preset Speakers',
+    voice_design: 'Voice Design',
+    voice_clone: 'Voice Clone',
+  };
+
+  function buildTTSModeKeyboard(shorthand: string): InlineKeyboard {
+    const provider = PROVIDER_SHORTHANDS[shorthand];
+    const modes = SUPPORTED_MODES[provider] ?? [];
+    const kb = new InlineKeyboard();
+    for (const mode of modes) {
+      kb.text(MODE_LABELS[mode] ?? mode, `tts:m:${shorthand}:${mode}`).row();
+    }
+    kb.text('\u2190 Back', 'tts:back');
     return kb;
   }
 
@@ -1418,9 +1447,15 @@ export async function connectTelegram(
     const shorthand = Object.entries(PROVIDER_SHORTHANDS).find(([, v]) => v === resolvedProvider)?.[0] ?? providerArg;
 
     if (!speakerArg) {
-      // /tts <provider> — show speaker picker
-      const text = `<b>${resolvedProvider}</b>\nSelect speaker:`;
-      await ctx.reply(text, { parse_mode: 'HTML', reply_markup: buildTTSSpeakerKeyboard(shorthand) });
+      // /tts <provider> — show mode picker (or speaker grid if only custom_voice)
+      const modes = SUPPORTED_MODES[resolvedProvider] ?? [];
+      if (modes.length <= 1) {
+        const text = `<b>${shorthand}</b>\nSelect speaker:`;
+        await ctx.reply(text, { parse_mode: 'HTML', reply_markup: buildTTSSpeakerKeyboard(shorthand) });
+      } else {
+        const text = `<b>${shorthand}</b>\nSelect mode:`;
+        await ctx.reply(text, { parse_mode: 'HTML', reply_markup: buildTTSModeKeyboard(shorthand) });
+      }
       return;
     }
 
@@ -1743,18 +1778,28 @@ export async function connectTelegram(
       }
 
       if (ttsAction === 'p') {
-        // Provider selected — show speaker picker
+        // Provider selected — show mode picker (or speaker grid if only custom_voice)
         const shorthand = ttsParts[2];
         const provider = PROVIDER_SHORTHANDS[shorthand];
         if (!provider) {
           await ctx.answerCallbackQuery({ text: 'Unknown provider' });
           return;
         }
-        const text = `<b>${provider}</b>\nSelect speaker:`;
-        await ctx.editMessageText(text, {
-          parse_mode: 'HTML',
-          reply_markup: buildTTSSpeakerKeyboard(shorthand),
-        });
+        const modes = SUPPORTED_MODES[provider] ?? [];
+        if (modes.length <= 1) {
+          // Only custom_voice — go straight to speaker grid
+          const text = `<b>${shorthand}</b>\nSelect speaker:`;
+          await ctx.editMessageText(text, {
+            parse_mode: 'HTML',
+            reply_markup: buildTTSSpeakerKeyboard(shorthand),
+          });
+        } else {
+          const text = `<b>${shorthand}</b>\nSelect mode:`;
+          await ctx.editMessageText(text, {
+            parse_mode: 'HTML',
+            reply_markup: buildTTSModeKeyboard(shorthand),
+          });
+        }
         await ctx.answerCallbackQuery();
         return;
       }
@@ -1774,6 +1819,87 @@ export async function connectTelegram(
           { parse_mode: 'HTML' },
         );
         await ctx.answerCallbackQuery({ text: `${shorthand} / ${speaker}` });
+        return;
+      }
+
+      if (ttsAction === 'm') {
+        // Mode selected
+        const shorthand = ttsParts[2];
+        const mode = ttsParts[3];
+        const provider = PROVIDER_SHORTHANDS[shorthand];
+        if (!provider || !mode) {
+          await ctx.answerCallbackQuery({ text: 'Invalid selection' });
+          return;
+        }
+
+        if (mode === 'custom_voice') {
+          // Show speaker grid
+          const text = `<b>${shorthand}</b>\nSelect speaker:`;
+          await ctx.editMessageText(text, {
+            parse_mode: 'HTML',
+            reply_markup: buildTTSSpeakerKeyboard(shorthand),
+          });
+          await ctx.answerCallbackQuery();
+          return;
+        }
+
+        if (mode === 'voice_design') {
+          // Apply voice_design with default description
+          const now = new Date().toISOString();
+          const existing = loadUnifiedVoiceProfile(ttsGroup.folder);
+          const profile: ReplicateVoiceProfile = {
+            provider: 'qwen/qwen3-tts',
+            mode: 'voice_design',
+            voice_design: {
+              description: 'A warm, friendly, natural-sounding voice',
+              language: 'English',
+            },
+            created_at: existing?.created_at ?? now,
+            updated_at: now,
+          };
+          const profilePath = path.join(GROUPS_DIR, ttsGroup.folder, 'voice_profile.json');
+          fs.writeFileSync(profilePath, JSON.stringify(profile, null, 2));
+          await ctx.editMessageText(
+            `TTS switched to <b>${shorthand}</b> — <b>Voice Design</b>\n\n` +
+            `Current description: <i>"A warm, friendly, natural-sounding voice"</i>\n\n` +
+            `To customize, tell the agent to update your voice design description.`,
+            { parse_mode: 'HTML' },
+          );
+          await ctx.answerCallbackQuery({ text: 'Voice Design enabled' });
+          return;
+        }
+
+        if (mode === 'voice_clone') {
+          await ctx.editMessageText(
+            `<b>${shorthand}</b> — <b>Voice Clone</b>\n\n` +
+            `To set up voice clone:\n` +
+            `1. Send a voice message or audio file as reference\n` +
+            `2. Ask the agent to clone that voice\n\n` +
+            `The agent will configure the voice profile for you.`,
+            { parse_mode: 'HTML' },
+          );
+          await ctx.answerCallbackQuery({ text: 'Voice Clone info' });
+          return;
+        }
+
+        await ctx.answerCallbackQuery({ text: 'Unknown mode' });
+        return;
+      }
+
+      if (ttsAction === 'backm') {
+        // Back to mode picker
+        const shorthand = ttsParts[2];
+        const provider = PROVIDER_SHORTHANDS[shorthand];
+        if (!provider) {
+          await ctx.answerCallbackQuery({ text: 'Unknown provider' });
+          return;
+        }
+        const text = `<b>${shorthand}</b>\nSelect mode:`;
+        await ctx.editMessageText(text, {
+          parse_mode: 'HTML',
+          reply_markup: buildTTSModeKeyboard(shorthand),
+        });
+        await ctx.answerCallbackQuery();
         return;
       }
 
