@@ -47,7 +47,7 @@ function setupServe(localPort: number, httpsPort: number): boolean {
     return true;
   } catch (err) {
     logger.warn(
-      { err, localPort, httpsPort },
+      { module: 'tailscale', err, localPort, httpsPort },
       'Failed to configure tailscale serve',
     );
     return false;
@@ -81,24 +81,25 @@ export function isTailscaleServeActive(): boolean {
 
 export function initTailscaleServe(): void {
   if (!SANDBOX_TAILSCALE_ENABLED) {
-    logger.info('Tailscale serve disabled (SANDBOX_TAILSCALE_ENABLED=false)');
+    logger.info({ module: 'tailscale' }, 'Tailscale serve disabled (SANDBOX_TAILSCALE_ENABLED=false)');
     return;
   }
 
   const fqdn = getTailscaleFqdn();
   if (!fqdn) {
     logger.warn(
+      { module: 'tailscale' },
       'Could not detect Tailscale FQDN, skipping tailscale serve setup',
     );
     return;
   }
 
-  logger.info({ fqdn }, 'Tailscale FQDN detected');
+  logger.info({ module: 'tailscale', fqdn }, 'Tailscale FQDN detected');
 
   if (DASHBOARD_ENABLED) {
     if (setupServe(DASHBOARD_PORT, DASHBOARD_HTTPS_PORT)) {
       logger.info(
-        { url: `https://${fqdn}:${DASHBOARD_HTTPS_PORT}` },
+        { module: 'tailscale', url: `https://${fqdn}:${DASHBOARD_HTTPS_PORT}` },
         'Tailscale serve configured for dashboard',
       );
     }
@@ -107,7 +108,7 @@ export function initTailscaleServe(): void {
   if (CUA_TAKEOVER_WEB_ENABLED) {
     if (setupServe(CUA_TAKEOVER_WEB_PORT, CUA_TAKEOVER_HTTPS_PORT)) {
       logger.info(
-        { url: `https://${fqdn}:${CUA_TAKEOVER_HTTPS_PORT}` },
+        { module: 'tailscale', url: `https://${fqdn}:${CUA_TAKEOVER_HTTPS_PORT}` },
         'Tailscale serve configured for CUA takeover',
       );
     }
@@ -118,7 +119,7 @@ export function stopTailscaleServe(): void {
   for (const mapping of activeMappings) {
     removeServe(mapping.httpsPort);
     logger.info(
-      { httpsPort: mapping.httpsPort },
+      { module: 'tailscale', httpsPort: mapping.httpsPort },
       'Tailscale serve mapping removed',
     );
   }

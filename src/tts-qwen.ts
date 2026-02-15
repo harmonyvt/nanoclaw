@@ -240,6 +240,7 @@ export async function synthesizeQwenTTS(
     headers['Authorization'] = `Bearer ${QWEN_TTS_API_KEY}`;
   }
 
+  const fetchStart = Date.now();
   const response = await fetch(`${QWEN_TTS_URL}/synthesize`, {
     method: 'POST',
     headers,
@@ -248,11 +249,22 @@ export async function synthesizeQwenTTS(
   });
 
   if (!response.ok) {
+    const fetchMs = Date.now() - fetchStart;
     const detail = await response.text().catch(() => '');
+    const durationMs = Date.now() - ttsStartMs;
+    logger.error(
+      { module: 'tts-qwen', status: response.status, fetchMs, durationMs, textLength: inputText.length },
+      `TTS server returned ${response.status}`,
+    );
     throw new Error(`TTS server returned ${response.status}: ${detail.slice(0, 200)}`);
   }
 
   const audioBytes = await response.arrayBuffer();
+  const fetchMs = Date.now() - fetchStart;
+  logger.debug(
+    { module: 'tts-qwen', fetchMs, responseSize: audioBytes.byteLength },
+    'Qwen TTS HTTP response received',
+  );
 
   // Save to media directory
   fs.mkdirSync(mediaDir, { recursive: true });
@@ -273,6 +285,8 @@ export async function synthesizeQwenTTS(
       filePath,
       size: fs.statSync(filePath).size,
       textLength: inputText.length,
+      durationMs: ttsDurationMs,
+      fetchMs,
     },
     'Qwen3-TTS audio synthesized',
   );

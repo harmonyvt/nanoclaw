@@ -21,6 +21,22 @@ export interface PipelineEvent {
   elapsed_seconds?: number;
 }
 
+const PIPELINE_EVENT_TYPES = new Set<string>([
+  'thinking', 'response_delta', 'tool_start', 'tool_progress', 'adapter_stderr',
+]);
+
+/** Type guard for validating untyped JSON as a PipelineEvent. */
+export function isPipelineEvent(value: unknown): value is PipelineEvent {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'type' in value &&
+    typeof (value as Record<string, unknown>).type === 'string' &&
+    PIPELINE_EVENT_TYPES.has((value as Record<string, unknown>).type as string)
+  );
+}
+
+
 export interface TelegramOps {
   sendStatusMessage(chatJid: string, text: string): Promise<number | null>;
   editStatusMessage(chatJid: string, messageId: number, text: string): Promise<boolean>;

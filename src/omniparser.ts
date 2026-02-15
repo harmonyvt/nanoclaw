@@ -44,20 +44,20 @@ export async function detectElements(
     return null;
   }
 
-  const startTime = Date.now();
+  const startMs = Date.now();
   try {
     const result = await callReplicate(screenshotPng, imageSize);
     if (result) {
-      result.latencyMs = Date.now() - startTime;
+      result.latencyMs = Date.now() - startMs;
       logger.info(
-        { elements: result.elements.length, latencyMs: result.latencyMs },
+        { module: 'omniparser', elements: result.elements.length, latencyMs: result.latencyMs },
         'OmniParser detection completed',
       );
     }
     return result;
   } catch (err) {
     logger.warn(
-      { err: err instanceof Error ? err.message : String(err) },
+      { module: 'omniparser', durationMs: Date.now() - startMs, err: err instanceof Error ? err.message : String(err) },
       'OmniParser detection failed, proceeding without vision elements',
     );
     return null;
@@ -71,8 +71,13 @@ async function callReplicate(
   screenshotPng: Buffer,
   imageSize: { width: number; height: number },
 ): Promise<OmniParserResult | null> {
+  const encStartMs = Date.now();
   const base64Image = screenshotPng.toString('base64');
   const dataUri = `data:image/png;base64,${base64Image}`;
+  logger.debug(
+    { module: 'omniparser', encodingMs: Date.now() - encStartMs, byteLength: screenshotPng.length },
+    'Screenshot encoded for OmniParser',
+  );
 
   const output = await runModel<OmniParserApiOutput>(OMNIPARSER_MODEL, {
     image: dataUri,

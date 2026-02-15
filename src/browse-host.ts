@@ -120,6 +120,7 @@ function ensurePendingWaitForUser(
     if (existing.groupFolder !== groupFolder) {
       logger.warn(
         {
+          module: 'browse',
           requestId,
           existingGroup: existing.groupFolder,
           requestedGroup: groupFolder,
@@ -163,7 +164,7 @@ function ensurePendingWaitForUser(
     })
     .catch((err) => {
       logger.warn(
-        { err: err instanceof Error ? err.message : String(err) },
+        { module: 'browse', err: err instanceof Error ? err.message : String(err) },
         'Failed to rotate VNC password for new takeover session',
       );
     });
@@ -183,7 +184,7 @@ function completePendingWaitForUser(
   // Fire-and-forget: don't block the resolve on this.
   rotateSandboxVncPassword().catch((err) => {
     logger.warn(
-      { err: err instanceof Error ? err.message : String(err) },
+      { module: 'browse', err: err instanceof Error ? err.message : String(err) },
       'Failed to rotate VNC password after takeover completion',
     );
   });
@@ -253,9 +254,11 @@ export async function runCuaCommand(
   const sandbox = await ensureSandbox();
   const client = CuaClient.fromCommandUrl(sandbox.commandUrl);
   if (!client.isKnownCommand(command)) {
-    logger.warn({ command }, 'Attempting unknown CUA command');
+    logger.warn({ module: 'browse', command }, 'Attempting unknown CUA command');
   }
+  const startMs = Date.now();
   const response = await client.commandRaw(command, args);
+  logger.debug({ module: 'browse', command, durationMs: Date.now() - startMs }, 'CUA command completed');
 
   const contentType = (
     response.headers.get('content-type') || ''
@@ -344,7 +347,7 @@ async function runCuaCommandWithFallback(
   for (const attempt of attempts) {
     if (!CuaClient.isKnownCommandName(attempt.command)) {
       logger.debug(
-        { command: attempt.command },
+        { module: 'browse', command: attempt.command },
         'Skipping unknown CUA command',
       );
       continue;
@@ -510,9 +513,12 @@ async function findElementCoordinates(
 ): Promise<LocatedElement | null> {
   if (queries.length === 0) return null;
 
+  const searchStartMs = Date.now();
+  let retries = 0;
   const retryDelaysMs = [0, 500, 1200];
   for (const delay of retryDelaysMs) {
     if (delay > 0) {
+      retries++;
       await sleep(delay);
     }
 
@@ -529,6 +535,10 @@ async function findElementCoordinates(
 
       const coords = extractCoordinates(found);
       if (coords) {
+        logger.debug(
+          { module: 'browse', queries: queries.length, durationMs: Date.now() - searchStartMs, retries },
+          'Element search completed',
+        );
         return { coords, matchedQuery: query };
       }
     }
@@ -536,6 +546,10 @@ async function findElementCoordinates(
 
   // Fallback: parse the accessibility tree ourselves to find the element.
   const treeMatch = await findElementInAccessibilityTree(queries);
+  logger.debug(
+    { module: 'browse', queries: queries.length, durationMs: Date.now() - searchStartMs, retries, found: !!treeMatch },
+    'Element search completed',
+  );
   if (treeMatch) return treeMatch;
 
   return null;
@@ -1442,7 +1456,7 @@ async function processCuaRequest(
         openedViaDirectCommand = true;
       } catch (openErr) {
         logger.debug(
-          { err: openErr, url },
+          { module: 'browse', err: openErr, url },
           'Direct URL open command failed; falling back to keyboard navigation',
         );
       }
@@ -1645,7 +1659,7 @@ async function processCuaRequest(
       const base64 = extractBase64Png(screenshotContent);
       if (!base64) {
         const shape = describePayloadShape(screenshotContent);
-        logger.warn({ shape }, 'CUA screenshot payload format is unsupported');
+        logger.warn({ module: 'browse', shape }, 'CUA screenshot payload format is unsupported');
         return {
           status: 'error',
           error: `CUA screenshot returned an unsupported payload format (${shape})`,
@@ -1955,7 +1969,7 @@ async function processCuaRequest(
 
       const containerPath = `/workspace/group/media/${destFilename}`;
       logger.info(
-        { filePath, destPath, size: fileBuffer.length, groupFolder },
+        { module: 'browse', filePath, destPath, size: fileBuffer.length, groupFolder },
         'Extracted file from CUA sandbox',
       );
       return { status: 'ok', result: containerPath };
@@ -2073,6 +2087,7 @@ async function processCuaRequest(
 
       logger.info(
         {
+          module: 'browse',
           sourcePath,
           destPath,
           size: fileStat.size,
@@ -2099,6 +2114,7 @@ export async function processBrowseRequest(
   _ipcDir: string,
 ): Promise<BrowseResponse> {
   resetIdleTimer();
+  const actionStartMs = Date.now();
 
   try {
     if (action === 'wait_for_user') {
@@ -2110,9 +2126,17 @@ export async function processBrowseRequest(
       return pending.promise;
     }
 
-    return await processCuaRequest(action, params, groupFolder);
+    const result = await processCuaRequest(action, params, groupFolder);
+    logger.info(
+      { module: 'browse', action, durationMs: Date.now() - actionStartMs },
+      'Browse action completed',
+    );
+    return result;
   } catch (err) {
-    logger.error({ err, action, requestId }, 'Browse request failed');
+    logger.error(
+      { module: 'browse', err, action, requestId, durationMs: Date.now() - actionStartMs },
+      'Browse request failed',
+    );
     return {
       status: 'error',
       error: err instanceof Error ? err.message : String(err),

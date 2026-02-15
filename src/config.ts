@@ -31,6 +31,7 @@ export const MOUNT_ALLOWLIST_PATH = path.join(
   'mount-allowlist.json',
 );
 export const STORE_DIR = path.resolve(PROJECT_ROOT, 'store');
+export const SERVICE_LOGS_DIR = path.resolve(PROJECT_ROOT, 'logs', 'services');
 export const GROUPS_DIR = path.resolve(PROJECT_ROOT, 'groups');
 export const DATA_DIR = path.resolve(PROJECT_ROOT, 'data');
 export const MAIN_GROUP_FOLDER = 'main';

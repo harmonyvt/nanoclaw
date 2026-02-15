@@ -20,7 +20,7 @@ export async function downloadTelegramFile(
   // Check file size before downloading
   if (file.file_size && file.file_size > MAX_FILE_SIZE) {
     logger.warn(
-      { fileId, size: file.file_size, maxSize: MAX_FILE_SIZE },
+      { module: 'media', fileId, size: file.file_size, maxSize: MAX_FILE_SIZE },
       'File too large to download, skipping',
     );
     return null;
@@ -28,7 +28,7 @@ export async function downloadTelegramFile(
 
   const filePath = file.file_path;
   if (!filePath) {
-    logger.warn({ fileId }, 'No file_path returned from Telegram');
+    logger.warn({ module: 'media', fileId }, 'No file_path returned from Telegram');
     return null;
   }
 
@@ -44,7 +44,7 @@ export async function downloadTelegramFile(
   const response = await fetch(url);
   if (!response.ok) {
     logger.error(
-      { fileId, status: response.status },
+      { module: 'media', fileId, status: response.status },
       'Failed to download Telegram file',
     );
     return null;
@@ -53,7 +53,7 @@ export async function downloadTelegramFile(
   const buffer = Buffer.from(await response.arrayBuffer());
   fs.writeFileSync(localPath, buffer);
 
-  logger.debug({ fileId, localPath, size: buffer.length }, 'File downloaded');
+  logger.debug({ module: 'media', fileId, localPath, size: buffer.length }, 'File downloaded');
   return localPath;
 }
 
@@ -79,7 +79,7 @@ const AUDIO_MIME: Record<string, string> = {
  */
 export async function transcribeAudio(filePath: string): Promise<string> {
   if (!isReplicateConfigured()) {
-    logger.warn('REPLICATE_API_TOKEN not set, cannot transcribe audio');
+    logger.warn({ module: 'media' }, 'REPLICATE_API_TOKEN not set, cannot transcribe audio');
     return '[transcription unavailable]';
   }
 
@@ -95,11 +95,11 @@ export async function transcribeAudio(filePath: string): Promise<string> {
     });
 
     const text = output?.text ?? '';
-    logger.debug({ filePath, length: text.length }, 'Audio transcribed');
+    logger.debug({ module: 'media', filePath, length: text.length }, 'Audio transcribed');
     return text;
   } catch (err) {
     logger.error(
-      { err: err instanceof Error ? err.message : String(err) },
+      { module: 'media', err: err instanceof Error ? err.message : String(err) },
       'Replicate transcription failed',
     );
     return '[transcription failed]';
@@ -126,11 +126,11 @@ export function cleanupOldMedia(mediaDir: string, maxAgeDays: number): void {
         cleaned++;
       }
     } catch (err) {
-      logger.debug({ filePath, err }, 'Error cleaning up media file');
+      logger.debug({ module: 'media', filePath, err }, 'Error cleaning up media file');
     }
   }
 
   if (cleaned > 0) {
-    logger.info({ mediaDir, cleaned }, 'Old media files cleaned up');
+    logger.info({ module: 'media', mediaDir, cleaned }, 'Old media files cleaned up');
   }
 }
