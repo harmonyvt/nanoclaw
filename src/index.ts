@@ -1532,8 +1532,8 @@ async function handleContainerRpcEvent(
   evt: HostRpcEvent,
   pipeline?: StreamingMessagePipeline,
 ): Promise<void> {
-  if (evt.method === 'status.events') {
-    const events = (evt.params as { events?: unknown[] })?.events || [];
+  if (evt.method === 'status.event') {
+    const events = [evt.params];
     if (pipeline) {
       await pipeline.handleEvents(events as unknown as PipelineEvent[]);
     } else {
