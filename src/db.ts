@@ -718,6 +718,8 @@ export interface LogEntry {
 
 export interface LogQueryParams {
   level?: number;
+  minLevel?: number;
+  modules?: string[];
   search?: string;
   group?: string;
   since?: number;
@@ -773,6 +775,15 @@ export function queryLogs(params: LogQueryParams): LogEntry[] {
   if (params.level !== undefined) {
     conditions.push('level = ?');
     values.push(params.level);
+  }
+  if (params.minLevel !== undefined) {
+    conditions.push('level >= ?');
+    values.push(params.minLevel);
+  }
+  if (params.modules && params.modules.length > 0) {
+    const placeholders = params.modules.map(() => '?').join(',');
+    conditions.push(`module IN (${placeholders})`);
+    values.push(...params.modules);
   }
   if (params.search) {
     conditions.push('msg LIKE ?');

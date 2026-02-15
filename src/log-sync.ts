@@ -189,7 +189,7 @@ export function initLogSync(): void {
     CONTAINER_INDEX_INTERVAL,
   );
 
-  logger.info('Log sync initialized');
+  logger.info({ module: 'log-sync' }, 'Log sync initialized');
 }
 
 export function stopLogSync(): void {
@@ -203,6 +203,6 @@ export function pruneOldLogEntries(): void {
   const retentionMs = LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000;
   const deleted = pruneOldLogs(retentionMs);
   if (deleted > 0) {
-    logger.info({ deleted }, 'Pruned old log entries');
+    logger.info({ module: 'log-sync', deleted }, 'Pruned old log entries');
   }
 }

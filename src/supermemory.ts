@@ -35,7 +35,7 @@ function getClient(): Supermemory | null {
     });
     if (resolved.envVar !== 'SUPERMEMORY_API_KEY') {
       logger.info(
-        { envVar: resolved.envVar },
+        { module: 'supermemory', envVar: resolved.envVar },
         'Using alternate Supermemory API key environment variable',
       );
     }
@@ -118,6 +118,7 @@ export async function retrieveMemories(
 
     logger.info(
       {
+        module: 'supermemory',
         groupFolder,
         staticFacts: staticFacts.length,
         dynamicCtx: dynamicCtx.length,
@@ -132,9 +133,9 @@ export async function retrieveMemories(
     };
   } catch (err: unknown) {
     if (err instanceof Error && err.name === 'AbortError') {
-      logger.warn({ groupFolder }, 'Supermemory retrieve timed out');
+      logger.warn({ module: 'supermemory', groupFolder }, 'Supermemory retrieve timed out');
     } else {
-      logger.warn({ groupFolder, err }, 'Supermemory retrieve error');
+      logger.warn({ module: 'supermemory', groupFolder, err }, 'Supermemory retrieve error');
     }
     return null;
   }
@@ -166,9 +167,9 @@ export async function storeInteraction(
       ) as Record<string, string>,
     });
 
-    logger.info({ groupFolder }, 'Stored interaction to Supermemory');
+    logger.info({ module: 'supermemory', groupFolder }, 'Stored interaction to Supermemory');
   } catch (err: unknown) {
-    logger.warn({ groupFolder, err }, 'Supermemory store error');
+    logger.warn({ module: 'supermemory', groupFolder, err }, 'Supermemory store error');
   }
 }
 

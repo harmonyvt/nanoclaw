@@ -1371,7 +1371,7 @@ export function getDashboardUrl(): string | null {
 
 export function startDashboardServer(): void {
   if (!DASHBOARD_ENABLED) {
-    logger.info('Dashboard disabled by config');
+    logger.info({ module: 'dashboard' }, 'Dashboard disabled by config');
     return;
   }
   if (dashboardServer) return;
@@ -1402,7 +1402,7 @@ export function startDashboardServer(): void {
   }, 60 * 60 * 1000);
 
   logger.info(
-    { port: DASHBOARD_PORT, url: getDashboardUrl() },
+    { module: 'dashboard', port: DASHBOARD_PORT, url: getDashboardUrl() },
     'Dashboard server started',
   );
 }
@@ -1415,5 +1415,5 @@ export function stopDashboardServer(): void {
   if (!dashboardServer) return;
   dashboardServer.stop(true);
   dashboardServer = null;
-  logger.info('Dashboard server stopped');
+  logger.info({ module: 'dashboard' }, 'Dashboard server stopped');
 }

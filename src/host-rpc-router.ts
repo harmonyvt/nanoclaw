@@ -1,4 +1,4 @@
-import type { HostRpcEvent, HostRpcRequest } from './container-runner.js';
+import type { HostRpcRequest } from './container-runner.js';
 
 type JsonObject = Record<string, unknown>;
 
@@ -24,10 +24,6 @@ export interface HostRpcRouterDeps {
     action: string,
     params: JsonObject,
   ) => Promise<JsonObject>;
-  processStatusEvents: (
-    sourceGroup: string,
-    events: JsonObject[],
-  ) => Promise<void>;
 }
 
 function asRecord(value: unknown): JsonObject {
@@ -113,19 +109,4 @@ export async function routeHostRpcRequest(
     default:
       throw new Error(`Unknown host RPC method: ${req.method}`);
   }
-}
-
-export async function routeHostRpcEvent(
-  sourceGroup: string,
-  evt: HostRpcEvent,
-  deps: Pick<HostRpcRouterDeps, 'processStatusEvents'>,
-): Promise<void> {
-  if (evt.method !== 'status.event') return;
-
-  const payload = evt.params;
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    return;
-  }
-
-  await deps.processStatusEvents(sourceGroup, [payload as JsonObject]);
 }

@@ -237,7 +237,7 @@ function handleTakeoverRequest(req: Request, server: import('bun').Server<NoVncW
 
 export function startCuaTakeoverServer(): void {
   if (!CUA_TAKEOVER_WEB_ENABLED) {
-    logger.info('CUA takeover web UI disabled by config');
+    logger.info({ module: 'cua-takeover' }, 'CUA takeover web UI disabled by config');
     return;
   }
   if (takeoverServer) return;
@@ -251,6 +251,7 @@ export function startCuaTakeoverServer(): void {
 
   logger.info(
     {
+      module: 'cua-takeover',
       port: CUA_TAKEOVER_WEB_PORT,
       baseUrl: getTakeoverBaseUrl(),
     },
@@ -262,5 +263,5 @@ export function stopCuaTakeoverServer(): void {
   if (!takeoverServer) return;
   takeoverServer.stop(true);
   takeoverServer = null;
-  logger.info('CUA takeover web server stopped');
+  logger.info({ module: 'cua-takeover' }, 'CUA takeover web server stopped');
 }

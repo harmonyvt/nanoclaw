@@ -1,5 +1,6 @@
 import Replicate from 'replicate';
 import { REPLICATE_API_TOKEN } from './config.js';
+import { logger } from './logger.js';
 
 let _client: Replicate | null = null;
 
@@ -37,16 +38,24 @@ export async function runModel<T = unknown>(
   const controller = new AbortController();
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
-  if (options?.timeoutMs !== undefined && options.timeoutMs > 0) {
-    timeoutId = setTimeout(() => controller.abort(), options.timeoutMs);
+  const startMs = Date.now();
+  const timeoutMs = options?.timeoutMs;
+  if (timeoutMs !== undefined && timeoutMs > 0) {
+    timeoutId = setTimeout(() => {
+      logger.warn({ module: 'replicate', model, timeoutMs, durationMs: Date.now() - startMs }, 'Replicate model run timed out');
+      controller.abort();
+    }, timeoutMs);
   }
-
   try {
     const output = await client.run(model, {
       input,
       signal: controller.signal,
     });
+    logger.info({ module: 'replicate', model, durationMs: Date.now() - startMs }, 'Replicate model run completed');
     return output as T;
+  } catch (err) {
+    logger.warn({ module: 'replicate', model, durationMs: Date.now() - startMs, err }, 'Replicate model run failed');
+    throw err;
   } finally {
     if (timeoutId !== undefined) {
       clearTimeout(timeoutId);
