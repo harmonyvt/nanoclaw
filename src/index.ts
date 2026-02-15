@@ -22,6 +22,8 @@ import {
   AGENT_RETRY_DELAY,
   QWEN_TTS_ENABLED,
   QWEN_TTS_URL,
+  VOICE_CALL_ENABLED,
+  extractTelegramChatId,
 } from './config.js';
 import {
   AvailableGroup,
@@ -139,6 +141,21 @@ import { MAX_CONVERSATION_MESSAGES } from './config.js';
 import { logDebugEvent, pruneDebugEventEntries } from './debug-log.js';
 import { closeServiceLogHandles, rotateServiceLogs } from './service-log-writer.js';
 import { hasSoulConfigured, resolveAssistantIdentity } from './soul.js';
+import {
+  joinVoiceCall,
+  leaveVoiceCall,
+  getVoiceCallStatus,
+  handleUtterance,
+  cleanupVoiceCall,
+  setVoiceCallAgentRunner,
+  setVoiceCallMessageSender,
+  isVoiceCallActive,
+} from './voice-call.js';
+import {
+  startVoiceCallbackServer,
+  stopVoiceCallbackServer,
+  setUtteranceHandler,
+} from './voice-call-server.js';
 
 let lastTimestamp = '';
 let registeredGroups: Record<string, RegisteredGroup> = {};
@@ -605,6 +622,27 @@ async function processMessage(msg: NewMessage): Promise<void> {
     return;
   }
 
+  // Handle /call — join group voice chat
+  if (/^\/call$/i.test(content)) {
+    const numericChatId = extractTelegramChatId(msg.chat_jid);
+    const result = await joinVoiceCall(numericChatId, msg.chat_jid, group);
+    await sendMessage(msg.chat_jid, result);
+    return;
+  }
+
+  // Handle /hangup — leave voice call
+  if (/^\/hangup$/i.test(content)) {
+    const result = await leaveVoiceCall();
+    await sendMessage(msg.chat_jid, result);
+    return;
+  }
+
+  // Handle /callstatus — show voice call status
+  if (/^\/callstatus$/i.test(content)) {
+    await sendMessage(msg.chat_jid, getVoiceCallStatus());
+    return;
+  }
+
   // Handle /voice — unified TTS voice configuration (design, preset, clone, reset)
   const voiceMatch = content.match(/^\/voice(?:\s+(.*))?$/i);
   if (voiceMatch) {
@@ -863,7 +901,7 @@ async function runAgent(
   group: RegisteredGroup,
   prompt: string,
   chatJid: string,
-  opts?: { isSkillInvocation?: boolean; pipeline?: StreamingMessagePipeline },
+  opts?: { isSkillInvocation?: boolean; isVoiceCall?: boolean; pipeline?: StreamingMessagePipeline },
 ): Promise<string | null> {
   const isMain = group.folder === MAIN_GROUP_FOLDER;
 
@@ -904,6 +942,7 @@ async function runAgent(
     chatJid,
     isMain,
     isSkillInvocation: opts?.isSkillInvocation,
+    isVoiceCall: opts?.isVoiceCall,
     assistantName: assistantIdentity,
     provider,
     model,
@@ -2561,6 +2600,17 @@ async function main(): Promise<void> {
   startIdleWatcher();
   startContainerIdleCleanup();
 
+  // Voice call support: wire up agent runner + callback server
+  if (VOICE_CALL_ENABLED) {
+    setVoiceCallAgentRunner(async (group, prompt, chatJid) => {
+      return runAgent(group, prompt, chatJid, { isVoiceCall: true });
+    });
+    setVoiceCallMessageSender(sendMessage);
+    setUtteranceHandler(handleUtterance);
+    startVoiceCallbackServer();
+    logger.info({ module: 'voice-call' }, 'Voice call support enabled');
+  }
+
   logger.info({ module: 'index' }, `NanoClaw running (trigger: @${ASSISTANT_NAME})`);
 
   // Keep the process alive via the runner handle
@@ -2583,6 +2633,8 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     stopLogSync();
     stopCuaTakeoverServer();
     cleanupSandbox();
+    stopVoiceCallbackServer();
+    await cleanupVoiceCall();
     closeServiceLogHandles();
     process.exit(0);
   });

@@ -367,7 +367,10 @@ type SlashCommandSpec = {
     | 'soul'
     | 'model'
     | 'help'
-    | 'skills';
+    | 'skills'
+    | 'call'
+    | 'hangup'
+    | 'callstatus';
   description: string;
   help: string;
 };
@@ -472,6 +475,21 @@ const TELEGRAM_SLASH_COMMANDS: SlashCommandSpec[] = [
     command: 'skills',
     description: 'List and run stored skills',
     help: 'List stored skills (reusable workflows)',
+  },
+  {
+    command: 'call',
+    description: 'Join voice chat for spoken conversation',
+    help: 'Join a group voice chat: bot listens, transcribes, and responds with voice',
+  },
+  {
+    command: 'hangup',
+    description: 'Leave the current voice call',
+    help: 'Leave the active voice call',
+  },
+  {
+    command: 'callstatus',
+    description: 'Show voice call status',
+    help: 'Show active voice call info (duration, turns, activity)',
   },
 ];
 
