@@ -110,7 +110,7 @@ import {
 } from './host-rpc-router.js';
 import {
   StreamingMessagePipeline,
-  type PipelineEvent,
+  isPipelineEvent,
   type TelegramOps,
 } from './streaming-pipeline.js';
 import {
@@ -1215,19 +1215,22 @@ async function updateCuaScreenshot(
  */
 async function processIpcStatusEvents(
   sourceGroup: string,
-  events: Array<Record<string, unknown>>,
+  events: unknown[],
 ): Promise<void> {
   if (events.length === 0) return;
+
+  const validated = events.filter(isPipelineEvent);
+  if (validated.length === 0) return;
 
   // Route through pipeline if one exists for this group
   const pipeline = activePipelines.get(sourceGroup);
   if (pipeline) {
-    await pipeline.handleEvents(events as unknown as PipelineEvent[]);
+    await pipeline.handleEvents(validated);
     return;
   }
 
   // Fallback: just log adapter_stderr and tool_start events
-  for (const evt of events) {
+  for (const evt of validated) {
     if (evt.type === 'adapter_stderr') {
       logger.warn(
         { module: 'claude-cli', group_folder: sourceGroup },
@@ -1499,10 +1502,10 @@ async function handleContainerRpcEvent(
   if (evt.method === 'status.events') {
     const events = (evt.params as { events?: unknown[] })?.events || [];
     if (pipeline) {
-      await pipeline.handleEvents(events as unknown as PipelineEvent[]);
+      await pipeline.handleEvents(events.filter(isPipelineEvent));
     } else {
       // Fallback: process via IPC status events (no pipeline available)
-      await processIpcStatusEvents(sourceGroup, events as Array<Record<string, unknown>>);
+      await processIpcStatusEvents(sourceGroup, events);
     }
   }
 }
