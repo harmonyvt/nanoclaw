@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { resolveMediaOpenAIConfig } from './media-ai-config.js';
 
 const ENV_KEYS = [
@@ -16,6 +16,12 @@ const envSnapshot = new Map<string, string | undefined>();
 for (const key of ENV_KEYS) {
   envSnapshot.set(key, process.env[key]);
 }
+
+beforeEach(() => {
+  for (const key of ENV_KEYS) {
+    delete process.env[key];
+  }
+});
 
 afterEach(() => {
   for (const key of ENV_KEYS) {
