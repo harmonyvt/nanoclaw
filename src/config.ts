@@ -230,6 +230,31 @@ export const CUA_TAKEOVER_HTTPS_PORT = parseInt(
 export const TIMEZONE =
   process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
 
+// Voice call sidecar (pytgcalls)
+export const VOICE_CALL_ENABLED = process.env.VOICE_CALL_ENABLED === 'true';
+export const VOICE_SIDECAR_IMAGE =
+  process.env.VOICE_SIDECAR_IMAGE || 'nanoclaw-voice-sidecar:latest';
+export const VOICE_SIDECAR_CONTAINER_NAME =
+  process.env.VOICE_SIDECAR_CONTAINER_NAME || 'nanoclaw-voice-sidecar';
+export const VOICE_SIDECAR_API_PORT = parseInt(
+  process.env.VOICE_SIDECAR_API_PORT || '8100',
+  10,
+);
+export const VOICE_CALLBACK_PORT = parseInt(
+  process.env.VOICE_CALLBACK_PORT || '8101',
+  10,
+);
+export const VOICE_CALL_IDLE_TIMEOUT_MS = parseInt(
+  process.env.VOICE_CALL_IDLE_TIMEOUT_MS || '600000',
+  10,
+);
+export const VOICE_VAD_SILENCE_MS = parseInt(
+  process.env.VOICE_VAD_SILENCE_MS || '1500',
+  10,
+);
+export const TELEGRAM_API_ID = process.env.TELEGRAM_API_ID || '';
+export const TELEGRAM_API_HASH = process.env.TELEGRAM_API_HASH || '';
+
 // Default AI provider configuration
 // Groups without explicit providerConfig use these values
 export const DEFAULT_PROVIDER = process.env.DEFAULT_PROVIDER || 'anthropic';
