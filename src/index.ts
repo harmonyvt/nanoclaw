@@ -457,6 +457,62 @@ async function deliverResponseWithTTS(
   }
 }
 
+const SOUL_SKILL_INSTRUCTIONS = `Help the user manage SOUL.md (assistant identity/personality) for this chat.
+
+Files:
+- /workspace/group/SOUL.md
+- /workspace/group/voice_profile.json (optional, for voice coherence)
+
+Behavior:
+
+1) If parameters are empty OR "show":
+- Read SOUL.md and summarize current name and personality.
+- If SOUL.md does not exist, say so and offer to create one.
+- Do not modify files.
+
+2) If parameters are "reset":
+- Rewrite SOUL.md to a neutral, helpful assistant persona.
+- Use clear markdown sections:
+  - H1 assistant name
+  - short description
+  - Personality
+  - Response Style
+- Confirm the resulting identity.
+
+3) Otherwise:
+- Treat parameters as requested SOUL.md edits.
+- Update SOUL.md accordingly.
+- Preserve useful existing details unless user asked to remove them.
+- Keep the first markdown heading as the assistant name (e.g. "# Yoona").
+- If name changes, explicitly confirm the new name.
+
+After any SOUL.md modification:
+- Summarize what changed.
+- Mention the user can run /voice to align TTS voice with the updated persona.`;
+
+async function runSoulSkill(
+  group: RegisteredGroup,
+  chatJid: string,
+  params: string,
+  content: string,
+): Promise<void> {
+  let skillXml = '<skill name="soul"';
+  if (params) skillXml += ` parameters="${escapeXml(params)}"`;
+  skillXml += `>\n${escapeXml(SOUL_SKILL_INSTRUCTIONS)}\n</skill>`;
+
+  const { messagesXml, latestContent } = buildConversationXml(chatJid, group.folder);
+
+  let memoryXml = '';
+  if (isSupermemoryEnabled()) {
+    const memories = await retrieveMemories(group.folder, latestContent || content);
+    if (memories) memoryXml = formatMemoryContext(memories);
+  }
+
+  const prompt = [memoryXml, skillXml, messagesXml].filter(Boolean).join('\n\n');
+  await runSkillAgent(group, chatJid, prompt);
+}
+
+
 async function processMessage(msg: NewMessage): Promise<void> {
   const group = registeredGroups[msg.chat_jid];
   if (!group) return;
@@ -671,58 +727,21 @@ For minimax/speech-2.8-turbo:
   const soulMatch = content.match(/^\/soul(?:\s+([\s\S]*))?$/i);
   if (soulMatch) {
     const params = (soulMatch[1] || '').trim();
-    const instructions = `Help the user manage SOUL.md (assistant identity/personality) for this chat.
-
-Files:
-- /workspace/group/SOUL.md
-- /workspace/group/voice_profile.json (optional, for voice coherence)
-
-Behavior:
-
-1) If parameters are empty OR "show":
-- Read SOUL.md and summarize current name and personality.
-- If SOUL.md does not exist, say so and offer to create one.
-- Do not modify files.
-
-2) If parameters are "reset":
-- Rewrite SOUL.md to a neutral, helpful assistant persona.
-- Use clear markdown sections:
-  - H1 assistant name
-  - short description
-  - Personality
-  - Response Style
-- Confirm the resulting identity.
-
-3) Otherwise:
-- Treat parameters as requested SOUL.md edits.
-- Update SOUL.md accordingly.
-- Preserve useful existing details unless user asked to remove them.
-- Keep the first markdown heading as the assistant name (e.g. "# Yoona").
-- If name changes, explicitly confirm the new name.
-
-After any SOUL.md modification:
-- Summarize what changed.
-- Mention the user can run /voice to align TTS voice with the updated persona.`;
-
-    let skillXml = '<skill name="soul"';
-    if (params) skillXml += ` parameters="${escapeXml(params)}"`;
-    skillXml += `>\n${escapeXml(instructions)}\n</skill>`;
-
-    const { messagesXml, latestContent } = buildConversationXml(msg.chat_jid, group.folder);
-
-    let memoryXml = '';
-    if (isSupermemoryEnabled()) {
-      const memories = await retrieveMemories(group.folder, latestContent);
-      if (memories) memoryXml = formatMemoryContext(memories);
-    }
-
-    const prompt = [memoryXml, skillXml, messagesXml].filter(Boolean).join('\n\n');
-    await runSkillAgent(group, msg.chat_jid, prompt);
+    await runSoulSkill(group, msg.chat_jid, params, content);
     return;
   }
 
   // For all non-/soul interactions, require SOUL.md to be configured first.
-  if (!(await ensureSoulReady())) return;
+  // Instead of just blocking, route the user's message into the /soul skill
+  // so their text is treated as personality input — avoids the catch-22 where
+  // the user describes their personality but ensureSoulReady keeps blocking.
+  if (!hasSoulConfigured(group.folder)) {
+    await runSoulSkill(group, msg.chat_jid, content, content);
+    logDebugEvent('telegram', 'command_invoked', group.folder, {
+      command: 'soul_required',
+    });
+    return;
+  }
 
   // Check if message is a skill invocation: /skill_name [params]
   const skillMatch = content.match(/^\/([a-z][a-z0-9_]{1,30})(?:\s+(.*))?$/);
@@ -1499,10 +1518,11 @@ async function handleContainerRpcEvent(
   evt: HostRpcEvent,
   pipeline?: StreamingMessagePipeline,
 ): Promise<void> {
-  if (evt.method === 'status.events') {
-    const events = (evt.params as { events?: unknown[] })?.events || [];
+  if (evt.method === 'status.event') {
+    const events = [evt.params];
+    const validated = events.filter(isPipelineEvent);
     if (pipeline) {
-      await pipeline.handleEvents(events.filter(isPipelineEvent));
+      await pipeline.handleEvents(validated);
     } else {
       // Fallback: process via IPC status events (no pipeline available)
       await processIpcStatusEvents(sourceGroup, events);

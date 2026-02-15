@@ -258,7 +258,7 @@ function extractReasoningDelta(delta: ProviderDelta): string | undefined {
  * within `delta.content` instead of using dedicated reasoning fields.
  * Returns the cleaned content and the extracted thinking text.
  */
-function stripThinkTags(content: string): { cleaned: string; thinking: string } {
+export function stripThinkTags(content: string): { cleaned: string; thinking: string } {
   const thinkParts: string[] = [];
   // Match both complete <think>...</think> blocks and unclosed trailing <think>...
   const cleaned = content.replace(/<think>([\s\S]*?)(<\/think>|$)/g, (_match, inner) => {
