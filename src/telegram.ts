@@ -18,6 +18,14 @@ import {
   DEFAULT_PROVIDER,
   MAX_CONVERSATION_MESSAGES,
 } from './config.js';
+import {
+  REPLICATE_TTS_PROVIDERS,
+  PROVIDER_SPEAKERS,
+  PROVIDER_SHORTHANDS,
+  isReplicateTTSProvider,
+} from './tts-replicate.js';
+import type { ReplicateVoiceProfile } from './tts-replicate.js';
+import { loadUnifiedVoiceProfile } from './tts-dispatch.js';
 
 import {
   addModelToMenu,
@@ -1309,6 +1317,128 @@ export async function connectTelegram(
     await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb });
   });
 
+  // --- TTS provider/speaker swap command ---
+
+  function buildTTSStatusText(groupFolder: string): string {
+    const profile = loadUnifiedVoiceProfile(groupFolder);
+    let text = '<b>TTS Configuration</b>\n\n';
+    if (profile && 'provider' in profile && isReplicateTTSProvider(profile.provider)) {
+      const speaker = (profile as ReplicateVoiceProfile).custom_voice?.speaker ?? '(none)';
+      text += `Provider: <code>${profile.provider}</code>\nMode: ${profile.mode}\nSpeaker: ${speaker}`;
+    } else if (profile) {
+      text += `Provider: <code>qwen3-tts (self-hosted)</code>\nMode: ${(profile as { mode: string }).mode}`;
+    } else {
+      text += 'No voice profile configured.';
+    }
+    return text;
+  }
+
+  function buildTTSProviderKeyboard(): InlineKeyboard {
+    const kb = new InlineKeyboard();
+    for (const [shorthand, fullName] of Object.entries(PROVIDER_SHORTHANDS)) {
+      kb.text(shorthand, `tts:p:${shorthand}`);
+    }
+    return kb;
+  }
+
+  function buildTTSSpeakerKeyboard(shorthand: string): InlineKeyboard {
+    const provider = PROVIDER_SHORTHANDS[shorthand];
+    const speakers = PROVIDER_SPEAKERS[provider];
+    const kb = new InlineKeyboard();
+    for (let i = 0; i < speakers.length; i++) {
+      kb.text(speakers[i], `tts:s:${shorthand}:${speakers[i]}`);
+      if ((i + 1) % 3 === 0) kb.row();
+    }
+    kb.row().text('\u2190 Back', 'tts:back');
+    return kb;
+  }
+
+  function applyTTSProfile(groupFolder: string, provider: ReplicateVoiceProfile['provider'], speaker: string): void {
+    const existing = loadUnifiedVoiceProfile(groupFolder);
+    const now = new Date().toISOString();
+    const newProfile: ReplicateVoiceProfile = provider === 'qwen/qwen3-tts'
+      ? {
+          provider: 'qwen/qwen3-tts',
+          mode: 'custom_voice',
+          custom_voice: { speaker, language: 'English' },
+          created_at: existing?.created_at ?? now,
+          updated_at: now,
+        }
+      : provider === 'resemble-ai/chatterbox-turbo'
+        ? {
+            provider: 'resemble-ai/chatterbox-turbo',
+            mode: 'custom_voice',
+            custom_voice: { speaker },
+            created_at: existing?.created_at ?? now,
+            updated_at: now,
+          }
+        : {
+            provider: 'minimax/speech-2.8-turbo',
+            mode: 'custom_voice',
+            custom_voice: { speaker },
+            created_at: existing?.created_at ?? now,
+            updated_at: now,
+          };
+
+    const profilePath = path.join(GROUPS_DIR, groupFolder, 'voice_profile.json');
+    fs.writeFileSync(profilePath, JSON.stringify(newProfile, null, 2));
+  }
+
+  bot.command('tts', async (ctx) => {
+    if (!shouldAccept(ctx)) return;
+    const chatId = makeTelegramChatId(ctx.chat.id);
+    const group = registeredGroups()[chatId];
+    if (!group) {
+      await ctx.reply('No group registered for this chat.');
+      return;
+    }
+
+    const args = ctx.match?.trim() || '';
+
+    if (!args) {
+      // /tts — show status + provider picker
+      const text = buildTTSStatusText(group.folder) + '\n\n<b>Select provider:</b>';
+      await ctx.reply(text, { parse_mode: 'HTML', reply_markup: buildTTSProviderKeyboard() });
+      return;
+    }
+
+    const parts = args.split(/\s+/);
+    const providerArg = parts[0].toLowerCase();
+    const speakerArg = parts[1] || '';
+
+    // Resolve provider
+    const resolvedProvider = PROVIDER_SHORTHANDS[providerArg] ??
+      (isReplicateTTSProvider(providerArg) ? providerArg as ReplicateVoiceProfile['provider'] : null);
+    if (!resolvedProvider) {
+      const available = Object.keys(PROVIDER_SHORTHANDS).join(', ');
+      await ctx.reply(`Unknown provider: <code>${providerArg}</code>\nAvailable: ${available}`, { parse_mode: 'HTML' });
+      return;
+    }
+
+    const shorthand = Object.entries(PROVIDER_SHORTHANDS).find(([, v]) => v === resolvedProvider)?.[0] ?? providerArg;
+
+    if (!speakerArg) {
+      // /tts <provider> — show speaker picker
+      const text = `<b>${resolvedProvider}</b>\nSelect speaker:`;
+      await ctx.reply(text, { parse_mode: 'HTML', reply_markup: buildTTSSpeakerKeyboard(shorthand) });
+      return;
+    }
+
+    // /tts <provider> <speaker> — apply directly
+    const providerSpeakers = PROVIDER_SPEAKERS[resolvedProvider];
+    const match = providerSpeakers.find(s => s.toLowerCase() === speakerArg.toLowerCase());
+    if (!match) {
+      await ctx.reply(
+        `Unknown speaker: <code>${escapeHtml(speakerArg)}</code>\nAvailable for ${resolvedProvider}:\n${providerSpeakers.join(', ')}`,
+        { parse_mode: 'HTML' },
+      );
+      return;
+    }
+
+    applyTTSProfile(group.folder, resolvedProvider, match);
+    await ctx.reply(`TTS switched to <b>${shorthand}</b> \u2014 <b>${match}</b>`, { parse_mode: 'HTML' });
+  });
+
   // --- Task commands ---
 
   bot.command('tasks', async (ctx) => {
@@ -1598,6 +1728,67 @@ export async function connectTelegram(
       }
 
       await ctx.answerCallbackQuery({ text: 'Unknown skill action' });
+      return;
+    }
+
+    // --- TTS inline button callbacks ---
+    if (data.startsWith('tts:')) {
+      const ttsParts = data.split(':');
+      const ttsAction = ttsParts[1];
+      const ttsChatId = makeTelegramChatId(ctx.chat.id);
+      const ttsGroup = registeredGroups()[ttsChatId];
+      if (!ttsGroup) {
+        await ctx.answerCallbackQuery({ text: 'No group registered' });
+        return;
+      }
+
+      if (ttsAction === 'p') {
+        // Provider selected — show speaker picker
+        const shorthand = ttsParts[2];
+        const provider = PROVIDER_SHORTHANDS[shorthand];
+        if (!provider) {
+          await ctx.answerCallbackQuery({ text: 'Unknown provider' });
+          return;
+        }
+        const text = `<b>${provider}</b>\nSelect speaker:`;
+        await ctx.editMessageText(text, {
+          parse_mode: 'HTML',
+          reply_markup: buildTTSSpeakerKeyboard(shorthand),
+        });
+        await ctx.answerCallbackQuery();
+        return;
+      }
+
+      if (ttsAction === 's') {
+        // Speaker selected — apply profile
+        const shorthand = ttsParts[2];
+        const speaker = ttsParts[3];
+        const provider = PROVIDER_SHORTHANDS[shorthand];
+        if (!provider || !speaker) {
+          await ctx.answerCallbackQuery({ text: 'Invalid selection' });
+          return;
+        }
+        applyTTSProfile(ttsGroup.folder, provider, speaker);
+        await ctx.editMessageText(
+          `TTS switched to <b>${shorthand}</b> \u2014 <b>${speaker}</b>`,
+          { parse_mode: 'HTML' },
+        );
+        await ctx.answerCallbackQuery({ text: `${shorthand} / ${speaker}` });
+        return;
+      }
+
+      if (ttsAction === 'back') {
+        // Back to provider picker
+        const text = buildTTSStatusText(ttsGroup.folder) + '\n\n<b>Select provider:</b>';
+        await ctx.editMessageText(text, {
+          parse_mode: 'HTML',
+          reply_markup: buildTTSProviderKeyboard(),
+        });
+        await ctx.answerCallbackQuery();
+        return;
+      }
+
+      await ctx.answerCallbackQuery({ text: 'Unknown TTS action' });
       return;
     }
 
