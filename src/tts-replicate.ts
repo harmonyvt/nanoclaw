@@ -15,6 +15,21 @@ import { logger } from './logger.js';
 import { logDebugEvent } from './debug-log.js';
 
 // ---------------------------------------------------------------------------
+// Startup ffmpeg availability check
+// ---------------------------------------------------------------------------
+
+if (REPLICATE_TTS_ENABLED) {
+  try {
+    execFileSync('ffmpeg', ['-version'], { stdio: 'pipe', timeout: 5_000 });
+  } catch {
+    logger.warn(
+      { module: 'tts-replicate' },
+      'ffmpeg not found in PATH — Replicate TTS requires ffmpeg for WAV→OGG conversion. Voice messages will fail until ffmpeg is installed.',
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Replicate TTS provider identifiers
 // ---------------------------------------------------------------------------
 
@@ -100,6 +115,12 @@ export function isModeSupported(
 // ---------------------------------------------------------------------------
 // Default speaker names per provider
 // ---------------------------------------------------------------------------
+
+export const PROVIDER_SHORTHANDS: Record<string, ReplicateTTSProvider> = {
+  qwen: 'qwen/qwen3-tts',
+  chatterbox: 'resemble-ai/chatterbox-turbo',
+  minimax: 'minimax/speech-2.8-turbo',
+};
 
 export const PROVIDER_SPEAKERS: Record<ReplicateTTSProvider, string[]> = {
   'qwen/qwen3-tts': [

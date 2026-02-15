@@ -353,6 +353,7 @@ type SlashCommandSpec = {
     | 'stop'
     | 'debug'
     | 'mute'
+    | 'tts'
     | 'voice'
     | 'soul'
     | 'model'
@@ -432,6 +433,11 @@ const TELEGRAM_SLASH_COMMANDS: SlashCommandSpec[] = [
     command: 'mute',
     description: 'Toggle TTS voice messages on/off',
     help: 'Toggle TTS voice messages on/off (voice on by default)',
+  },
+  {
+    command: 'tts',
+    description: 'Switch TTS provider or speaker',
+    help: '/tts [provider] [speaker]',
   },
   {
     command: 'voice',

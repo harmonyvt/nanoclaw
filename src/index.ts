@@ -82,6 +82,13 @@ import {
   defaultUnifiedVoiceProfile,
   synthesizeTTS,
 } from './tts-dispatch.js';
+import {
+  REPLICATE_TTS_PROVIDERS,
+  PROVIDER_SPEAKERS,
+  PROVIDER_SHORTHANDS,
+  isReplicateTTSProvider,
+} from './tts-replicate.js';
+import type { ReplicateVoiceProfile } from './tts-replicate.js';
 import { loadJson, saveJson } from './utils.js';
 import { logger } from './logger.js';
 import {
@@ -586,6 +593,101 @@ async function processMessage(msg: NewMessage): Promise<void> {
       await sendMessage(msg.chat_jid, 'TTS muted — text only.');
     }
     logDebugEvent('telegram', 'command_invoked', group.folder, { command: 'mute', wasMuted });
+    return;
+  }
+
+  // Handle /tts — quick TTS provider/speaker swap (host-level)
+  const ttsMatch = content.match(/^\/tts(?:\s+(.*))?$/i);
+  if (ttsMatch) {
+    const args = (ttsMatch[1] || '').trim();
+    const profilePath = path.join(GROUPS_DIR, group.folder, 'voice_profile.json');
+
+    // No args: show current config + available providers
+    if (!args) {
+      const profile = loadUnifiedVoiceProfile(group.folder);
+      let status = '<b>TTS Configuration</b>\n\n';
+      if (profile && 'provider' in profile && isReplicateTTSProvider(profile.provider)) {
+        const mode = profile.mode;
+        const speaker = (profile as ReplicateVoiceProfile).custom_voice?.speaker ?? '(none)';
+        status += `Provider: <code>${profile.provider}</code>\nMode: ${mode}\nSpeaker: ${speaker}\n`;
+      } else if (profile) {
+        status += `Provider: <code>qwen3-tts (self-hosted)</code>\nMode: ${(profile as { mode: string }).mode}\n`;
+      } else {
+        status += 'No voice profile configured.\n';
+      }
+      status += '\n<b>Available providers:</b>\n';
+      for (const p of REPLICATE_TTS_PROVIDERS) {
+        const shorthand = Object.entries(PROVIDER_SHORTHANDS).find(([, v]) => v === p)?.[0] ?? '';
+        const speakers = PROVIDER_SPEAKERS[p].join(', ');
+        status += `\n<code>${shorthand}</code> → ${p}\n  Speakers: ${speakers}\n`;
+      }
+      await sendMessage(msg.chat_jid, status);
+      return;
+    }
+
+    // Parse provider and optional speaker
+    const parts = args.split(/\s+/);
+    const providerArg = parts[0].toLowerCase();
+    const speakerArg = parts[1] || '';
+
+    // Resolve provider shorthand
+    const resolvedProvider = PROVIDER_SHORTHANDS[providerArg] ??
+      (isReplicateTTSProvider(providerArg) ? providerArg as ReplicateVoiceProfile['provider'] : null);
+    if (!resolvedProvider) {
+      const available = Object.keys(PROVIDER_SHORTHANDS).join(', ');
+      await sendMessage(msg.chat_jid, `Unknown provider: <code>${providerArg}</code>\nAvailable: ${available}`);
+      return;
+    }
+
+    // Resolve speaker (case-insensitive match)
+    const providerSpeakers = PROVIDER_SPEAKERS[resolvedProvider];
+    let speaker: string;
+    if (speakerArg) {
+      const match = providerSpeakers.find(s => s.toLowerCase() === speakerArg.toLowerCase());
+      if (!match) {
+        await sendMessage(msg.chat_jid,
+          `Unknown speaker: <code>${speakerArg}</code>\nAvailable for ${resolvedProvider}:\n${providerSpeakers.join(', ')}`);
+        return;
+      }
+      speaker = match;
+    } else {
+      speaker = providerSpeakers[0];
+    }
+
+    // Build new profile
+    const existing = loadUnifiedVoiceProfile(group.folder);
+    const now = new Date().toISOString();
+    const newProfile: ReplicateVoiceProfile = resolvedProvider === 'qwen/qwen3-tts'
+      ? {
+          provider: 'qwen/qwen3-tts',
+          mode: 'custom_voice',
+          custom_voice: { speaker, language: 'English' },
+          created_at: existing?.created_at ?? now,
+          updated_at: now,
+        }
+      : resolvedProvider === 'resemble-ai/chatterbox-turbo'
+        ? {
+            provider: 'resemble-ai/chatterbox-turbo',
+            mode: 'custom_voice',
+            custom_voice: { speaker },
+            created_at: existing?.created_at ?? now,
+            updated_at: now,
+          }
+        : {
+            provider: 'minimax/speech-2.8-turbo',
+            mode: 'custom_voice',
+            custom_voice: { speaker },
+            created_at: existing?.created_at ?? now,
+            updated_at: now,
+          };
+
+    fs.writeFileSync(profilePath, JSON.stringify(newProfile, null, 2));
+
+    const shorthand = Object.entries(PROVIDER_SHORTHANDS).find(([, v]) => v === resolvedProvider)?.[0] ?? resolvedProvider;
+    await sendMessage(msg.chat_jid, `TTS switched to <b>${shorthand}</b> with speaker <b>${speaker}</b>.`);
+    logDebugEvent('telegram', 'command_invoked', group.folder, {
+      command: 'tts', provider: resolvedProvider, speaker,
+    });
     return;
   }
 
