@@ -73,6 +73,8 @@ describe('formatLogLine', () => {
       level: 30,
       msg: 'Test log message',
       module: 'telegram',
+      group_folder: null,
+      raw: '{"level":30,"msg":"Test log message"}',
       ...overrides,
     };
   }
