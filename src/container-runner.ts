@@ -199,6 +199,11 @@ export function consumeGroupInterrupted(groupFolder: string): boolean {
   return false;
 }
 
+/** Check whether a container RPC request is currently in flight for a group. */
+export function hasActiveRequest(groupFolder: string): boolean {
+  return activeRequests.has(groupFolder);
+}
+
 function sanitizeDockerNamePart(input: string): string {
   const value = input.toLowerCase().replace(/[^a-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '');
   return value || 'default';

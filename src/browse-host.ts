@@ -16,6 +16,7 @@ type PendingWaitForUser = {
   vncPassword: string | null;
   promise: Promise<BrowseResponse>;
   resolve: (result: BrowseResponse) => void;
+  timeoutTimer: ReturnType<typeof setTimeout> | null;
 };
 
 export type PendingWaitForUserView = {
@@ -30,6 +31,20 @@ export type PendingWaitForUserView = {
 // Pending wait-for-user requests: requestId -> metadata + resolver
 const waitingForUser: Map<string, PendingWaitForUser> = new Map();
 const waitingForUserByToken: Map<string, string> = new Map();
+
+const WAIT_FOR_USER_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+
+let waitForUserTimeoutCallback: ((groupFolder: string, requestId: string) => void) | null = null;
+
+/**
+ * Register a callback invoked when a wait_for_user request times out.
+ * Used by the host to send Telegram notifications.
+ */
+export function onWaitForUserTimeout(
+  cb: (groupFolder: string, requestId: string) => void,
+): void {
+  waitForUserTimeoutCallback = cb;
+}
 
 type BrowseResponse = {
   status: 'ok' | 'error';
@@ -152,10 +167,31 @@ function ensurePendingWaitForUser(
     vncPassword: null,
     promise,
     resolve: resolvePromise,
+    timeoutTimer: null,
   };
 
   waitingForUser.set(requestId, pending);
   waitingForUserByToken.set(token, requestId);
+
+  // Self-timeout: auto-resolve with error if user doesn't continue within 10 minutes
+  pending.timeoutTimer = setTimeout(() => {
+    if (waitingForUser.has(requestId)) {
+      logger.warn(
+        { module: 'browse', requestId, groupFolder, timeoutMs: WAIT_FOR_USER_TIMEOUT_MS },
+        'wait_for_user timed out',
+      );
+      completePendingWaitForUser(pending, {
+        status: 'error',
+        error: `Timed out waiting for user (${WAIT_FOR_USER_TIMEOUT_MS / 60000} minutes)`,
+      });
+      waitForUserTimeoutCallback?.(groupFolder, requestId);
+    }
+  }, WAIT_FOR_USER_TIMEOUT_MS);
+
+  logger.info(
+    { module: 'browse', requestId, groupFolder, token },
+    'wait_for_user request created',
+  );
 
   // Rotate VNC password for this takeover session (async, updates entry in-place)
   rotateSandboxVncPassword()
@@ -176,6 +212,10 @@ function completePendingWaitForUser(
   pending: PendingWaitForUser,
   result: BrowseResponse,
 ): void {
+  if (pending.timeoutTimer) {
+    clearTimeout(pending.timeoutTimer);
+    pending.timeoutTimer = null;
+  }
   waitingForUser.delete(pending.requestId);
   waitingForUserByToken.delete(pending.token);
   pending.resolve(result);
@@ -2123,7 +2163,39 @@ export async function processBrowseRequest(
         groupFolder,
         params.message,
       );
-      return pending.promise;
+      const waitResult = await pending.promise;
+      const waitDurationMs = Date.now() - actionStartMs;
+      logger.info(
+        { module: 'browse', requestId, groupFolder, status: waitResult.status, durationMs: waitDurationMs },
+        'wait_for_user resolved',
+      );
+
+      // Auto-screenshot after successful handback so the agent has visual context
+      if (waitResult.status === 'ok') {
+        try {
+          const ssStartMs = Date.now();
+          const ssResult = await processCuaRequest('screenshot', {}, groupFolder);
+          logger.info(
+            { module: 'browse', requestId, durationMs: Date.now() - ssStartMs, success: ssResult.status === 'ok' },
+            'Auto-screenshot after wait_for_user',
+          );
+          if (ssResult.status === 'ok' && ssResult.analysis) {
+            return {
+              status: 'ok',
+              result: `User has returned control.\n\n${ssResult.analysis.summary}`,
+              analysis: ssResult.analysis,
+              screenshot: ssResult.screenshot,
+            };
+          }
+        } catch (ssErr) {
+          logger.warn(
+            { module: 'browse', requestId, err: ssErr instanceof Error ? ssErr.message : String(ssErr) },
+            'Auto-screenshot after wait_for_user failed',
+          );
+        }
+      }
+
+      return waitResult;
     }
 
     const result = await processCuaRequest(action, params, groupFolder);
@@ -2239,15 +2311,21 @@ export function hasWaitingRequests(groupFolder?: string): boolean {
 
 /**
  * Cancel all pending wait-for-user requests for a group.
- * Used when the user interrupts a running agent via /stop.
+ * Used when the user interrupts a running agent via /stop, or when the
+ * container exits (timeout, crash) to clean up orphaned promises.
  */
-export function cancelWaitingRequests(groupFolder: string): number {
+export function cancelWaitingRequests(groupFolder: string, reason?: string): number {
   let count = 0;
+  const errorMessage = reason || 'Cancelled by user interrupt';
   for (const pending of [...waitingForUser.values()]) {
     if (pending.groupFolder !== groupFolder) continue;
+    logger.info(
+      { module: 'browse', requestId: pending.requestId, groupFolder, reason: errorMessage },
+      'Cancelling wait_for_user request',
+    );
     completePendingWaitForUser(pending, {
       status: 'error',
-      error: 'Cancelled by user interrupt',
+      error: errorMessage,
     });
     count++;
   }
