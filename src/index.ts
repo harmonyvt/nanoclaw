@@ -30,6 +30,7 @@ import {
   ensureAgentImage,
   HostRpcEvent,
   HostRpcRequest,
+  hasActiveRequest,
   interruptContainer,
   killAllContainers,
   runContainerAgent,
@@ -97,6 +98,7 @@ import {
   hasWaitingRequests,
   disconnectBrowser,
   ensureWaitForUserRequest,
+  onWaitForUserTimeout,
 } from './browse-host.js';
 import { cleanupOldMedia } from './media.js';
 import { getSkill, getSkillNames } from './skills.js';
@@ -166,6 +168,13 @@ const activeCuaLogMessages = new Map<string, ActiveCuaLogMessage>();
 
 /** Active pipelines keyed by group folder (one per in-flight agent run) */
 const activePipelines = new Map<string, StreamingMessagePipeline>();
+
+/** Tracks running handleMessage calls per group for auto-interrupt on new messages */
+interface RunHandle {
+  promise: Promise<void>;
+  resolve: () => void;
+}
+const activeRuns = new Map<string, RunHandle>();
 
 /** Telegram operations adapter for StreamingMessagePipeline */
 const telegramOps: TelegramOps = {
@@ -961,6 +970,20 @@ async function runAgent(
         onRequest: (req) => handleContainerRpcRequest(group.folder, req, pipelineRef),
         onEvent: (evt) => handleContainerRpcEvent(group.folder, evt, pipelineRef),
       });
+
+      // Clean up any orphaned wait_for_user promises from this container run.
+      // Covers all exit paths: normal, timeout, crash, interrupt.
+      const cancelledWaits = cancelWaitingRequests(group.folder, 'Agent container exited');
+      if (cancelledWaits > 0) {
+        logger.info(
+          { module: 'index', group: group.name, cancelled: cancelledWaits },
+          'Cancelled orphaned wait_for_user requests after container exit',
+        );
+        const exitChatJid = getChatJidForGroup(group.folder);
+        if (exitChatJid) {
+          void sendMessage(exitChatJid, 'CUA session ended (agent container exited).');
+        }
+      }
 
       logDebugEvent('sdk', 'container_result', group.folder, {
         status: output.status,
@@ -1846,7 +1869,7 @@ function startIpcWatcher(): void {
               const browseParams = (params || {}) as Record<string, unknown>;
               const chatJid = getChatJidForGroup(sourceGroup);
 
-              // For wait_for_user, send takeover details first.
+              // For wait_for_user, dispatch asynchronously so the IPC loop isn't blocked.
               if (action === 'wait_for_user') {
                 const waitMessage =
                   typeof browseParams.message === 'string' &&
@@ -1881,26 +1904,69 @@ function startIpcWatcher(): void {
                     `${waitMessage}${takeoverPart}\nRequest ID: ${requestId}\n\nWhen done, click "Return Control To Agent" in the takeover page.\nFallback: reply "continue ${requestId}".`,
                   );
                 }
-              } else {
-                const startNote = describeCuaActionStart(action, browseParams);
 
-                // Emit activity event for trajectory
-                emitCuaActivity({
-                  groupFolder: sourceGroup,
-                  action,
-                  phase: 'start',
-                  description: startNote || action,
-                  requestId,
-                  params: browseParams,
-                });
+                // Clean up request file immediately so IPC loop doesn't reprocess
+                try { fs.unlinkSync(filePath); } catch {}
 
-                // Update CUA log message in-place
-                if (chatJid && startNote) {
-                  await updateCuaLogMessage(sourceGroup, chatJid, `CUA: ${startNote}`);
-                }
+                // Fire-and-forget: processBrowseRequest blocks until user continues,
+                // but we don't await it — the IPC loop continues processing other groups.
+                logger.info(
+                  { module: 'index', requestId, sourceGroup },
+                  'wait_for_user: dispatching async (IPC loop continues)',
+                );
+                const capturedBrowseDir = browseDir;
+                void processBrowseRequest(requestId, action, browseParams, sourceGroup, capturedBrowseDir)
+                  .then((result) => {
+                    const resFile = path.join(capturedBrowseDir, `res-${requestId}.json`);
+                    const tmpFile = `${resFile}.tmp`;
+                    try {
+                      fs.writeFileSync(tmpFile, JSON.stringify(result));
+                      fs.renameSync(tmpFile, resFile);
+                    } catch (writeErr) {
+                      logger.error(
+                        { module: 'index', requestId, err: writeErr },
+                        'Failed to write wait_for_user response file',
+                      );
+                    }
+                  })
+                  .catch((err) => {
+                    logger.error(
+                      { module: 'index', requestId, err },
+                      'wait_for_user processing failed',
+                    );
+                    const resFile = path.join(capturedBrowseDir, `res-${requestId}.json`);
+                    const tmpFile = `${resFile}.tmp`;
+                    try {
+                      fs.writeFileSync(tmpFile, JSON.stringify({
+                        status: 'error',
+                        error: err instanceof Error ? err.message : String(err),
+                      }));
+                      fs.renameSync(tmpFile, resFile);
+                    } catch {}
+                  });
+
+                // Skip the rest of the browse processing for this request
+                continue;
               }
 
-              // Process the browse request (may be async for wait_for_user)
+              const startNote = describeCuaActionStart(action, browseParams);
+
+              // Emit activity event for trajectory
+              emitCuaActivity({
+                groupFolder: sourceGroup,
+                action,
+                phase: 'start',
+                description: startNote || action,
+                requestId,
+                params: browseParams,
+              });
+
+              // Update CUA log message in-place
+              if (chatJid && startNote) {
+                await updateCuaLogMessage(sourceGroup, chatJid, `CUA: ${startNote}`);
+              }
+
+              // Process the browse request
               const browseStartMs = Date.now();
               const result = await processBrowseRequest(
                 requestId,
@@ -1922,22 +1988,20 @@ function startIpcWatcher(): void {
               });
 
               // Emit activity end event for trajectory
-              if (action !== 'wait_for_user') {
-                emitCuaActivity({
-                  groupFolder: sourceGroup,
-                  action,
-                  phase: 'end',
-                  description: describeCuaActionStart(action, browseParams) || action,
-                  requestId,
-                  status: result.status,
-                  durationMs: browseDurationMs,
-                  error: result.status === 'error' ? String(result.error || 'unknown') : undefined,
-                  screenshotPath: action === 'screenshot' && result.status === 'ok' ? (result.result as string) : undefined,
-                  usage: { total: usage.total, ok: usage.ok, failed: usage.failed },
-                });
-              }
+              emitCuaActivity({
+                groupFolder: sourceGroup,
+                action,
+                phase: 'end',
+                description: describeCuaActionStart(action, browseParams) || action,
+                requestId,
+                status: result.status,
+                durationMs: browseDurationMs,
+                error: result.status === 'error' ? String(result.error || 'unknown') : undefined,
+                screenshotPath: action === 'screenshot' && result.status === 'ok' ? (result.result as string) : undefined,
+                usage: { total: usage.total, ok: usage.ok, failed: usage.failed },
+              });
 
-              if (chatJid && action !== 'wait_for_user') {
+              if (chatJid) {
                 const statusText =
                   result.status === 'ok'
                     ? 'ok'
@@ -2292,8 +2356,36 @@ async function processTaskIpc(
 /**
  * Handle a single message with concurrency limiting.
  * Called directly from grammY runner handlers (no polling).
+ * Auto-interrupts a running agent for the same group when a new message arrives.
  */
 async function handleMessage(msg: NewMessage): Promise<void> {
+  const group = registeredGroups[msg.chat_jid];
+  if (!group) return;
+
+  // Auto-interrupt: if an agent is already running for this group, interrupt it
+  const existingRun = activeRuns.get(group.folder);
+  if (existingRun) {
+    // Only interrupt if the container RPC is still in flight
+    if (hasActiveRequest(group.folder)) {
+      logDebugEvent('sdk', 'auto_interrupt', group.folder, {
+        reason: 'new_message',
+        newMessageSender: msg.sender_name,
+      });
+      logger.info(
+        { module: 'index', group: group.name, sender: msg.sender_name },
+        'Auto-interrupting running agent (new message received)',
+      );
+      interruptContainer(group.folder);
+    }
+    // Wait for the old run to fully clean up (pipeline.finish, activePipelines.delete)
+    await existingRun.promise;
+  }
+
+  // Register this run
+  let resolveRun!: () => void;
+  const runPromise = new Promise<void>((r) => { resolveRun = r; });
+  activeRuns.set(group.folder, { promise: runPromise, resolve: resolveRun });
+
   await agentSemaphore.acquire();
   try {
     await processMessage(msg);
@@ -2304,6 +2396,8 @@ async function handleMessage(msg: NewMessage): Promise<void> {
     );
   } finally {
     agentSemaphore.release();
+    activeRuns.delete(group.folder);
+    resolveRun();
   }
 }
 
@@ -2523,6 +2617,18 @@ async function main(): Promise<void> {
   startCuaTakeoverServer();
   startDashboardServer();
   initTailscaleServe();
+
+  // Notify user when a wait_for_user request times out
+  onWaitForUserTimeout((groupFolder, requestId) => {
+    const chatJid = getChatJidForGroup(groupFolder);
+    if (chatJid) {
+      void sendMessage(chatJid, 'CUA session timed out waiting for user.');
+    }
+    logger.warn(
+      { module: 'index', groupFolder, requestId },
+      'wait_for_user timed out — user notified',
+    );
+  });
 
   const interruptHandler: InterruptHandler = {
     interrupt(chatJid: string) {
