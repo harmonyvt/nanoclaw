@@ -386,6 +386,7 @@ export class OpenAIAdapter implements ProviderAdapter {
         model,
         messages,
         tools: tools.length > 0 ? tools : undefined,
+        tool_choice: tools.length > 0 ? 'auto' : undefined,
         stream: true,
       };
       if (reasoningEffort && reasoningParamMode === 'reasoning_effort') {
@@ -423,6 +424,7 @@ export class OpenAIAdapter implements ProviderAdapter {
             model,
             messages,
             tools: tools.length > 0 ? tools : undefined,
+            tool_choice: tools.length > 0 ? 'auto' : undefined,
             stream: true,
           };
           stream = (await client.chat.completions.create(
@@ -551,14 +553,14 @@ export class OpenAIAdapter implements ProviderAdapter {
         reasoningBuffer += (reasoningBuffer ? '\n' : '') + inlineThink;
       }
 
-      // Reconstruct the assistant message for the messages array
+      // Reconstruct the assistant message for the messages array.
+      // Do NOT include reasoning_content — it's an output-only field.
+      // Echoing it back wastes tokens and causes some models (e.g. Qwen 3.5
+      // on OpenRouter) to stop calling tools prematurely.
       const assistantMessage: any = {
         role: 'assistant' as const,
         content: cleanContent || null,
       };
-      if (reasoningBuffer) {
-        assistantMessage.reasoning_content = reasoningBuffer;
-      }
       if (toolCalls.length > 0) {
         assistantMessage.tool_calls = toolCalls;
       }
