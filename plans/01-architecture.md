@@ -6,7 +6,7 @@
 san-diego/
   src/                              # Existing v1 (untouched)
   src-v2/                           # New Effect host runtime
-    index.ts                        # Entry point: bootstrap + BunRuntime.runMain
+    index.ts                        # Entry point: BunRuntime.runMain(main) — auto SIGINT/SIGTERM
     config.ts                       # AppConfig service (env vars via Effect Config)
     errors.ts                       # All tagged error types
 
@@ -63,7 +63,8 @@ san-diego/
         tasks.ts                    # schedule_task, list/pause/resume/cancel
         groups.ts                   # register_group
         skills.ts                   # store/list/delete_skill
-        browse.ts                   # All browse_* tools
+        browse.ts                   # All browse_* tools (including browse_scroll)
+        filesystem.ts               # read_file, write_file (container-side fs operations)
         firecrawl.ts                # firecrawl_scrape/crawl/map
         memory.ts                   # memory_save/search
       adapters/
@@ -95,20 +96,42 @@ san-diego/
 
 ## Layer Dependency Tree (Host)
 
+Layers are composed bottom-up using `Layer.provideMerge` to build the full dependency graph:
+
+```typescript
+const MainLayer = AppConfigLive.pipe(
+  Layer.provideMerge(DatabaseLive),           // Database depends on AppConfig
+  Layer.provideMerge(DockerLive),             // Docker depends on AppConfig
+  Layer.provideMerge(CredentialsLive),        // Credentials depends on AppConfig
+  Layer.provideMerge(ContainerRunnerLive),    // ContainerRunner depends on Docker, Credentials, AppConfig
+  Layer.provideMerge(TelegramLive),           // Telegram depends on AppConfig [scoped]
+  Layer.provideMerge(SandboxLive),            // Sandbox depends on Docker, AppConfig [scoped]
+  Layer.provideMerge(BrowseHostLive),         // BrowseHost depends on Sandbox, Docker, AppConfig
+  Layer.provideMerge(TTSLive),                // TTS depends on AppConfig
+  Layer.provideMerge(SupermemoryLive),        // Supermemory depends on AppConfig
+  Layer.provideMerge(MediaLive),              // Media depends on AppConfig
+  Layer.provideMerge(GroupRegistryLive),      // GroupRegistry depends on Database, AppConfig
+  Layer.provideMerge(SchedulerLive),          // Scheduler depends on Database, ContainerRunner, GroupRegistry
+  Layer.provideMerge(MessageRouterLive),      // MessageRouter depends on all above
+);
+```
+
+Dependency summary:
+
 ```
 AppConfig (no deps — reads env vars)
 +-- Database (AppConfig)
 +-- Docker (AppConfig)
-|   +-- Credentials (AppConfig)
-|   +-- ContainerRunner (Docker, Credentials, AppConfig) [scoped]
-|   +-- Sandbox (Docker, AppConfig) [scoped]
++-- Credentials (AppConfig)
++-- ContainerRunner (Docker, Credentials, AppConfig) [scoped]
 +-- Telegram (AppConfig) [scoped]
++-- Sandbox (Docker, AppConfig) [scoped]
 +-- BrowseHost (Sandbox, Docker, AppConfig)
-+-- Scheduler (Database, ContainerRunner, GroupRegistry)
 +-- TTS (AppConfig)
 +-- Supermemory (AppConfig)
 +-- Media (AppConfig)
 +-- GroupRegistry (Database, AppConfig) [SynchronizedRef]
++-- Scheduler (Database, ContainerRunner, GroupRegistry)
 +-- MessageRouter (GroupRegistry, Telegram, Database, ContainerRunner,
                    BrowseHost, Scheduler, TTS, Supermemory, Media)
 ```
@@ -128,7 +151,9 @@ MainFiber (app root — SIGINT/SIGTERM interrupts everything)
 +-- SandboxIdleFiber (checks every 60s)
 +-- ContainerCleanupFiber (checks every 2min)
 +-- IpcWatcherFiber (1s poll — backward compat only)
-+-- DashboardFiber, TakeoverFiber, etc.
++-- [deferred] DashboardFiber (debug UI HTTP server)
++-- [deferred] TakeoverFiber (CUA takeover web server)
++-- [deferred] LogSyncFiber (remote log shipping)
 ```
 
 **Auto-interrupt**: When new message arrives for a group with active ContainerFiber, GroupCoordinator interrupts the existing fiber before starting a new one.
@@ -140,11 +165,17 @@ MainFiber (app root — SIGINT/SIGTERM interrupts everything)
 | Service | Replaces | Key Improvement |
 |---------|----------|-----------------|
 | `HostBridge` | Global `activeBridge` variable | Per-connection via Effect context, no global state |
-| `ToolRegistry` | Monolithic `tool-registry.ts` (2,243 lines) | 9 modular files, Effect-based handlers |
+| `ToolRegistry` | Monolithic `tool-registry.ts` (2,243 lines, 37 tools) | 9 modular files, Effect-based handlers |
 | `Cancellation` | File-based `isCancelled()` polling | Fiber interruption via `Deferred` + `Fiber.interrupt` |
 | `PromptBuilder` | Inline `preparePrompt()` | Testable service with SOUL.md injection |
 | `StatusEmitter` | Mixed RPC/file emission | Unified interface, mode-aware Layer |
 
 **Type changes:**
 - Tool handlers: `Promise<ToolResult>` -> `Effect<ToolResult, ToolError, HostBridge>`
+  - `ToolResult` is a flat struct: `{ content: string, isError?: boolean, imageBase64?: string, imageMimeType?: string }`
+  - This matches v1's return type — NOT an array of content blocks
 - Adapters: `AsyncGenerator<AgentEvent>` -> `Stream<AgentEvent, AdapterError, HostBridge | ToolRegistry | Cancellation>`
+
+**Entry point:** Uses `BunRuntime.runMain(main)` — this handles SIGINT/SIGTERM automatically and eliminates the need for manual signal handling or `Effect.scoped` wrappers at the top level.
+
+**Note:** When adapter registration needs to access services during `Stream.async` callback setup, use `Stream.asyncScoped` to maintain the Effect context within the callback scope.
