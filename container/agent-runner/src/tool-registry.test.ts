@@ -98,6 +98,7 @@ describe('All tools present', () => {
     'browse_extract_file',
     'browse_upload_file',
     'download_audio',
+    'download_video',
     'convert_audio',
     'transcribe_audio',
     'read_file',

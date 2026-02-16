@@ -14,15 +14,16 @@ import {
 import { HostBridge, HostBridgeTest } from '../services/HostBridge.js';
 import { ToolError } from '../errors/index.js';
 
-// ─── Expected tool names (37 total) ────────────────────────────────────────
+// ─── Expected tool names (38 total) ────────────────────────────────────────
 
 const EXPECTED_TOOL_NAMES = [
   // Communication (3)
   'send_message',
   'send_file',
   'send_voice',
-  // Audio (3)
+  // Audio (4)
   'download_audio',
+  'download_video',
   'convert_audio',
   'transcribe_audio',
   // Tasks (5)
@@ -66,8 +67,8 @@ const EXPECTED_TOOL_NAMES = [
 ];
 
 describe('ToolRegistry', () => {
-  it('registers all 37 tools', () => {
-    expect(ALL_TOOLS.length).toBe(37);
+  it('registers all 38 tools', () => {
+    expect(ALL_TOOLS.length).toBe(38);
   });
 
   it('contains all expected tool names', () => {
@@ -108,14 +109,14 @@ describe('ToolRegistry', () => {
   it('ToolRegistryLive resolves and lists all tools', async () => {
     const program = Effect.gen(function* () {
       const registry = yield* ToolRegistry;
-      expect(registry.tools.length).toBe(37);
+      expect(registry.tools.length).toBe(38);
       return registry.tools.map((t) => t.name);
     });
 
     const names = await Effect.runPromise(
       program.pipe(Effect.provide(ToolRegistryLive)),
     );
-    expect(names.length).toBe(37);
+    expect(names.length).toBe(38);
   });
 
   it('unknown tool dispatch fails with ToolError', async () => {
