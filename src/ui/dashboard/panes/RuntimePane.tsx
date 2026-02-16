@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'preact/hooks';
 import { apiFetch } from '../../shared/api.js';
-import { timeAgo } from '../../shared/hooks.js';
+import { timeAgo, useSSE } from '../../shared/hooks.js';
 
 interface FiberInfo {
   id: string;
@@ -213,39 +213,17 @@ function EventLog({ events }: { events: RuntimeEvent[] }) {
 export function RuntimePane() {
   const [snapshot, setSnapshot] = useState<RuntimeSnapshot | null>(null);
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
-  const [connected, setConnected] = useState(false);
   const [view, setView] = useState<'tree' | 'coordinators' | 'events'>('tree');
-  const eventSourceRef = useRef<EventSource | null>(null);
 
-  const connect = useCallback(() => {
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
+  const onSSEMessage = useCallback((eventType: string, data: unknown) => {
+    if (eventType === 'snapshot') {
+      setSnapshot(data as RuntimeSnapshot);
+    } else if (eventType === 'event') {
+      setEvents((prev) => [...prev.slice(-100), data as RuntimeEvent]);
     }
-
-    const es = new EventSource('/api/runtime/stream');
-    eventSourceRef.current = es;
-
-    es.onopen = () => setConnected(true);
-    es.onerror = () => {
-      setConnected(false);
-      es.close();
-      setTimeout(connect, 3000);
-    };
-
-    es.addEventListener('snapshot', (e) => {
-      try {
-        const data = JSON.parse(e.data) as RuntimeSnapshot;
-        setSnapshot(data);
-      } catch {}
-    });
-
-    es.addEventListener('event', (e) => {
-      try {
-        const event = JSON.parse(e.data) as RuntimeEvent;
-        setEvents((prev) => [...prev.slice(-100), event]);
-      } catch {}
-    });
   }, []);
+
+  const { connected } = useSSE('/api/runtime/stream', onSSEMessage);
 
   useEffect(() => {
     apiFetch<RuntimeSnapshot>('/api/runtime/snapshot')
@@ -255,15 +233,7 @@ export function RuntimePane() {
     apiFetch<RuntimeEvent[]>('/api/runtime/events')
       .then(setEvents)
       .catch(() => {});
-
-    connect();
-
-    return () => {
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
-      }
-    };
-  }, [connect]);
+  }, []);
 
   return (
     <div class="runtime-pane">

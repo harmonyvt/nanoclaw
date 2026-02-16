@@ -86,25 +86,25 @@ export interface RuntimeTelemetryService {
   readonly registerFiber: (
     name: string,
     groupFolder: string | null,
-  ) => Effect.Effect<{ id: string; onDone: () => Effect.Effect<void> }>;
+  ) => Effect.Effect<{ id: string; onDone: Effect.Effect<void> }>;
 
   readonly registerCoordinator: (
     groupFolder: string,
     chatJid: string,
   ) => Effect.Effect<{
-    onMessageQueued: () => Effect.Effect<void>;
-    onMessageProcessed: () => Effect.Effect<void>;
+    onMessageQueued: Effect.Effect<void>;
+    onMessageProcessed: Effect.Effect<void>;
     setActiveFiber: (fiberId: string | null) => Effect.Effect<void>;
     setQueueLength: (length: number) => Effect.Effect<void>;
-    cleanup: () => Effect.Effect<void>;
+    cleanup: Effect.Effect<void>;
   }>;
 
   readonly initSemaphore: (
     max: number,
   ) => Effect.Effect<{
-    onAcquired: () => Effect.Effect<void>;
-    onReleased: () => Effect.Effect<void>;
-    onWaiting: () => Effect.Effect<void>;
+    onAcquired: Effect.Effect<void>;
+    onReleased: Effect.Effect<void>;
+    onWaiting: Effect.Effect<void>;
   }>;
 }
 
@@ -290,7 +290,7 @@ export const RuntimeTelemetryLive: Layer.Layer<RuntimeTelemetry> = Layer.effect(
         const onAcquired = Effect.gen(function* () {
           yield* Ref.update(semaphoreRef, (s) => ({
             ...s,
-            available: s.available - 1,
+            available: Math.max(0, s.available - 1),
           }));
           yield* recordEvent('semaphore_acquired', {
             available: (yield* Ref.get(semaphoreRef)).available,

@@ -10,6 +10,7 @@ import {
   GROUPS_DIR,
   DATA_DIR,
   CUA_SANDBOX_CONTAINER_NAME,
+  MAX_CONCURRENT_AGENTS,
 } from './config.js';
 import { getSandboxHostIp, isSandboxRunning, ensureSandbox, getSandboxUrl, resetIdleTimer, resetSandbox } from './sandbox-manager.js';
 import { getContainerStatus, killContainer, interruptContainer } from './container-runner.js';
@@ -352,10 +353,33 @@ interface RuntimeEvent {
 
 let runtimeStartTime = Date.now();
 const runtimeEventBuffer: RuntimeEvent[] = [];
+let previousRunningIds = new Set<string>();
+
+function recordRuntimeEvent(type: string, payload: unknown) {
+  runtimeEventBuffer.push({ type, payload, timestamp: Date.now() });
+  if (runtimeEventBuffer.length > 500) {
+    runtimeEventBuffer.splice(0, runtimeEventBuffer.length - 500);
+  }
+}
 
 function handleRuntimeSnapshot(): Response {
   const agents = getContainerStatus();
   const runningAgents = agents.filter(a => a.running);
+
+  // Diff against previous state to record events
+  const currentIds = new Set(runningAgents.map(a => a.containerId || a.groupFolder));
+  for (const id of currentIds) {
+    if (!previousRunningIds.has(id)) {
+      const agent = runningAgents.find(a => (a.containerId || a.groupFolder) === id);
+      recordRuntimeEvent('fiber_spawned', { fiberId: id, name: 'ContainerRunner', groupFolder: agent?.groupFolder });
+    }
+  }
+  for (const id of previousRunningIds) {
+    if (!currentIds.has(id)) {
+      recordRuntimeEvent('fiber_done', { fiberId: id, name: 'ContainerRunner' });
+    }
+  }
+  previousRunningIds = currentIds;
 
   const snapshot: RuntimeSnapshot = {
     fibers: runningAgents.map(a => ({
@@ -373,8 +397,8 @@ function handleRuntimeSnapshot(): Response {
       lastActivity: Date.now() - (a.idleSeconds * 1000),
     })),
     semaphore: {
-      available: 4 - runningAgents.length,
-      max: 4,
+      available: Math.max(0, MAX_CONCURRENT_AGENTS - runningAgents.length),
+      max: MAX_CONCURRENT_AGENTS,
       waiting: 0,
     },
     uptimeMs: Date.now() - runtimeStartTime,
@@ -417,7 +441,7 @@ function handleRuntimeStream(req: Request): Response {
           startedAt: Date.now() - (a.idleSeconds * 1000),
         })),
         coordinators: [],
-        semaphore: { available: 4 - runningAgents.length, max: 4, waiting: 0 },
+        semaphore: { available: Math.max(0, MAX_CONCURRENT_AGENTS - runningAgents.length), max: MAX_CONCURRENT_AGENTS, waiting: 0 },
         uptimeMs: Date.now() - runtimeStartTime,
         timestamp: Date.now(),
       });
@@ -444,7 +468,7 @@ function handleRuntimeStream(req: Request): Response {
             startedAt: Date.now() - (a.idleSeconds * 1000),
           })),
           coordinators: [],
-          semaphore: { available: 4 - currentRunning.length, max: 4, waiting: 0 },
+          semaphore: { available: Math.max(0, MAX_CONCURRENT_AGENTS - currentRunning.length), max: MAX_CONCURRENT_AGENTS, waiting: 0 },
           uptimeMs: Date.now() - runtimeStartTime,
           timestamp: Date.now(),
         });
