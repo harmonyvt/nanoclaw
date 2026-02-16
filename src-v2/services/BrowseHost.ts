@@ -28,6 +28,7 @@ export interface BrowseHostService {
     requestId: string,
     groupFolder: string,
     message: string,
+    chatJid?: string,
   ) => Effect.Effect<BrowseResult, BrowseError | BrowseWaitTimeoutError>;
 
   /** Resolve a waiting request (user clicked "continue") */

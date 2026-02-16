@@ -1,10 +1,14 @@
 /**
  * HostBridge service — RPC communication with the host process.
  * Replaces the global activeBridge variable with proper Effect DI.
+ *
+ * Two Layer variants:
+ * - HostBridgePersistent: connects to Unix socket for RPC (Phase 3 full impl)
+ * - HostBridgeOneShot: returns null from request() so callers fall back to file IPC
  */
 
 import { Context, Effect, Layer } from 'effect';
-import type { RpcError } from '../errors/index.js';
+import { RpcError } from '../errors/index.js';
 
 // ─── Service Interface ─────────────────────────────────────────────────────
 
@@ -27,23 +31,37 @@ export class HostBridge extends Context.Tag('HostBridge')<
   HostBridgeService
 >() {}
 
-// ─── Stub Layers ───────────────────────────────────────────────────────────
+// ─── Layer Implementations ──────────────────────────────────────────────────
 
-/** Persistent mode: backed by Unix socket (implementation in Phase 3) */
+/**
+ * Persistent mode fallback: returns null from request(), signaling callers
+ * to fall back to file-based IPC.
+ *
+ * In persistent mode, the actual HostBridge is created by the RPC server
+ * (rpc/server.ts) and passed to runQuery as a Layer. This stub is only
+ * used if the RPC server hasn't connected yet.
+ */
 export const HostBridgePersistent: Layer.Layer<HostBridge> = Layer.succeed(
   HostBridge,
   {
-    request: () => Effect.succeed(null),
-    notify: () => Effect.void,
+    request: (_method: string, _params?: unknown) =>
+      Effect.succeed(null as unknown),
+    notify: (_method: string, _params?: unknown) =>
+      Effect.void,
   },
 );
 
-/** One-shot mode: falls back to IPC file writes */
+/**
+ * One-shot mode: always returns null from request(), signaling callers
+ * to fall back to file-based IPC writes.
+ */
 export const HostBridgeOneShot: Layer.Layer<HostBridge> = Layer.succeed(
   HostBridge,
   {
-    request: () => Effect.succeed(null),
-    notify: () => Effect.void,
+    request: (_method: string, _params?: unknown) =>
+      Effect.succeed(null as unknown),
+    notify: (_method: string, _params?: unknown) =>
+      Effect.void,
   },
 );
 
@@ -51,7 +69,9 @@ export const HostBridgeOneShot: Layer.Layer<HostBridge> = Layer.succeed(
 export const HostBridgeTest: Layer.Layer<HostBridge> = Layer.succeed(
   HostBridge,
   {
-    request: () => Effect.succeed(null),
-    notify: () => Effect.void,
+    request: (_method: string, _params?: unknown) =>
+      Effect.succeed(null as unknown),
+    notify: (_method: string, _params?: unknown) =>
+      Effect.void,
   },
 );

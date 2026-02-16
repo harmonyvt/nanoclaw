@@ -219,7 +219,7 @@ export const AppConfigLive: Layer.Layer<AppConfig> = Layer.succeed(
 
       replicateApiToken,
 
-      omniparserEnabled: envBoolNotFalse('OMNIPARSER_ENABLED'),
+      omniparserEnabled: envBool('OMNIPARSER_ENABLED', false),
       omniparserBoxThreshold: envFloat('OMNIPARSER_BOX_THRESHOLD', 0.05),
       omniparserIouThreshold: envFloat('OMNIPARSER_IOU_THRESHOLD', 0.1),
       omniparserTimeoutMs: envInt('OMNIPARSER_TIMEOUT_MS', 10_000),

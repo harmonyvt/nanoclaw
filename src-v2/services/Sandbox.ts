@@ -2,7 +2,7 @@
  * CUA Sandbox service — manages the desktop sandbox container lifecycle.
  */
 
-import { Context, Effect, Scope } from 'effect';
+import { Context, Effect } from 'effect';
 import type { SandboxError, SandboxStartError } from '../errors.js';
 
 // ─── Types ─────────────────────────────────────────────────────────────────
@@ -17,12 +17,8 @@ export interface SandboxConnection {
 // ─── Service Interface ─────────────────────────────────────────────────────
 
 export interface SandboxService {
-  /** Acquire the sandbox (starts if not running). Scoped — auto-cleaned. */
-  readonly acquire: Effect.Effect<
-    SandboxConnection,
-    SandboxStartError,
-    Scope.Scope
-  >;
+  /** Acquire the sandbox (starts if not running, resets idle timer). */
+  readonly acquire: Effect.Effect<SandboxConnection, SandboxStartError>;
 
   /** Ensure sandbox is running (idempotent, resets idle timer) */
   readonly ensure: Effect.Effect<SandboxConnection, SandboxStartError>;

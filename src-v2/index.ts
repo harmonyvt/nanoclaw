@@ -1,14 +1,23 @@
 /**
  * NanoClaw v2 — Effect-based runtime entry point.
  *
- * Phase 1: Minimal bootstrap that loads config and logs startup.
- * Subsequent phases will add service initialization, fiber spawning,
- * and the full message processing pipeline.
+ * Uses Effect.runFork with proper signal handling for
+ * graceful fiber cascade shutdown on SIGINT/SIGTERM.
  */
 
-import { Effect } from 'effect';
+import { Effect, Fiber, Runtime } from 'effect';
+
 import { AppConfig } from './config.js';
+import { Docker } from './services/Docker.js';
+import { ContainerRunner } from './services/ContainerRunner.js';
+import { Scheduler } from './services/Scheduler.js';
+import { Sandbox } from './services/Sandbox.js';
 import { MainLive } from './layers/Live.js';
+
+import { startMessageRouter } from './coordinators/MessageRouter.js';
+import { startIpcWatcher } from './coordinators/IpcWatcher.js';
+
+// ─── Main Program ───────────────────────────────────────────────────────────
 
 const program = Effect.gen(function* () {
   const config = yield* AppConfig;
@@ -18,23 +27,51 @@ const program = Effect.gen(function* () {
   );
   yield* Effect.log(`Provider: ${config.defaultProvider}`);
   yield* Effect.log(`Container image: ${config.containerImage}`);
-  yield* Effect.log(`Project root: ${config.projectRoot}`);
 
+  // Validate required config
   if (!config.telegramBotToken) {
-    yield* Effect.logError('TELEGRAM_BOT_TOKEN is required');
-    return yield* Effect.fail(new Error('TELEGRAM_BOT_TOKEN is required'));
+    return yield* Effect.die(new Error('TELEGRAM_BOT_TOKEN is required'));
   }
-
   if (!config.telegramOwnerId) {
-    yield* Effect.logError('TELEGRAM_OWNER_ID is required');
-    return yield* Effect.fail(new Error('TELEGRAM_OWNER_ID is required'));
+    return yield* Effect.die(new Error('TELEGRAM_OWNER_ID is required'));
   }
 
-  yield* Effect.log('Phase 1 scaffolding complete — services not yet wired');
+  // Validate Docker is running
+  const docker = yield* Docker;
+  yield* docker.isRunning;
+  yield* Effect.log('Docker is running');
+
+  // Ensure agent image exists (auto-rebuild if missing)
+  const runner = yield* ContainerRunner;
+  yield* runner.ensureImage;
+  yield* Effect.log('Agent image ready');
+
+  // Cleanup orphan containers from previous runs
+  yield* runner.cleanupOrphans.pipe(Effect.ignore);
+
+  // Start sandbox idle watcher
+  const sandbox = yield* Sandbox;
+  yield* sandbox.startIdleWatcher;
+
+  // Start scheduler fiber
+  const scheduler = yield* Scheduler;
+  yield* Effect.fork(scheduler.start);
+  yield* Effect.log('Scheduler started');
+
+  // Start IPC watcher fiber
+  yield* Effect.fork(startIpcWatcher);
+  yield* Effect.log('IPC watcher started');
+
+  // Start message router (blocks until Telegram disconnects)
+  yield* Effect.log('Starting message router...');
+  yield* startMessageRouter;
 });
+
+// ─── Bootstrap ──────────────────────────────────────────────────────────────
 
 const main = program.pipe(
   Effect.provide(MainLive),
+  Effect.scoped,
   Effect.tapErrorCause((cause) =>
     Effect.logError('Fatal error').pipe(
       Effect.annotateLogs('cause', String(cause)),
@@ -42,7 +79,13 @@ const main = program.pipe(
   ),
 );
 
-Effect.runPromise(main).catch((err) => {
-  console.error(`[nanoclaw-v2] Fatal: ${err}`);
-  process.exit(1);
-});
+// Run with proper signal handling
+const fiber = Effect.runFork(main);
+
+// Graceful shutdown on SIGINT/SIGTERM
+const shutdown = () => {
+  Effect.runFork(Fiber.interrupt(fiber));
+};
+
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);

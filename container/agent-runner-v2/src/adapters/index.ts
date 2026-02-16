@@ -1,13 +1,22 @@
 /**
  * Adapter factory — creates the appropriate provider adapter.
- * Stub — implementations in Phase 3.
  */
 
+import { ClaudeAdapter } from './claude-adapter.js';
+import { OpenAIAdapter } from './openai-adapter.js';
+import { MinimaxAdapter } from './minimax-adapter.js';
 import type { ProviderAdapter } from './types.js';
 
-export function createAdapter(_provider: string): ProviderAdapter {
-  // Phase 3: dispatch to ClaudeAdapter, OpenAIAdapter, MinimaxAdapter
-  throw new Error(
-    `Provider adapters not yet implemented (Phase 3). Provider: ${_provider}`,
-  );
+export function createAdapter(provider: string): ProviderAdapter {
+  switch (provider) {
+    case 'minimax':
+      return new MinimaxAdapter();
+    case 'openai':
+      return new OpenAIAdapter();
+    case 'anthropic':
+    default:
+      return new ClaudeAdapter();
+  }
 }
+
+export type { ProviderAdapter, AdapterInput } from './types.js';
