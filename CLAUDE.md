@@ -286,6 +286,16 @@ Requires `SUPERMEMORY_API_KEY`. When enabled, memories are also automatically re
 | `OPENAI_API_KEY`            | --                       | OpenAI provider API key                          |
 | `OPENAI_BASE_URL`           | --                       | Custom OpenAI-compatible API endpoint            |
 | `OPENAI_REASONING_EFFORT`   | `medium`                 | Reasoning effort for OpenAI reasoning models (`low`, `medium`, `high`) |
+| `OPENROUTER_REASONING_EFFORT` | --                     | Optional reasoning override for OpenRouter (`none`, `low`, `medium`, `high`) |
+| `OPENROUTER_DISABLE_REASONING_FOR_TOOLS` | --          | Disable reasoning on OpenRouter turns with tools (`true`/`false`) |
+| `OPENROUTER_TOOL_CHOICE`    | --                       | Override OpenRouter tool policy (`auto`, `required`, `none`) |
+| `OPENROUTER_PROVIDER_SORT`  | `latency` (tool turns)   | OpenRouter provider routing sort (`latency`, `price`, `throughput`) |
+| `OPENROUTER_REQUIRE_PARAMETERS` | `true` (tool turns)  | Restrict OpenRouter routing to providers that honor request params |
+| `OPENROUTER_ALLOW_FALLBACKS` | --                      | Allow or disable provider fallbacks (`true`/`false`) |
+| `OPENROUTER_PREFERRED_MAX_LATENCY` | --                | OpenRouter preferred max latency hint (seconds) |
+| `OPENROUTER_PREFERRED_MIN_THROUGHPUT` | --             | OpenRouter preferred min throughput hint |
+| `OPENROUTER_PARALLEL_TOOL_CALLS` | `false` (tool turns) | Enable/disable parallel tool calls on OpenRouter |
+| `OPENROUTER_ECHO_UPSTREAM_BODY` | --                   | OpenRouter debug option to echo upstream request body |
 | `ANTHROPIC_BASE_URL`        | --                       | Custom Anthropic-compatible API endpoint         |
 | `REPLICATE_API_TOKEN`       | --                       | Replicate API (transcription, TTS, OmniParser)   |
 | `FIRECRAWL_API_KEY`         | --                       | Firecrawl web scraping                  |

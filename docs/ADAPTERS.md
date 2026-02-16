@@ -365,6 +365,27 @@ The OpenAI adapter uses streaming to surface reasoning content incrementally. Fo
 
 This provides the same live thinking status display as the Claude adapter's extended thinking. Set `OPENAI_REASONING_EFFORT` to `low`, `medium`, or `high` to control reasoning depth. The `/thinking` toggle disables reasoning entirely (skips `reasoning_effort` param).
 
+### OpenRouter Tool-Calling Tuning
+
+When `OPENAI_BASE_URL` points to OpenRouter, the OpenAI adapter applies tool-turn routing defaults aimed at lower latency:
+
+1. `provider.sort` defaults to `latency` for tool turns
+2. `provider.require_parameters` defaults to `true` for tool turns
+3. `parallel_tool_calls` defaults to `false` for tool turns
+
+These defaults can be overridden with:
+
+- `OPENROUTER_PROVIDER_SORT` (`latency`, `price`, `throughput`)
+- `OPENROUTER_REQUIRE_PARAMETERS` (`true`/`false`)
+- `OPENROUTER_ALLOW_FALLBACKS` (`true`/`false`)
+- `OPENROUTER_PREFERRED_MAX_LATENCY` (number)
+- `OPENROUTER_PREFERRED_MIN_THROUGHPUT` (number)
+- `OPENROUTER_PARALLEL_TOOL_CALLS` (`true`/`false`)
+- `OPENROUTER_TOOL_CHOICE` (`auto`, `required`, `none`)
+- `OPENROUTER_REASONING_EFFORT` (`none`, `low`, `medium`, `high`)
+- `OPENROUTER_DISABLE_REASONING_FOR_TOOLS` (`true`/`false`)
+- `OPENROUTER_ECHO_UPSTREAM_BODY` (`true`/`false`, debug only)
+
 ### Default Model
 
 When no model is specified, the OpenAI adapter defaults to `gpt-4o`.
@@ -382,7 +403,7 @@ When no model is specified, the OpenAI adapter defaults to `gpt-4o`.
 | **Context handling** | SDK-managed compaction (PreCompact hook) | Manual trim: keep first + last 99 messages |
 | **Max iterations** | SDK-managed (no explicit cap) | 50 (`MAX_ITERATIONS`) |
 | **Conversation archiving** | PreCompact hook writes Markdown transcripts | No archiving |
-| **Extended thinking** | `maxThinkingTokens` (env: `MAX_THINKING_TOKENS`) | `reasoning_effort` (env: `OPENAI_REASONING_EFFORT`), streamed |
+| **Extended thinking** | `maxThinkingTokens` (env: `MAX_THINKING_TOKENS`) | `reasoning_effort` (env: `OPENAI_REASONING_EFFORT`), streamed; OpenRouter tool-turn overrides via `OPENROUTER_*` envs |
 | **Default model** | SDK default (determined by Claude CLI) | `gpt-4o` |
 | **CLAUDE.md loading** | Via `settingSources: ['project']` (SDK auto-discovers) | Manually read and injected into system prompt |
 | **SOUL.md loading** | Injected by `index.ts` `preparePrompt()` (shared) | Injected by `index.ts` `preparePrompt()` (shared) |

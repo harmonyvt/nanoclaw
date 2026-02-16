@@ -51,6 +51,20 @@ function log(message: string): void {
 
 type ReasoningEffort = 'low' | 'medium' | 'high';
 type ReasoningParamMode = 'none' | 'reasoning_effort' | 'reasoning_object';
+type ToolChoiceMode = 'auto' | 'required' | 'none';
+
+type OpenRouterProviderSort = 'latency' | 'price' | 'throughput';
+type OpenRouterProviderOptions = {
+  sort?: OpenRouterProviderSort;
+  require_parameters?: boolean;
+  allow_fallbacks?: boolean;
+  preferred_max_latency?: number;
+  preferred_min_throughput?: number;
+};
+
+type OpenRouterDebugOptions = {
+  echo_upstream_body?: boolean;
+};
 
 export function resolveReasoningEffort(
   enableThinking?: boolean,
@@ -75,6 +89,122 @@ function chooseReasoningParamMode(
 function isReasoningParamConflictError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
   return /only one of ["']?reasoning["']? and ["']?reasoning_effort["']?/i.test(msg);
+}
+
+function isOpenRouterBaseUrl(baseUrl: string | undefined): boolean {
+  return /openrouter\.ai/i.test(baseUrl || '');
+}
+
+function parseBooleanEnvVar(name: string): boolean | undefined {
+  const raw = process.env[name];
+  if (raw == null) return undefined;
+  const value = raw.trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(value)) return true;
+  if (['0', 'false', 'no', 'off'].includes(value)) return false;
+  return undefined;
+}
+
+function parsePositiveNumberEnvVar(name: string): number | undefined {
+  const raw = process.env[name];
+  if (raw == null || raw.trim() === '') return undefined;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+  return parsed;
+}
+
+function resolveOpenRouterReasoningEffort(
+  reasoningEffort: ReasoningEffort | undefined,
+  isOpenRouter: boolean,
+  hasTools: boolean,
+): ReasoningEffort | undefined {
+  if (!isOpenRouter || !reasoningEffort) return reasoningEffort;
+
+  const disableForTools = parseBooleanEnvVar(
+    'OPENROUTER_DISABLE_REASONING_FOR_TOOLS',
+  );
+  if (hasTools && disableForTools === true) return undefined;
+
+  const override = (process.env.OPENROUTER_REASONING_EFFORT || '')
+    .trim()
+    .toLowerCase();
+  if (override === 'none') return undefined;
+  if (override === 'low' || override === 'medium' || override === 'high') {
+    return override as ReasoningEffort;
+  }
+  return reasoningEffort;
+}
+
+function resolveToolChoice(
+  hasTools: boolean,
+  isOpenRouter: boolean,
+): ToolChoiceMode | undefined {
+  if (!hasTools) return undefined;
+  if (!isOpenRouter) return 'auto';
+
+  const override = (process.env.OPENROUTER_TOOL_CHOICE || '')
+    .trim()
+    .toLowerCase();
+  if (override === 'auto' || override === 'required' || override === 'none') {
+    return override as ToolChoiceMode;
+  }
+  return 'auto';
+}
+
+function resolveOpenRouterProviderOptions(
+  isOpenRouter: boolean,
+  hasTools: boolean,
+): OpenRouterProviderOptions | undefined {
+  if (!isOpenRouter || !hasTools) return undefined;
+
+  const sortEnv = (process.env.OPENROUTER_PROVIDER_SORT || 'latency')
+    .trim()
+    .toLowerCase();
+  const sort: OpenRouterProviderSort | undefined =
+    sortEnv === 'latency' || sortEnv === 'price' || sortEnv === 'throughput'
+      ? sortEnv
+      : undefined;
+
+  const requireParameters = parseBooleanEnvVar('OPENROUTER_REQUIRE_PARAMETERS');
+  const allowFallbacks = parseBooleanEnvVar('OPENROUTER_ALLOW_FALLBACKS');
+  const preferredMaxLatency = parsePositiveNumberEnvVar(
+    'OPENROUTER_PREFERRED_MAX_LATENCY',
+  );
+  const preferredMinThroughput = parsePositiveNumberEnvVar(
+    'OPENROUTER_PREFERRED_MIN_THROUGHPUT',
+  );
+
+  const provider: OpenRouterProviderOptions = {
+    sort,
+    require_parameters: requireParameters ?? true,
+  };
+  if (allowFallbacks !== undefined) provider.allow_fallbacks = allowFallbacks;
+  if (preferredMaxLatency !== undefined) {
+    provider.preferred_max_latency = preferredMaxLatency;
+  }
+  if (preferredMinThroughput !== undefined) {
+    provider.preferred_min_throughput = preferredMinThroughput;
+  }
+
+  return provider;
+}
+
+function resolveOpenRouterParallelToolCalls(
+  isOpenRouter: boolean,
+  hasTools: boolean,
+): boolean | undefined {
+  if (!isOpenRouter || !hasTools) return undefined;
+  const envVal = parseBooleanEnvVar('OPENROUTER_PARALLEL_TOOL_CALLS');
+  if (envVal !== undefined) return envVal;
+  return false;
+}
+
+function resolveOpenRouterDebugOptions(
+  isOpenRouter: boolean,
+): OpenRouterDebugOptions | undefined {
+  if (!isOpenRouter) return undefined;
+  const echoUpstreamBody = parseBooleanEnvVar('OPENROUTER_ECHO_UPSTREAM_BODY');
+  if (echoUpstreamBody === undefined) return undefined;
+  return { echo_upstream_body: echoUpstreamBody };
 }
 
 // ─── XML Conversation Parser ────────────────────────────────────────────────
@@ -187,6 +317,9 @@ type ProviderDelta = OpenAI.Chat.Completions.ChatCompletionChunk.Choice.Delta & 
 
 type ExtendedCreateParams = OpenAI.ChatCompletionCreateParamsStreaming & {
   reasoning?: { effort: string };
+  parallel_tool_calls?: boolean;
+  provider?: OpenRouterProviderOptions;
+  debug?: OpenRouterDebugOptions;
 };
 
 // ─── Reasoning Delta Extraction ─────────────────────────────────────────
@@ -249,18 +382,14 @@ export class OpenAIAdapter implements ProviderAdapter {
                 baseURL: input.baseUrl || process.env.OPENAI_BASE_URL || undefined,
               });
               const model = input.model || 'gpt-4o';
-              const reasoningEffort = resolveReasoningEffort(input.enableThinking);
-              let reasoningParamMode = chooseReasoningParamMode(
-                input.baseUrl || process.env.OPENAI_BASE_URL,
-                reasoningEffort,
-              );
 
               const effectiveBaseUrl =
                 input.baseUrl || process.env.OPENAI_BASE_URL || '(default)';
+              const isOpenRouter = isOpenRouterBaseUrl(effectiveBaseUrl);
               bufLog(
                 `Client config: model=${model}, baseURL=${effectiveBaseUrl}, thinking=${input.enableThinking !== false}`,
               );
-              bufLog(`Reasoning effort: ${reasoningEffort || 'disabled'}`);
+              bufLog(`OpenRouter endpoint: ${isOpenRouter}`);
 
               emit.single({ type: 'session_init', sessionId: `openai-${Date.now()}` });
 
@@ -269,6 +398,38 @@ export class OpenAIAdapter implements ProviderAdapter {
 
               const systemPrompt = buildSystemPrompt(input);
               const tools = buildOpenAITools();
+              const hasTools = tools.length > 0;
+              const baseReasoningEffort = resolveReasoningEffort(
+                input.enableThinking,
+              );
+              const reasoningEffort = resolveOpenRouterReasoningEffort(
+                baseReasoningEffort,
+                isOpenRouter,
+                hasTools,
+              );
+              let reasoningParamMode = chooseReasoningParamMode(
+                input.baseUrl || process.env.OPENAI_BASE_URL,
+                reasoningEffort,
+              );
+              const toolChoice = resolveToolChoice(hasTools, isOpenRouter);
+              const openRouterProvider = resolveOpenRouterProviderOptions(
+                isOpenRouter,
+                hasTools,
+              );
+              const parallelToolCalls = resolveOpenRouterParallelToolCalls(
+                isOpenRouter,
+                hasTools,
+              );
+              const openRouterDebug = resolveOpenRouterDebugOptions(
+                isOpenRouter,
+              );
+
+              bufLog(`Reasoning effort: ${reasoningEffort || 'disabled'}`);
+              if (isOpenRouter && hasTools) {
+                bufLog(
+                  `OpenRouter tool tuning: tool_choice=${toolChoice}, parallel_tool_calls=${parallelToolCalls ?? '(default)'}, provider=${JSON.stringify(openRouterProvider ?? {})}`,
+                );
+              }
               bufLog(
                 `System prompt: ${systemPrompt.length} chars, tools: ${tools.length}`,
               );
@@ -378,7 +539,11 @@ export class OpenAIAdapter implements ProviderAdapter {
                 const createParams: ExtendedCreateParams = {
                   model,
                   messages,
-                  tools: tools.length > 0 ? tools : undefined,
+                  tools: hasTools ? tools : undefined,
+                  tool_choice: toolChoice,
+                  parallel_tool_calls: parallelToolCalls,
+                  provider: openRouterProvider,
+                  debug: openRouterDebug,
                   stream: true,
                 };
                 if (reasoningEffort && reasoningParamMode === 'reasoning_effort') {
@@ -428,7 +593,11 @@ export class OpenAIAdapter implements ProviderAdapter {
                     const fallbackParams: Record<string, unknown> = {
                       model,
                       messages,
-                      tools: tools.length > 0 ? tools : undefined,
+                      tools: hasTools ? tools : undefined,
+                      tool_choice: toolChoice,
+                      parallel_tool_calls: parallelToolCalls,
+                      provider: openRouterProvider,
+                      debug: openRouterDebug,
                       stream: true,
                     };
                     stream = (await client.chat.completions.create(
@@ -603,15 +772,11 @@ export class OpenAIAdapter implements ProviderAdapter {
                 const assistantMessage: {
                   role: 'assistant';
                   content: string | null;
-                  reasoning_content?: string;
                   tool_calls?: typeof toolCalls;
                 } = {
                   role: 'assistant' as const,
                   content: cleanContent || null,
                 };
-                if (reasoningBuffer) {
-                  assistantMessage.reasoning_content = reasoningBuffer;
-                }
                 if (toolCalls.length > 0) {
                   assistantMessage.tool_calls = toolCalls;
                 }
