@@ -107,6 +107,22 @@ export function useSSE(
       }
     });
 
+    es.addEventListener('snapshot', (e) => {
+      try {
+        onMessageRef.current('snapshot', JSON.parse((e as MessageEvent).data));
+      } catch {
+        // Ignore parse errors
+      }
+    });
+
+    es.addEventListener('event', (e) => {
+      try {
+        onMessageRef.current('event', JSON.parse((e as MessageEvent).data));
+      } catch {
+        // Ignore parse errors
+      }
+    });
+
     // Generic message event
     es.onmessage = (e) => {
       try {

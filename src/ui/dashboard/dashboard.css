@@ -1821,3 +1821,392 @@ input[type='text'] {
   margin: 12px 0 6px;
   padding: 4px 12px;
 }
+
+/* ── Runtime pane ───────────────────────────────────────────────────────── */
+
+.runtime-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.runtime-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  flex-shrink: 0;
+}
+
+.runtime-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.runtime-status .status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  transition: all 200ms;
+}
+
+.runtime-status .status-dot.connected {
+  background: var(--ok);
+  box-shadow: 0 0 6px var(--ok);
+}
+
+.runtime-status .status-dot.disconnected {
+  background: var(--danger);
+}
+
+.runtime-uptime {
+  font-size: 11px;
+  color: var(--muted);
+  font-family: 'IBM Plex Mono', monospace;
+}
+
+.runtime-section {
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.02);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.runtime-section .section-title {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+/* Semaphore visualization */
+.semaphore-viz {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.semaphore-slots {
+  display: flex;
+  gap: 4px;
+}
+
+.semaphore-slot {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  transition: all 200ms;
+}
+
+.semaphore-slot.free {
+  background: rgba(34, 197, 94, 0.3);
+  border: 1px solid rgba(34, 197, 94, 0.5);
+}
+
+.semaphore-slot.used {
+  background: rgba(239, 68, 68, 0.3);
+  border: 1px solid rgba(239, 68, 68, 0.5);
+}
+
+.semaphore-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.semaphore-label .waiting {
+  color: var(--warning, #f59e0b);
+}
+
+/* Runtime tabs */
+.runtime-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 8px 12px;
+  background: var(--bg);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.runtime-tab {
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 150ms;
+  font-family: inherit;
+}
+
+.runtime-tab:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+}
+
+.runtime-tab.active {
+  background: var(--accent);
+  color: #041017;
+}
+
+/* Runtime content */
+.runtime-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+/* Fiber tree */
+.fiber-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.empty-tree,
+.empty-list,
+.empty-events {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.fiber-node {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--panel);
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.fiber-node.fiber-active {
+  background: rgba(56, 189, 248, 0.08);
+  border: 1px solid rgba(56, 189, 248, 0.2);
+}
+
+.fiber-icon {
+  font-size: 10px;
+}
+
+.fiber-icon.fiber-running {
+  color: var(--ok);
+}
+
+.fiber-icon.fiber-suspended {
+  color: var(--warning, #f59e0b);
+}
+
+.fiber-icon.fiber-done {
+  color: var(--muted);
+}
+
+.fiber-name {
+  font-weight: 500;
+  color: var(--text);
+}
+
+.fiber-group {
+  font-size: 10px;
+  color: var(--muted);
+  font-family: 'IBM Plex Mono', monospace;
+}
+
+.fiber-age {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.fiber-completed {
+  margin-top: 8px;
+}
+
+.fiber-completed summary {
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--muted);
+  padding: 4px 0;
+}
+
+.fiber-completed .fiber-node {
+  padding: 6px 12px;
+  margin-top: 2px;
+  opacity: 0.6;
+}
+
+/* Coordinator list */
+.coordinator-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.coordinator-card {
+  padding: 10px 12px;
+  background: var(--panel);
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.coordinator-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.coordinator-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.coordinator-active {
+  color: var(--ok);
+  font-size: 8px;
+  animation: pulse-active 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-active {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.coordinator-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.queue-badge {
+  font-size: 10px;
+  padding: 2px 8px;
+  background: rgba(56, 189, 248, 0.15);
+  color: var(--accent);
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+.last-activity {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* Event log */
+.event-log {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  max-height: 400px;
+  overflow-y: auto;
+  background: var(--panel);
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.event-row {
+  display: flex;
+  gap: 10px;
+  padding: 4px 6px;
+  border-radius: 4px;
+}
+
+.event-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.event-time {
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.event-type {
+  color: var(--accent);
+  flex-shrink: 0;
+  min-width: 120px;
+}
+
+.event-payload {
+  color: var(--text);
+  opacity: 0.7;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Mobile responsive */
+@media (max-width: 600px) {
+  .semaphore-viz {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .semaphore-slot {
+    width: 16px;
+    height: 16px;
+  }
+
+  .runtime-tabs {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .runtime-tab {
+    padding: 8px 12px;
+    white-space: nowrap;
+  }
+
+  .fiber-node {
+    flex-wrap: wrap;
+    padding: 8px 10px;
+  }
+
+  .fiber-age {
+    width: 100%;
+    margin-left: 0;
+    margin-top: 4px;
+    text-align: right;
+  }
+
+  .coordinator-meta {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .event-log {
+    font-size: 10px;
+    padding: 6px;
+  }
+
+  .event-row {
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .event-type {
+    min-width: auto;
+    order: 2;
+    width: 100%;
+  }
+
+  .event-time {
+    order: 1;
+  }
+
+  .event-payload {
+    order: 3;
+    width: 100%;
+  }
+}
+

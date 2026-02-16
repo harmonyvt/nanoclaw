@@ -9,3 +9,4 @@ export { Scheduler, type SchedulerService, type TaskRunResult } from './Schedule
 export { TTS, type TTSService, type TTSResult, type VoiceProfile } from './TTS.js';
 export { Supermemory, type SupermemoryService, type MemorySearchResult } from './Supermemory.js';
 export { Media, type MediaService } from './Media.js';
+export { RuntimeTelemetry, type RuntimeTelemetryService, type RuntimeSnapshot, type RuntimeEvent, type FiberInfo, type CoordinatorInfo, type SemaphoreState } from './RuntimeTelemetry.js';
