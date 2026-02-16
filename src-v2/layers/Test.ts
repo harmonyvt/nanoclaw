@@ -45,6 +45,7 @@ export const TestAppConfig: AppConfigShape = {
   serviceLogsDir: '/tmp/nanoclaw-test/logs/services',
   mainGroupFolder: 'main',
   containerImage: 'nanoclaw-agent:test',
+  containerAgentVersion: '2',
   containerTimeout: 30_000,
   containerMaxOutputSize: 1_048_576,
   maxConcurrentAgents: 4,

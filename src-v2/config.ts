@@ -31,6 +31,7 @@ export interface AppConfigShape {
 
   // ── Container ──
   readonly containerImage: string;
+  readonly containerAgentVersion: string;
   readonly containerTimeout: number;
   readonly containerMaxOutputSize: number;
   readonly maxConcurrentAgents: number;
@@ -187,6 +188,7 @@ export const AppConfigLive: Layer.Layer<AppConfig> = Layer.succeed(
       mainGroupFolder: 'main',
 
       containerImage: process.env.CONTAINER_IMAGE || 'nanoclaw-agent:latest',
+      containerAgentVersion: process.env.NANOCLAW_AGENT_VERSION || '1',
       containerTimeout: envInt('CONTAINER_TIMEOUT', 300_000),
       containerMaxOutputSize: envInt('CONTAINER_MAX_OUTPUT_SIZE', 10_485_760),
       maxConcurrentAgents: envInt('MAX_CONCURRENT_AGENTS', 4),

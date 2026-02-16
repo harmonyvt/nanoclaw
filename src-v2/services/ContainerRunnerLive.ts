@@ -205,6 +205,7 @@ export const ContainerRunnerLive: Layer.Layer<
             interactive: true,
             remove: true,
             mounts,
+            env: { NANOCLAW_AGENT_VERSION: config.containerAgentVersion },
             labels: {
               'com.nanoclaw.app': 'nanoclaw',
               'com.nanoclaw.role': 'agent',
@@ -345,7 +346,10 @@ export const ContainerRunnerLive: Layer.Layer<
             image: config.containerImage,
             detached: true,
             mounts,
-            env: { NANOCLAW_PERSISTENT: '1' },
+            env: {
+              NANOCLAW_PERSISTENT: '1',
+              NANOCLAW_AGENT_VERSION: config.containerAgentVersion,
+            },
             labels: {
               'com.nanoclaw.app': 'nanoclaw',
               'com.nanoclaw.role': 'agent',
