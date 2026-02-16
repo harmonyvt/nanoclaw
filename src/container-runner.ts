@@ -119,6 +119,7 @@ export interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   isSkillInvocation?: boolean;
+  isVoiceCall?: boolean;
   assistantName?: string;
   provider?: string;
   model?: string;

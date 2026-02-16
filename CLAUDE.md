@@ -15,7 +15,10 @@ Telegram <-> Host (Bun) <-> SQLite
                 |           +-- OpenAIAdapter (chat completions + function calling)
                 |
                 +-- CUA desktop sandbox (persistent sidecar)
-                      \-- /cmd API + screenshot transport
+                |     \-- /cmd API + screenshot transport
+                |
+                +-- Voice call sidecar (pytgcalls, on-demand)
+                      \-- FastAPI on :8100, host callback on :8101
 ```
 
 ## Key Files
@@ -43,6 +46,18 @@ Telegram <-> Host (Bun) <-> SQLite
 | `src/logger.ts`           | Pino logger with pino-pretty                                       |
 | `src/skills.ts`           | Skill loading utilities (per-group skill files)                    |
 | `src/utils.ts`            | `loadJson` / `saveJson` helpers                                    |
+| `src/voice-call.ts`      | Voice call manager: sidecar lifecycle, STT→Agent→TTS pipeline      |
+| `src/voice-call-server.ts`| HTTP callback server (:8101) for voice sidecar utterances          |
+
+### Voice Call Sidecar
+
+| File                           | Purpose                                                        |
+| ------------------------------ | -------------------------------------------------------------- |
+| `voice-sidecar/Dockerfile`     | Python 3.11 + pytgcalls + silero-vad + FastAPI                 |
+| `voice-sidecar/build.sh`       | Build script (`nanoclaw-voice-sidecar:latest`)                 |
+| `voice-sidecar/server.py`      | FastAPI: `/join`, `/leave`, `/status`, `/play`, `/health`      |
+| `voice-sidecar/vad.py`         | silero-vad speech endpoint detection (state machine)           |
+| `voice-sidecar/audio.py`       | PCM/WAV conversion, 48kHz↔16kHz resampling                    |
 
 ### Agent Container
 
@@ -332,6 +347,15 @@ Requires `SUPERMEMORY_API_KEY`. When enabled, memories are also automatically re
 | `OMNIPARSER_IOU_THRESHOLD`  | `0.1`                    | IOU threshold for box deduplication     |
 | `OMNIPARSER_TIMEOUT_MS`     | `10000`                  | Request timeout (ms), falls back to a11y tree on timeout |
 | `MAX_THINKING_TOKENS`       | `10000`                  | Claude extended thinking token budget   |
+| `VOICE_CALL_ENABLED`        | `false`                  | Enable voice call support               |
+| `VOICE_SIDECAR_IMAGE`       | `nanoclaw-voice-sidecar:latest` | Docker image for voice sidecar    |
+| `VOICE_SIDECAR_CONTAINER_NAME`| `nanoclaw-voice-sidecar` | Docker container name for sidecar     |
+| `VOICE_SIDECAR_API_PORT`    | `8100`                   | Host port for sidecar FastAPI           |
+| `VOICE_CALLBACK_PORT`       | `8101`                   | Host port for utterance callbacks       |
+| `VOICE_CALL_IDLE_TIMEOUT_MS`| `600000`                 | Auto-leave after inactivity (10 min)    |
+| `VOICE_VAD_SILENCE_MS`      | `1500`                   | Silence threshold for speech detection  |
+| `TELEGRAM_API_ID`           | --                       | MTProto API ID (https://my.telegram.org)|
+| `TELEGRAM_API_HASH`         | --                       | MTProto API hash                        |
 | `LOG_LEVEL`                 | `info`                   | Pino log level                          |
 | `TZ`                        | system                   | Timezone for scheduled tasks            |
 

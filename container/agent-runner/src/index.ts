@@ -116,6 +116,10 @@ export function preparePrompt(input: ContainerInput): string {
     prompt = `[SKILL INVOCATION - You are executing a stored skill. Follow the instructions in the <skill> block precisely. Report progress and results using send_message.]\n\n${prompt}`;
   }
 
+  if (input.isVoiceCall) {
+    prompt = `[VOICE CALL - You are in a live voice conversation. Keep responses SHORT (1-3 sentences). Be conversational and natural. No markdown, formatting, links, code blocks, or lists. Respond as if speaking aloud.]\n\n${prompt}`;
+  }
+
   return prompt;
 }
 
