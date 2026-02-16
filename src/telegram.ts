@@ -1308,7 +1308,7 @@ export async function connectTelegram(
     const text = buildModelMenuText(chatId, group);
     if (menu.length === 0) {
       await ctx.reply(
-        `${text}\n\nNo models in menu. Add with:\n/model add <model_id> [label]`,
+        `${text}\n\nNo models in menu. Add with:\n/model add &lt;model_id&gt; [label]`,
         { parse_mode: 'HTML' },
       );
       return;
@@ -1883,7 +1883,7 @@ export async function connectTelegram(
         const menu = getModelMenu(mChatId);
         if (menu.length === 0) {
           await ctx.editMessageText(
-            `Model removed.\n\n${text}\n\nNo models in menu. Add with:\n/model add <model_id> [label]`,
+            `Model removed.\n\n${text}\n\nNo models in menu. Add with:\n/model add &lt;model_id&gt; [label]`,
             { parse_mode: 'HTML' },
           );
         } else {
@@ -1902,7 +1902,7 @@ export async function connectTelegram(
         const menu = getModelMenu(mChatId);
         if (menu.length === 0) {
           await ctx.editMessageText(
-            `${text}\n\nNo models in menu. Add with:\n/model add <model_id> [label]`,
+            `${text}\n\nNo models in menu. Add with:\n/model add &lt;model_id&gt; [label]`,
             { parse_mode: 'HTML' },
           );
         } else {
