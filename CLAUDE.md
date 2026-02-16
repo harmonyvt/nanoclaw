@@ -165,6 +165,7 @@ Per-group IPC directories prevent cross-group access. Non-main groups can only s
 ### Audio Processing
 
 - `download_audio` -- Download audio from URL via yt-dlp (YouTube, Twitch, SoundCloud, etc.). Returns path to downloaded WAV file.
+- `download_video` -- Download video from URL via yt-dlp (YouTube, Twitch, etc.). Best quality, merged to mp4. Returns path to downloaded file.
 - `convert_audio` -- Convert audio with ffmpeg (format, sample rate, mono, trim duration). Ideal for preparing voice clone reference audio (24kHz mono WAV, max 10s).
 - `transcribe_audio` -- Transcribe an audio file to text using Replicate GPT-4o-transcribe (requires REPLICATE_API_TOKEN)
 

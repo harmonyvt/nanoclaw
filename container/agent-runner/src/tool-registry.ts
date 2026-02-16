@@ -1945,6 +1945,90 @@ If a skill with the same name already exists, it will be overwritten.`,
   },
 
   {
+    name: 'download_video',
+    description:
+      'Download video from a URL using yt-dlp. Supports YouTube, Twitch, and hundreds ' +
+      'of other platforms. Downloads best available quality and merges to mp4. ' +
+      'Returns the path to the downloaded video file in /workspace/group/media/.',
+    schema: z.object({
+      url: z
+        .string()
+        .describe('URL to download video from (YouTube, Twitch, etc.)'),
+      filename: z
+        .string()
+        .optional()
+        .describe(
+          'Output filename without extension (default: "downloaded_video"). ' +
+          'File will be saved as /workspace/group/media/{filename}.mp4',
+        ),
+    }),
+    handler: async (args): Promise<ToolResult> => {
+      const url = (args.url as string).trim();
+      if (!url) {
+        return { content: 'URL is required', isError: true };
+      }
+
+      const filename = ((args.filename as string) || 'downloaded_video').replace(
+        /[^a-zA-Z0-9_-]/g,
+        '_',
+      );
+      const mediaDir = '/workspace/group/media';
+      fs.mkdirSync(mediaDir, { recursive: true });
+
+      const outputTemplate = path.join(mediaDir, `${filename}.%(ext)s`);
+      const expectedOutput = path.join(mediaDir, `${filename}.mp4`);
+
+      try {
+        const { stdout: _stdout, stderr, exitCode } = await runCommand(
+          [
+            'yt-dlp',
+            '--merge-output-format', 'mp4',
+            '--no-playlist',
+            '--no-warnings',
+            '-o', outputTemplate,
+            url,
+          ],
+          300000,
+        );
+
+        if (exitCode !== 0) {
+          return {
+            content: `yt-dlp failed (exit ${exitCode}): ${stderr.slice(0, 500)}`,
+            isError: true,
+          };
+        }
+
+        if (fs.existsSync(expectedOutput)) {
+          const stat = fs.statSync(expectedOutput);
+          return {
+            content: `Downloaded video to: ${expectedOutput} (${(stat.size / 1024 / 1024).toFixed(1)}MB)`,
+          };
+        }
+
+        // Fallback: look for any file matching the filename pattern
+        const files = fs.readdirSync(mediaDir).filter((f) => f.startsWith(filename));
+        if (files.length > 0) {
+          const found = path.join(mediaDir, files[files.length - 1]);
+          const stat = fs.statSync(found);
+          return {
+            content: `Downloaded video to: ${found} (${(stat.size / 1024 / 1024).toFixed(1)}MB)`,
+          };
+        }
+
+        return {
+          content: `yt-dlp completed but output file not found. stderr: ${stderr.slice(0, 300)}`,
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: `Download failed: ${err instanceof Error ? err.message : String(err)}`,
+          isError: true,
+        };
+      }
+    },
+  },
+
+  {
     name: 'convert_audio',
     description:
       'Convert or process audio files using ffmpeg. Supports format conversion, ' +
