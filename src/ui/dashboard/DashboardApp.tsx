@@ -10,6 +10,7 @@ import { TakeoverPane } from './panes/TakeoverPane.js';
 import { TrajectoryPane } from './panes/TrajectoryPane.js';
 import { ProcessesPane } from './panes/ProcessesPane.js';
 import { ChatsPane } from './panes/ChatsPane.js';
+import { RuntimePane } from './panes/RuntimePane.js';
 
 export function DashboardApp() {
   const { authenticated, loading } = useAuth();
@@ -59,6 +60,7 @@ export function DashboardApp() {
       <Header connected={connected} onReconnect={handleReconnect} />
       <TabBar active={activeTab} onChange={setActiveTab} />
       {activeTab === 'chats' && <ChatsPane />}
+      {activeTab === 'runtime' && <RuntimePane />}
       {activeTab === 'logs' && (
         <LogsPane onConnectionChange={handleConnectionChange} />
       )}

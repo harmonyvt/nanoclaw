@@ -318,6 +318,159 @@ function handleChatMessages(url: URL): Response {
   return jsonResponse(messages);
 }
 
+// ── Runtime API handlers ────────────────────────────────────────────────
+
+interface RuntimeSnapshot {
+  fibers: Array<{
+    id: string;
+    name: string;
+    status: string;
+    groupFolder: string | null;
+    startedAt: number;
+  }>;
+  coordinators: Array<{
+    groupFolder: string;
+    chatJid: string;
+    queueLength: number;
+    activeFiber: string | null;
+    lastActivity: number;
+  }>;
+  semaphore: {
+    available: number;
+    max: number;
+    waiting: number;
+  };
+  uptimeMs: number;
+  timestamp: number;
+}
+
+interface RuntimeEvent {
+  type: string;
+  payload: unknown;
+  timestamp: number;
+}
+
+let runtimeStartTime = Date.now();
+const runtimeEventBuffer: RuntimeEvent[] = [];
+
+function handleRuntimeSnapshot(): Response {
+  const agents = getContainerStatus();
+  const runningAgents = agents.filter(a => a.running);
+
+  const snapshot: RuntimeSnapshot = {
+    fibers: runningAgents.map(a => ({
+      id: a.containerId || 'unknown',
+      name: 'ContainerRunner',
+      status: 'running' as const,
+      groupFolder: a.groupFolder,
+      startedAt: Date.now() - (a.idleSeconds * 1000),
+    })),
+    coordinators: runningAgents.map(a => ({
+      groupFolder: a.groupFolder,
+      chatJid: 'telegram:unknown',
+      queueLength: 0,
+      activeFiber: a.containerId || null,
+      lastActivity: Date.now() - (a.idleSeconds * 1000),
+    })),
+    semaphore: {
+      available: 4 - runningAgents.length,
+      max: 4,
+      waiting: 0,
+    },
+    uptimeMs: Date.now() - runtimeStartTime,
+    timestamp: Date.now(),
+  };
+
+  return jsonResponse(snapshot);
+}
+
+function handleRuntimeEvents(): Response {
+  return jsonResponse(runtimeEventBuffer.slice(-100));
+}
+
+function handleRuntimeStream(req: Request): Response {
+  const stream = new ReadableStream({
+    start(controller) {
+      const encoder = new TextEncoder();
+
+      function send(eventType: string, data: unknown) {
+        try {
+          controller.enqueue(
+            encoder.encode(
+              `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`,
+            ),
+          );
+        } catch {
+          // Stream closed
+        }
+      }
+
+      // Send initial snapshot
+      const agents = getContainerStatus();
+      const runningAgents = agents.filter(a => a.running);
+      send('snapshot', {
+        fibers: runningAgents.map(a => ({
+          id: a.containerId || 'unknown',
+          name: 'ContainerRunner',
+          status: 'running',
+          groupFolder: a.groupFolder,
+          startedAt: Date.now() - (a.idleSeconds * 1000),
+        })),
+        coordinators: [],
+        semaphore: { available: 4 - runningAgents.length, max: 4, waiting: 0 },
+        uptimeMs: Date.now() - runtimeStartTime,
+        timestamp: Date.now(),
+      });
+
+      // Heartbeat
+      const heartbeat = setInterval(() => {
+        try {
+          controller.enqueue(encoder.encode(': heartbeat\n\n'));
+        } catch {
+          clearInterval(heartbeat);
+        }
+      }, 15_000);
+
+      // Periodic snapshot updates
+      const snapshotInterval = setInterval(() => {
+        const currentAgents = getContainerStatus();
+        const currentRunning = currentAgents.filter(a => a.running);
+        send('snapshot', {
+          fibers: currentRunning.map(a => ({
+            id: a.containerId || 'unknown',
+            name: 'ContainerRunner',
+            status: 'running',
+            groupFolder: a.groupFolder,
+            startedAt: Date.now() - (a.idleSeconds * 1000),
+          })),
+          coordinators: [],
+          semaphore: { available: 4 - currentRunning.length, max: 4, waiting: 0 },
+          uptimeMs: Date.now() - runtimeStartTime,
+          timestamp: Date.now(),
+        });
+      }, 2000);
+
+      req.signal.addEventListener('abort', () => {
+        clearInterval(heartbeat);
+        clearInterval(snapshotInterval);
+        try {
+          controller.close();
+        } catch {
+          // Already closed
+        }
+      });
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      'content-type': 'text/event-stream',
+      'cache-control': 'no-cache',
+      connection: 'keep-alive',
+    },
+  });
+}
+
 // ── Files API helpers ────────────────────────────────────────────────────
 
 function validateAgentPath(group: string, relativePath: string): string | null {
@@ -1304,6 +1457,11 @@ function handleRequest(req: Request, server: import('bun').Server<NoVncWsData>):
   // Chats
   if (pathname === '/api/chats') return handleChatsList();
   if (pathname === '/api/chats/messages') return handleChatMessages(url);
+
+  // Runtime telemetry
+  if (pathname === '/api/runtime/snapshot') return handleRuntimeSnapshot();
+  if (pathname === '/api/runtime/events') return handleRuntimeEvents();
+  if (pathname === '/api/runtime/stream') return handleRuntimeStream(req);
 
   // Processes (live running containers)
   if (pathname === '/api/processes') return handleProcessesList();
