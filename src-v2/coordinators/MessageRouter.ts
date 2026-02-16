@@ -86,12 +86,30 @@ export const startMessageRouter: Effect.Effect<
     Stream.tap((msg) =>
       Effect.gen(function* () {
         // Look up the group for this chat
-        const group = yield* registry.get(msg.chatJid);
+        let group = yield* registry.get(msg.chatJid);
+
+        // Auto-register owner's chat as "main" on first contact (matches v1 behavior)
         if (!group) {
-          yield* Effect.log(
-            `Ignoring message from unregistered chat: ${msg.chatJid}`,
-          );
-          return;
+          const ownerChatJid = `telegram:${config.telegramOwnerId}`;
+          if (msg.chatJid === ownerChatJid && config.telegramOwnerId) {
+            const mainGroup = {
+              name: msg.senderName || 'Owner',
+              folder: config.mainGroupFolder,
+              trigger: 'always' as const,
+              added_at: new Date().toISOString(),
+            };
+            yield* registry.register(msg.chatJid, mainGroup);
+            yield* registry.saveState;
+            yield* Effect.log(
+              `Auto-registered owner chat ${msg.chatJid} as "${config.mainGroupFolder}"`,
+            );
+            group = mainGroup;
+          } else {
+            yield* Effect.log(
+              `Ignoring message from unregistered chat: ${msg.chatJid}`,
+            );
+            return;
+          }
         }
 
         // Get or create coordinator for this group

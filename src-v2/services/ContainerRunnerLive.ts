@@ -486,12 +486,17 @@ export const ContainerRunnerLive: Layer.Layer<
     const service: ContainerRunnerService = {
       runAgent: (input, _handlers) =>
         Effect.gen(function* () {
+          yield* Effect.log(
+            `[ContainerRunner] runAgent for ${input.groupFolder} (provider=${input.provider})`,
+          );
+
           // Resolve + refresh credentials
           const creds = yield* credentials.resolve.pipe(
             Effect.mapError(toContainerError(input.groupFolder)),
           );
           yield* credentials.refreshOAuth.pipe(Effect.ignore);
           yield* writeEnvFile(creds.envVars);
+          yield* Effect.log(`[ContainerRunner] Credentials resolved, env written`);
 
           // Mark as active
           yield* Ref.update(activeRequestGroups, (s) => {
@@ -506,6 +511,10 @@ export const ContainerRunnerLive: Layer.Layer<
             input.isMain,
           );
 
+          yield* Effect.log(
+            `[ContainerRunner] Launching container (image=${config.containerImage}, oneshot=${FORCE_ONESHOT})`,
+          );
+
           const result = yield* Effect.gen(function* () {
             if (FORCE_ONESHOT) {
               return yield* runOneShot(input, mounts);
@@ -514,6 +523,7 @@ export const ContainerRunnerLive: Layer.Layer<
             // Try persistent mode
             const container = yield* getOrStartContainer(input, mounts);
             if (!container) {
+              yield* Effect.log(`[ContainerRunner] Persistent mode failed, falling back to one-shot`);
               return yield* runOneShot(input, mounts);
             }
 
@@ -521,6 +531,10 @@ export const ContainerRunnerLive: Layer.Layer<
             // Full RPC will be in Phase 5 GroupCoordinator
             return yield* runOneShot(input, mounts);
           });
+
+          yield* Effect.log(
+            `[ContainerRunner] Container finished: status=${result.status}${result.error ? ` error=${result.error.slice(0, 200)}` : ''}`,
+          );
 
           // Mark as inactive
           yield* Ref.update(activeRequestGroups, (s) => {

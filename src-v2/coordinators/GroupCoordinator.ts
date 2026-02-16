@@ -176,9 +176,14 @@ export const createGroupCoordinator = (
 
     const processMessage = (msg: IncomingMessage) =>
       Effect.gen(function* () {
+        yield* Effect.log(
+          `[${group.folder}] Processing message from ${msg.senderName}: "${msg.content.slice(0, 80)}"`,
+        );
+
         // Auto-interrupt: cancel any active container fiber
         const currentFiber = yield* Ref.get(activeFiberRef);
         if (currentFiber) {
+          yield* Effect.log(`[${group.folder}] Interrupting active container fiber`);
           yield* Fiber.interrupt(currentFiber).pipe(Effect.ignore);
           yield* Ref.set(activeFiberRef, null);
         }
@@ -289,6 +294,10 @@ export const createGroupCoordinator = (
         const model = group.providerConfig?.model || config.defaultModel || undefined;
         const baseUrl = group.providerConfig?.baseUrl || undefined;
 
+        yield* Effect.log(
+          `[${group.folder}] Running container (provider=${provider}, model=${model || 'default'}, prompt=${prompt.length} chars)`,
+        );
+
         // Build container input
         const containerInput: ContainerInput = {
           prompt,
@@ -312,6 +321,9 @@ export const createGroupCoordinator = (
           verboseEnabled: false,
         }).pipe(Effect.provideService(Telegram, telegram));
 
+        // Send "thinking" status before running container
+        yield* pipeline.onThinking();
+
         // Build RPC handlers that bridge container events to pipeline
         const rpcHandlers = {
           onRequest: async () => null as unknown,
@@ -331,6 +343,9 @@ export const createGroupCoordinator = (
               const output = result.right;
 
               // Pipeline done
+              yield* Effect.log(
+                `[${group.folder}] Agent result: status=${output.status}, response=${(output.result || '').slice(0, 100)}`,
+              );
               yield* pipeline.onDone(output.result || '');
 
               // Store assistant response
@@ -413,7 +428,11 @@ export const createGroupCoordinator = (
         );
 
         yield* Ref.set(activeFiberRef, null);
-      }).pipe(Effect.catchAll(() => Effect.void));
+      }).pipe(
+        Effect.catchAll((err) =>
+          Effect.log(`[${group.folder}] processMessage error: ${err}`),
+        ),
+      );
 
     // Main loop: take from queue, process sequentially
     const loop = Stream.fromQueue(queue).pipe(

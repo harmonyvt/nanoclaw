@@ -268,15 +268,24 @@ export const createMessagePipeline = (
           }
           overflowMessageIds = [];
 
-          if (statusMsgId && finalText) {
+          if (finalText) {
             const chunks = splitIntoChunks(finalText, MAX_CHUNK);
-            yield* telegram
-              .editMessageText(
-                pipelineConfig.chatJid,
-                statusMsgId,
-                chunks[0],
-              )
-              .pipe(Effect.ignore);
+            if (statusMsgId) {
+              // Edit existing status message with the final text
+              yield* telegram
+                .editMessageText(
+                  pipelineConfig.chatJid,
+                  statusMsgId,
+                  chunks[0],
+                )
+                .pipe(Effect.ignore);
+            } else {
+              // No status message was created (e.g. one-shot mode with no streaming)
+              // Send the response as a new message
+              yield* telegram
+                .sendMessage(pipelineConfig.chatJid, chunks[0])
+                .pipe(Effect.ignore);
+            }
 
             for (const chunk of chunks.slice(1)) {
               yield* telegram
