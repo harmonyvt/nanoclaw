@@ -21,17 +21,21 @@
     "deploy:macos": "./scripts/deploy-launchd.sh",
     "deploy:linux": "./scripts/deploy-systemd.sh",
     "setup:tts": "cd tts-server && uv sync",
-    "dev:tts": "cd tts-server && uv run server.py"
+    "dev:tts": "cd tts-server && uv run server.py",
+    "dev:v2": "bun --watch src-v2/index.ts",
+    "build:v2": "tsc -p tsconfig.v2.json",
+    "typecheck:v2": "tsc -p tsconfig.v2.json --noEmit"
   },
   "dependencies": {
     "@grammyjs/files": "^1.2.0",
     "@grammyjs/runner": "^2.0.3",
     "cron-parser": "^5.5.0",
+    "effect": "^3.19.17",
     "grammy": "^1.39.3",
     "pino": "^9.6.0",
     "pino-pretty": "^13.0.0",
-    "replicate": "^1.0.0",
     "preact": "^10.28.3",
+    "replicate": "^1.0.0",
     "supermemory": "^4.0.0",
     "zod": "^4.3.6"
   },
