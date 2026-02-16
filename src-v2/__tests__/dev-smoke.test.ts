@@ -55,7 +55,6 @@ describe('Dev Smoke Tests', () => {
 
       // Create a group coordinator
       const coordinator = yield* createGroupCoordinator(
-        'test-group',
         'telegram:12345',
         {
           name: 'Test Chat',

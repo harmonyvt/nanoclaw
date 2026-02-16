@@ -16,6 +16,7 @@ import type {
   Tool,
   ToolUseBlock,
   TextBlock,
+  ThinkingBlock,
 } from '@anthropic-ai/sdk/resources/messages';
 import { z } from 'zod';
 import { Effect, Stream, Layer } from 'effect';
@@ -154,7 +155,7 @@ export class MinimaxAdapter implements ProviderAdapter {
                     toolUseBlocks.push(block as ToolUseBlock);
                   } else if (block.type === 'thinking') {
                     const thinkingContent =
-                      (block as any).thinking || '';
+                      (block as ThinkingBlock).thinking || '';
                     if (thinkingContent) {
                       emit.single({
                         type: 'thinking',

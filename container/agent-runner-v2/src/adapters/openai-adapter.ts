@@ -600,7 +600,12 @@ export class OpenAIAdapter implements ProviderAdapter {
                 }
 
                 // Reconstruct assistant message
-                const assistantMessage: any = {
+                const assistantMessage: {
+                  role: 'assistant';
+                  content: string | null;
+                  reasoning_content?: string;
+                  tool_calls?: typeof toolCalls;
+                } = {
                   role: 'assistant' as const,
                   content: cleanContent || null,
                 };

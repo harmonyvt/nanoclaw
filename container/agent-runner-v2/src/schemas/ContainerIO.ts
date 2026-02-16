@@ -20,7 +20,7 @@ export const ContainerInput = Schema.Struct({
 export type ContainerInput = typeof ContainerInput.Type;
 
 export const ContainerOutput = Schema.Struct({
-  status: Schema.Literal('success', 'error'),
+  status: Schema.Literal('success', 'error', 'interrupted'),
   result: Schema.NullOr(Schema.String),
   error: Schema.optional(Schema.String),
 });

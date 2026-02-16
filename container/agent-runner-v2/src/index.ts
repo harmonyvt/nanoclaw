@@ -11,6 +11,7 @@
 
 import { Effect, Layer, Stream } from 'effect';
 import type { ContainerInput, ContainerOutput } from './schemas/ContainerIO.js';
+import { decodeContainerInput } from './rpc/oneshot.js';
 import type { AgentEvent } from './schemas/AgentEvent.js';
 import { createAdapter } from './adapters/index.js';
 import {
@@ -182,7 +183,7 @@ function startPersistentMode(): Effect.Effect<void, never> {
 
     yield* rpcServer.onQuery(
       async (params: unknown, bridge: HostBridgeService) => {
-        const input = params as ContainerInput;
+        const input = await Effect.runPromise(decodeContainerInput(params));
         const bridgeLayer = Layer.succeed(HostBridge, bridge);
         // Persistent mode: StatusEmitter uses RPC bridge for real-time events
         const statusLayer = Layer.succeed(StatusEmitter, {
