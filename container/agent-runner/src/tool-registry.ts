@@ -1979,7 +1979,7 @@ If a skill with the same name already exists, it will be overwritten.`,
       const expectedOutput = path.join(mediaDir, `${filename}.mp4`);
 
       try {
-        const { stdout, stderr, exitCode } = await runCommand(
+        const { stdout: _stdout, stderr, exitCode } = await runCommand(
           [
             'yt-dlp',
             '--merge-output-format', 'mp4',
