@@ -115,15 +115,40 @@ function runBunInstall(): void {
   console.log('Installing dependencies...');
   console.log('');
 
-  const proc = Bun.spawnSync(['bun', 'install'], {
-    cwd: DEST_DIR,
-    stdio: ['inherit', 'inherit', 'inherit'],
-  });
+  const parsedAttemptCount = Number.parseInt(
+    process.env.SETUP_BUN_INSTALL_MAX_ATTEMPTS ?? '3',
+    10,
+  );
+  const maxAttempts =
+    Number.isNaN(parsedAttemptCount) || parsedAttemptCount < 1 ? 3 : parsedAttemptCount;
 
-  if (proc.exitCode !== 0) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    if (attempt > 1) {
+      console.log(`Retrying bun install (${attempt}/${maxAttempts})...`);
+      console.log('');
+    }
+
+    const proc = Bun.spawnSync(['bun', 'install'], {
+      cwd: DEST_DIR,
+      stdio: ['inherit', 'inherit', 'inherit'],
+    });
+
+    if (proc.exitCode === 0) {
+      console.log('');
+      return;
+    }
+
     console.log('');
-    console.log('Failed to install dependencies');
-    process.exit(1);
+    if (attempt < maxAttempts) {
+      console.log(`bun install failed on attempt ${attempt}/${maxAttempts}`);
+      console.log('');
+      continue;
+    }
+
+    console.log(
+      `WARNING: bun install failed after ${maxAttempts} attempt(s). Continuing setup without dependencies installed.`,
+    );
+    console.log('Run `bun install` manually when you are ready.');
   }
 
   console.log('');
