@@ -6,6 +6,7 @@
  */
 
 import fs from 'fs';
+import net from 'net';
 import path from 'path';
 import { Effect, Fiber, Layer, Ref, Schedule, SynchronizedRef } from 'effect';
 
@@ -20,9 +21,11 @@ import { Credentials } from './Credentials.js';
 import { ContainerRunner } from './ContainerRunner.js';
 import type {
   ContainerRunnerService,
+  HostRpcHandlers,
   InterruptResult,
 } from './ContainerRunner.js';
 import type { ContainerInput, ContainerOutput } from '../schemas/ContainerIO.js';
+import type { RpcMessage, RpcRequestMessage } from '../schemas/RpcProtocol.js';
 import type { VolumeMount } from './Docker.js';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
@@ -35,6 +38,7 @@ const IDLE_CHECK_INTERVAL_MS = 2 * 60 * 1000;
 const HEARTBEAT_WAIT_TIMEOUT = 30_000;
 const HEARTBEAT_POLL_INTERVAL = 300;
 const HEARTBEAT_STALE_THRESHOLD = 30_000;
+const AGENT_RPC_SOCKET = 'agent.sock';
 
 const FORCE_ONESHOT = process.env.NANOCLAW_ONESHOT === '1';
 
@@ -75,6 +79,47 @@ function isHeartbeatAlive(dataDir: string, groupFolder: string): boolean {
   } catch {
     return false;
   }
+}
+
+function isRpcSocketReady(dataDir: string, groupFolder: string): boolean {
+  return fs.existsSync(path.join(dataDir, 'ipc', groupFolder, AGENT_RPC_SOCKET));
+}
+
+function serializeRpcMessage(msg: RpcMessage): string {
+  return `${JSON.stringify(msg)}\n`;
+}
+
+function parseRpcLines(
+  chunk: string,
+  buffer: string,
+): { messages: RpcMessage[]; buffer: string } {
+  const messages: RpcMessage[] = [];
+  const data = buffer + chunk;
+  const lines = data.split('\n');
+  const nextBuffer = lines.pop() ?? '';
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      messages.push(JSON.parse(trimmed) as RpcMessage);
+    } catch {
+      // Ignore malformed lines and keep transport alive.
+    }
+  }
+
+  return { messages, buffer: nextBuffer };
+}
+
+function isContainerOutput(value: unknown): value is ContainerOutput {
+  if (typeof value !== 'object' || value === null) return false;
+  const obj = value as Record<string, unknown>;
+  return (
+    (obj.status === 'success' ||
+      obj.status === 'error' ||
+      obj.status === 'interrupted') &&
+    'result' in obj
+  );
 }
 
 /** Map any error into ContainerError with a groupFolder context */
@@ -194,9 +239,27 @@ export const ContainerRunnerLive: Layer.Layer<
     const runOneShot = (
       input: ContainerInput,
       mounts: VolumeMount[],
+      handlers: {
+        onEvent?: (
+          evt: { readonly method: string; readonly params?: unknown },
+        ) => Promise<void> | void;
+      },
     ): Effect.Effect<ContainerOutput, ContainerError | ContainerTimeoutError> =>
       Effect.gen(function* () {
+        const emitStatus = (text: string) =>
+          handlers.onEvent
+            ? Effect.tryPromise({
+                try: () =>
+                  Promise.resolve(
+                    handlers.onEvent!({ method: 'container_state', params: { text } }),
+                  ),
+                catch: () => undefined,
+            }).pipe(Effect.catchAll(() => Effect.void))
+            : Effect.void;
+
         const containerName = getOneShotContainerName(input.groupFolder);
+
+        yield* emitStatus('container loading');
 
         const proc = yield* docker
           .run({
@@ -228,6 +291,7 @@ export const ContainerRunnerLive: Layer.Layer<
         });
 
         // Collect stdout/stderr with timeout
+        yield* emitStatus('container waiting');
         const result = yield* Effect.tryPromise({
           try: () =>
             new Promise<ContainerOutput>((resolve) => {
@@ -309,6 +373,7 @@ export const ContainerRunnerLive: Layer.Layer<
     const getOrStartContainer = (
       input: ContainerInput,
       mounts: VolumeMount[],
+      onStarting?: () => Effect.Effect<void>,
     ): Effect.Effect<PersistentContainer | null, ContainerError> =>
       Effect.gen(function* () {
         const containers = yield* SynchronizedRef.get(persistentContainers);
@@ -322,7 +387,11 @@ export const ContainerRunnerLive: Layer.Layer<
               Effect.catchAll(() => Effect.succeed(false)),
             );
 
-          if (alive && isHeartbeatAlive(config.dataDir, input.groupFolder)) {
+          if (
+            alive &&
+            isHeartbeatAlive(config.dataDir, input.groupFolder) &&
+            isRpcSocketReady(config.dataDir, input.groupFolder)
+          ) {
             existing.lastActivity = Date.now();
             return existing;
           }
@@ -331,6 +400,10 @@ export const ContainerRunnerLive: Layer.Layer<
             const { [input.groupFolder]: _, ...rest } = c;
             return rest;
           });
+        }
+
+        if (onStarting) {
+          yield* onStarting();
         }
 
         fs.mkdirSync(path.join(config.groupsDir, input.groupFolder), {
@@ -363,7 +436,10 @@ export const ContainerRunnerLive: Layer.Layer<
           try: async () => {
             const deadline = Date.now() + HEARTBEAT_WAIT_TIMEOUT;
             while (Date.now() < deadline) {
-              if (isHeartbeatAlive(config.dataDir, input.groupFolder)) {
+              if (
+                isHeartbeatAlive(config.dataDir, input.groupFolder) &&
+                isRpcSocketReady(config.dataDir, input.groupFolder)
+              ) {
                 return true;
               }
               await new Promise((r) => setTimeout(r, HEARTBEAT_POLL_INTERVAL));
@@ -396,6 +472,162 @@ export const ContainerRunnerLive: Layer.Layer<
         }));
 
         return entry;
+      });
+
+    const sendToPersistentContainer = (
+      input: ContainerInput,
+      container: PersistentContainer,
+      handlers: HostRpcHandlers,
+    ): Effect.Effect<ContainerOutput, ContainerError> =>
+      Effect.tryPromise({
+        try: () =>
+          new Promise<ContainerOutput>((resolve) => {
+            const socketPath = path.join(container.ipcDir, AGENT_RPC_SOCKET);
+            const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+            const requestId = `run-${runId}`;
+            let settled = false;
+            let buffer = '';
+
+            const finish = (output: ContainerOutput): void => {
+              if (settled) return;
+              settled = true;
+              clearTimeout(timer);
+              try {
+                socket.destroy();
+              } catch {
+                // Best effort close.
+              }
+              resolve(output);
+            };
+
+            const socket = net.createConnection({ path: socketPath });
+
+            const timer = setTimeout(() => {
+              finish({
+                status: 'error',
+                result: null,
+                error: `Persistent container request timed out after ${config.containerTimeout}ms`,
+              });
+            }, config.containerTimeout);
+
+            socket.on('connect', () => {
+              const msg: RpcRequestMessage = {
+                type: 'request',
+                id: requestId,
+                method: 'run_query',
+                params: input,
+              };
+              socket.write(serializeRpcMessage(msg));
+            });
+
+            socket.on('data', (chunk: Buffer) => {
+              const parsed = parseRpcLines(chunk.toString('utf8'), buffer);
+              buffer = parsed.buffer;
+
+              for (const msg of parsed.messages) {
+                if (msg.type === 'response' && msg.id === requestId) {
+                  if (msg.error) {
+                    finish({
+                      status: 'error',
+                      result: null,
+                      error: msg.error,
+                    });
+                    return;
+                  }
+
+                  if (!isContainerOutput(msg.result)) {
+                    finish({
+                      status: 'error',
+                      result: null,
+                      error: 'Invalid run_query response from container',
+                    });
+                    return;
+                  }
+
+                  finish(msg.result);
+                  return;
+                }
+
+                if (msg.type === 'request') {
+                  if (!handlers.onRequest) {
+                    const errResponse: RpcMessage = {
+                      type: 'response',
+                      id: msg.id,
+                      error: `No host handler registered for method: ${msg.method}`,
+                    };
+                    socket.write(serializeRpcMessage(errResponse));
+                    continue;
+                  }
+
+                  void Promise.resolve(
+                    handlers.onRequest({ method: msg.method, params: msg.params }),
+                  )
+                    .then((result) => {
+                      const okResponse: RpcMessage = {
+                        type: 'response',
+                        id: msg.id,
+                        result: result ?? null,
+                      };
+                      try {
+                        socket.write(serializeRpcMessage(okResponse));
+                      } catch {
+                        // Ignore if socket already closed.
+                      }
+                    })
+                    .catch((err) => {
+                      const errResponse: RpcMessage = {
+                        type: 'response',
+                        id: msg.id,
+                        error: err instanceof Error ? err.message : String(err),
+                      };
+                      try {
+                        socket.write(serializeRpcMessage(errResponse));
+                      } catch {
+                        // Ignore if socket already closed.
+                      }
+                    });
+                  continue;
+                }
+
+                if (msg.type === 'event' && handlers.onEvent) {
+                  void Promise.resolve(
+                    handlers.onEvent({ method: msg.method, params: msg.params }),
+                  ).catch(() => undefined);
+                }
+              }
+            });
+
+            socket.on('error', (err) => {
+              if (!isHeartbeatAlive(config.dataDir, input.groupFolder)) {
+                finish({
+                  status: 'error',
+                  result: null,
+                  error: 'Persistent container died while processing request',
+                });
+                return;
+              }
+              finish({
+                status: 'error',
+                result: null,
+                error: `Persistent socket error: ${err.message}`,
+              });
+            });
+
+            socket.on('close', () => {
+              if (!settled) {
+                finish({
+                  status: 'error',
+                  result: null,
+                  error: 'Persistent RPC connection closed before response',
+                });
+              }
+            });
+          }),
+        catch: (err) =>
+          new ContainerError({
+            message: `Persistent container request failed: ${err instanceof Error ? err.message : String(err)}`,
+            groupFolder: input.groupFolder,
+          }),
       });
 
     // ─── Idle cleanup fiber ─────────────────────────────────────────────
@@ -484,11 +716,25 @@ export const ContainerRunnerLive: Layer.Layer<
     // ─── Service implementation ─────────────────────────────────────────
 
     const service: ContainerRunnerService = {
-      runAgent: (input, _handlers) =>
+      runAgent: (input, handlers) =>
         Effect.gen(function* () {
           yield* Effect.log(
             `[ContainerRunner] runAgent for ${input.groupFolder} (provider=${input.provider})`,
           );
+
+          const emitStatus = (text: string) =>
+            handlers.onEvent
+              ? Effect.tryPromise({
+                  try: () =>
+                    Promise.resolve(
+                      handlers.onEvent!({
+                        method: 'container_state',
+                        params: { text },
+                      }),
+                    ),
+                  catch: () => undefined,
+                }).pipe(Effect.catchAll(() => Effect.void))
+              : Effect.void;
 
           // Resolve + refresh credentials
           const creds = yield* credentials.resolve.pipe(
@@ -515,21 +761,60 @@ export const ContainerRunnerLive: Layer.Layer<
             `[ContainerRunner] Launching container (image=${config.containerImage}, oneshot=${FORCE_ONESHOT})`,
           );
 
+          const imageExists = yield* docker
+            .imageExists(config.containerImage)
+            .pipe(Effect.mapError(toContainerError(input.groupFolder)));
+          if (!imageExists) {
+            yield* emitStatus('container building');
+            yield* ensureImage;
+          }
+
           const result = yield* Effect.gen(function* () {
             if (FORCE_ONESHOT) {
-              return yield* runOneShot(input, mounts);
+              return yield* runOneShot(input, mounts, handlers);
             }
 
             // Try persistent mode
-            const container = yield* getOrStartContainer(input, mounts);
+            const container = yield* getOrStartContainer(
+              input,
+              mounts,
+              () => emitStatus('container loading'),
+            );
             if (!container) {
               yield* Effect.log(`[ContainerRunner] Persistent mode failed, falling back to one-shot`);
-              return yield* runOneShot(input, mounts);
+              return yield* runOneShot(input, mounts, handlers);
             }
 
-            // For persistent mode, send via one-shot protocol as fallback
-            // Full RPC will be in Phase 5 GroupCoordinator
-            return yield* runOneShot(input, mounts);
+            const output = yield* sendToPersistentContainer(
+              input,
+              container,
+              handlers,
+            );
+            container.lastActivity = Date.now();
+
+            const persistentTransportFailed =
+              output.status === 'error' &&
+              !!output.error &&
+              (
+                output.error.includes('died while processing') ||
+                output.error.includes('timed out') ||
+                output.error.includes('socket error') ||
+                output.error.includes('connection closed')
+              );
+
+            if (persistentTransportFailed) {
+              yield* docker.remove(container.containerId).pipe(Effect.ignore);
+              yield* SynchronizedRef.update(persistentContainers, (c) => {
+                const { [input.groupFolder]: _, ...rest } = c;
+                return rest;
+              });
+              yield* Effect.log(
+                `[ContainerRunner] Persistent transport failed, falling back to one-shot`,
+              );
+              return yield* runOneShot(input, mounts, handlers);
+            }
+
+            return output;
           });
 
           yield* Effect.log(

@@ -775,7 +775,9 @@ export class OpenAIAdapter implements ProviderAdapter {
                   tool_calls?: typeof toolCalls;
                 } = {
                   role: 'assistant' as const,
-                  content: cleanContent || null,
+                  // Some OpenAI-compatible providers reject `null` assistant
+                  // content when tool_calls are present.
+                  content: cleanContent || (toolCalls.length > 0 ? '' : null),
                 };
                 if (toolCalls.length > 0) {
                   assistantMessage.tool_calls = toolCalls;
