@@ -697,7 +697,9 @@ export class OpenAIAdapter implements ProviderAdapter {
       // on OpenRouter) to stop calling tools prematurely.
       const assistantMessage: any = {
         role: 'assistant' as const,
-        content: cleanContent || null,
+        // Some OpenAI-compatible providers reject `null` assistant content
+        // when tool_calls are present; use empty string for compatibility.
+        content: cleanContent || (toolCalls.length > 0 ? '' : null),
       };
       if (toolCalls.length > 0) {
         assistantMessage.tool_calls = toolCalls;

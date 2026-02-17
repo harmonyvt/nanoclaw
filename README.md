@@ -80,6 +80,21 @@ From the main channel (your self-chat), you can manage groups and tasks:
 
 `/update` checks `origin/main` and asks for confirmation before it pulls, rebuilds, and restarts the service.
 
+### Local Simulation (v2 dev)
+
+Run v2 with terminal-based message I/O (no Telegram required):
+
+```bash
+bun run dev:v2:sim
+```
+
+Then type messages directly in the terminal. Useful commands:
+
+- `/help` - Show simulator commands
+- `/chat <id|jid>` - Switch active simulated chat (`123` or `telegram:123`)
+- `/name <sender>` - Change simulated sender name
+- `/exit` - Graceful shutdown
+
 ## Customizing
 
 There are no configuration files to learn. Just tell Claude Code what you want:

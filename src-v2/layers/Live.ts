@@ -24,6 +24,7 @@ import { DatabaseLive } from '../services/DatabaseLive.js';
 import { DockerLive } from '../services/DockerLive.js';
 import { CredentialsLive } from '../services/CredentialsLive.js';
 import { TelegramLive } from '../services/TelegramLive.js';
+import { TelegramConsoleLive } from '../services/TelegramConsoleLive.js';
 import { ContainerRunnerLive } from '../services/ContainerRunnerLive.js';
 import { GroupRegistryLive } from '../state/GroupRegistryLive.js';
 import { SchedulerLive } from '../services/SchedulerLive.js';
@@ -59,6 +60,9 @@ const DatabaseResolved = DatabaseLive.pipe(Layer.provide(AppConfigLive));
 const DockerResolved = DockerLive.pipe(Layer.provide(AppConfigLive));
 const CredentialsResolved = CredentialsLive.pipe(Layer.provide(AppConfigLive));
 const TelegramResolved = TelegramLive.pipe(Layer.provide(AppConfigLive));
+const TelegramConsoleResolved = TelegramConsoleLive.pipe(
+  Layer.provide(AppConfigLive),
+);
 const GroupRegistryResolved = GroupRegistryLive.pipe(
   Layer.provide(AppConfigLive),
 );
@@ -91,6 +95,14 @@ const BrowseHostDeps = Layer.mergeAll(
   TelegramResolved,
 );
 const BrowseHostResolved = BrowseHostLive.pipe(Layer.provide(BrowseHostDeps));
+const BrowseHostSimDeps = Layer.mergeAll(
+  AppConfigLive,
+  SandboxResolved,
+  TelegramConsoleResolved,
+);
+const BrowseHostSimResolved = BrowseHostLive.pipe(
+  Layer.provide(BrowseHostSimDeps),
+);
 
 const SchedulerDeps = Layer.mergeAll(
   AppConfigLive,
@@ -131,6 +143,46 @@ export const MainLive: Layer.Layer<
   SchedulerResolved,
   SandboxResolved,
   BrowseHostResolved,
+  TTSResolved,
+  SupermemoryResolved,
+  MediaResolved,
+  AgentSemaphoreResolved,
+);
+
+/**
+ * MainLiveSim — full runtime with terminal-based local message I/O.
+ *
+ * All core services stay live (Docker/container/scheduler/DB), only the
+ * Telegram transport is swapped for TelegramConsoleLive.
+ */
+export const MainLiveSim: Layer.Layer<
+  | AppConfig
+  | Database
+  | Docker
+  | Credentials
+  | Telegram
+  | ContainerRunner
+  | GroupRegistry
+  | Scheduler
+  | Sandbox
+  | BrowseHost
+  | TTS
+  | Supermemory
+  | Media
+  | AgentSemaphore,
+  | DatabaseConnectionError
+  | DatabaseMigrationError
+> = Layer.mergeAll(
+  AppConfigLive,
+  DatabaseResolved,
+  DockerResolved,
+  CredentialsResolved,
+  TelegramConsoleResolved,
+  ContainerRunnerResolved,
+  GroupRegistryResolved,
+  SchedulerResolved,
+  SandboxResolved,
+  BrowseHostSimResolved,
   TTSResolved,
   SupermemoryResolved,
   MediaResolved,
