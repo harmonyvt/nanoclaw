@@ -12,10 +12,46 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { Glob } from 'bun';
 
-const SOURCE_DIR =
-  process.env.NANOCLAW_ENV_SOURCE_DIR ||
-  path.join(process.env.HOME || '', 'nanoclaw');
+function resolveSourceDir(): string {
+  const sourceCandidates: string[] = []
+
+  const repoName = 'nanoclaw';
+  const home = process.env.HOME || '';
+  const sourceEnv = process.env.NANOCLAW_ENV_SOURCE_DIR;
+  const standardSource = path.join(home, repoName);
+  const worktreeRoot = path.join(home, '.codex', 'worktrees');
+
+  if (sourceEnv) {
+    sourceCandidates.push(sourceEnv);
+  }
+
+  sourceCandidates.push(standardSource);
+
+  try {
+    if (fs.existsSync(worktreeRoot)) {
+      for (const entry of fs.readdirSync(worktreeRoot, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        sourceCandidates.push(path.join(worktreeRoot, entry.name, repoName));
+      }
+    }
+  } catch {
+    // Ignore source directory probe failures.
+  }
+
+  const uniqueCandidates = [...new Set(sourceCandidates.map((candidate) => path.resolve(candidate)))];
+  const resolvedDest = path.resolve(DEST_DIR);
+
+  for (const candidate of uniqueCandidates) {
+    if (candidate && candidate !== resolvedDest && fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return standardSource;
+}
+
 const DEST_DIR = path.resolve(import.meta.dir, '..');
+const SOURCE_DIR = resolveSourceDir();
 
 function main(): void {
   console.log('');
@@ -89,4 +125,3 @@ function runBunInstall(): void {
 }
 
 main();
-
