@@ -76,6 +76,7 @@ export interface PipelineConfig {
 
 export interface MessagePipelineHandle {
   readonly onThinking: () => Effect.Effect<void>;
+  readonly onStatusText: (text: string) => Effect.Effect<void>;
   readonly onToolUse: (
     toolName: string,
   ) => Effect.Effect<void>;
@@ -131,6 +132,7 @@ export const createMessagePipeline = (
     let statusExtraIds: number[] = [];
     let buffer = '';
     let lastEditTime = 0;
+    let lastStatusText = '';
     let toolHistory: string[] = [];
     let overflowMessageIds: number[] = [];
     const voiceDedupSet = new Set<string>();
@@ -139,18 +141,16 @@ export const createMessagePipeline = (
     let cuaLastText = '';
 
     const handle: MessagePipelineHandle = {
-      onThinking: () =>
+      onStatusText: (text) =>
         Effect.gen(function* () {
           phase = 'thinking';
           if (!pipelineConfig.thinkingEnabled) return;
-          const msgId = yield* telegram.sendStatusMessage(
-            pipelineConfig.chatJid,
-            'thinking',
-          );
-          if (msgId) {
-            statusMsgId = msgId;
-            lastEditTime = Date.now();
-          }
+          yield* updateStatusMessage(text);
+        }).pipe(Effect.ignore),
+
+      onThinking: () =>
+        Effect.gen(function* () {
+          yield* handle.onStatusText('thinking');
         }).pipe(Effect.ignore),
 
       onToolUse: (toolName) =>
@@ -346,6 +346,58 @@ export const createMessagePipeline = (
         voiceDedupSet.add(key);
       },
     };
+
+    const updateStatusMessage = (newText: string): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        if (!newText) return;
+
+        const now = Date.now();
+
+        if (statusMsgId) {
+          if (newText === lastStatusText) return;
+          if (now - lastEditTime < STATUS_EDIT_INTERVAL_MS) return;
+
+          // Delete previous overflow messages
+          for (const id of statusExtraIds) {
+            yield* telegram.deleteMessage(pipelineConfig.chatJid, id).pipe(
+              Effect.ignore,
+            );
+          }
+          statusExtraIds = [];
+
+          const chunks = splitIntoChunks(newText, MAX_CHUNK);
+          const edited = yield* telegram
+            .editStatusMessage(
+              pipelineConfig.chatJid,
+              statusMsgId,
+              chunks[0],
+            )
+            .pipe(Effect.ignore);
+          if (!edited) return;
+
+          lastStatusText = newText;
+          lastEditTime = now;
+
+          for (const chunk of chunks.slice(1)) {
+            const msgId = yield* telegram.sendStatusMessage(
+              pipelineConfig.chatJid,
+              chunk,
+            );
+            if (msgId) statusExtraIds.push(msgId);
+          }
+          return;
+        }
+
+        const msgId = yield* telegram.sendStatusMessage(
+          pipelineConfig.chatJid,
+          newText,
+        );
+        if (msgId) {
+          statusMsgId = msgId;
+          lastStatusText = newText;
+          lastEditTime = now;
+        }
+      });
 
     return handle;
   });

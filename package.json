@@ -23,6 +23,7 @@
     "setup:tts": "cd tts-server && uv sync",
     "dev:tts": "cd tts-server && uv run server.py",
     "dev:v2": "bun --watch src-v2/index.ts",
+    "dev:v2:sim": "NANOCLAW_SIMULATE=1 bun --watch src-v2/index.ts",
     "build:v2": "tsc -p tsconfig.v2.json",
     "typecheck:v2": "tsc -p tsconfig.v2.json --noEmit",
     "test:v2": "bun test src-v2/__tests__/ container/agent-runner-v2/src/__tests__/"

@@ -21,6 +21,7 @@ import { AppConfig } from '../config.js';
 import { Database } from '../services/Database.js';
 import { Telegram, type IncomingMessage } from '../services/Telegram.js';
 import { ContainerRunner } from '../services/ContainerRunner.js';
+import type { HostRpcHandlers } from '../services/ContainerRunner.js';
 import { Supermemory } from '../services/Supermemory.js';
 import { TTS } from '../services/TTS.js';
 import { BrowseHost } from '../services/BrowseHost.js';
@@ -325,9 +326,24 @@ export const createGroupCoordinator = (
         yield* pipeline.onThinking();
 
         // Build RPC handlers that bridge container events to pipeline
-        const rpcHandlers = {
+        const rpcHandlers: HostRpcHandlers = {
           onRequest: async () => null as unknown,
-          onEvent: async () => {},
+          onEvent: async (evt) => {
+            const statusText =
+              evt.method === 'container_state' &&
+              typeof evt.params === 'object' &&
+              evt.params !== null &&
+              'text' in evt.params &&
+              typeof (evt.params as { text?: unknown }).text === 'string'
+                ? (evt.params as { text: string }).text
+                : null;
+
+            if (statusText) {
+              await pipeline.onStatusText(statusText).pipe(Effect.ignore).pipe(
+                Effect.runPromise,
+              );
+            }
+          },
         };
 
         // Retry loop with exponential backoff

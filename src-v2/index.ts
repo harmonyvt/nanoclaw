@@ -16,7 +16,7 @@ import { Docker } from './services/Docker.js';
 import { ContainerRunner } from './services/ContainerRunner.js';
 import { Scheduler } from './services/Scheduler.js';
 import { Sandbox } from './services/Sandbox.js';
-import { MainLive } from './layers/Live.js';
+import { MainLive, MainLiveSim } from './layers/Live.js';
 
 import { startMessageRouter } from './coordinators/MessageRouter.js';
 import { startIpcWatcher } from './coordinators/IpcWatcher.js';
@@ -24,6 +24,7 @@ import { startIpcWatcher } from './coordinators/IpcWatcher.js';
 // ─── Constants ──────────────────────────────────────────────────────────────
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
+const SIMULATE_LOCAL_IO = process.env.NANOCLAW_SIMULATE === '1';
 
 // ─── Main Program ───────────────────────────────────────────────────────────
 
@@ -37,9 +38,14 @@ const program = Effect.gen(function* () {
   yield* Effect.log(
     `Container image: ${config.containerImage} (agent v${config.containerAgentVersion})`,
   );
+  if (SIMULATE_LOCAL_IO) {
+    yield* Effect.log(
+      'Local simulation mode enabled (terminal input/output transport)',
+    );
+  }
 
   // Validate required config
-  if (!config.telegramBotToken) {
+  if (!SIMULATE_LOCAL_IO && !config.telegramBotToken) {
     return yield* Effect.die(new Error('TELEGRAM_BOT_TOKEN is required'));
   }
   if (!config.telegramOwnerId) {
@@ -80,7 +86,7 @@ const program = Effect.gen(function* () {
 // ─── Bootstrap ──────────────────────────────────────────────────────────────
 
 const main = program.pipe(
-  Effect.provide(MainLive),
+  Effect.provide(SIMULATE_LOCAL_IO ? MainLiveSim : MainLive),
   Effect.scoped,
   Effect.tapErrorCause((cause) =>
     Effect.logError('Fatal error').pipe(
