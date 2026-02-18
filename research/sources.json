@@ -1,0 +1,376 @@
+[
+  {
+    "id": "src-index",
+    "title": "NanoClaw src/index.ts",
+    "url": "local://src/index.ts",
+    "source_type": "local_repo",
+    "retrieved_at": "2026-02-18T16:00:00Z",
+    "used_in_files": [
+      "01-current-nanoclaw-boundaries.md"
+    ],
+    "evidence_strength": "high"
+  },
+  {
+    "id": "src-container-runner",
+    "title": "NanoClaw src/container-runner.ts",
+    "url": "local://src/container-runner.ts",
+    "source_type": "local_repo",
+    "retrieved_at": "2026-02-18T16:00:00Z",
+    "used_in_files": [
+      "01-current-nanoclaw-boundaries.md"
+    ],
+    "evidence_strength": "high"
+  },
+  {
+    "id": "src-sandbox-manager",
+    "title": "NanoClaw src/sandbox-manager.ts",
+    "url": "local://src/sandbox-manager.ts",
+    "source_type": "local_repo",
+    "retrieved_at": "2026-02-18T16:00:00Z",
+    "used_in_files": [
+      "01-current-nanoclaw-boundaries.md"
+    ],
+    "evidence_strength": "high"
+  },
+  {
+    "id": "src-mount-security",
+    "title": "NanoClaw src/mount-security.ts",
+    "url": "local://src/mount-security.ts",
+    "source_type": "local_repo",
+    "retrieved_at": "2026-02-18T16:00:00Z",
+    "used_in_files": [
+      "01-current-nanoclaw-boundaries.md"
+    ],
+    "evidence_strength": "high"
+  },
+  {
+    "id": "src-host-rpc-router",
+    "title": "NanoClaw src/host-rpc-router.ts",
+    "url": "local://src/host-rpc-router.ts",
+    "source_type": "local_repo",
+    "retrieved_at": "2026-02-18T16:00:00Z",
+    "used_in_files": [
+      "01-current-nanoclaw-boundaries.md"
+    ],
+    "evidence_strength": "high"
+  },
+  {
+    "id": "daytona-release-latest",
+    "title": "Daytona latest release API",
+    "url": "https://api.github.com/repos/daytonaio/daytona/releases/latest",
+    "source_type": "official_api",
+    "retrieved_at": "2026-02-18T16:05:00Z",
+    "used_in_files": [
+      "02-daytona-patterns.md",
+      "06-claim-validation-ledger.md"
+    ],
+    "evidence_strength": "high"
+  },
+  {
+    "id": "daytona-oss-deployment",
+    "title": "Daytona OSS deployment documentation",
+    "url": "https://github.com/daytonaio/daytona/blob/main/apps/docs/src/content/docs/en/oss-deployment.mdx",
+    "source_type": "official_docs",
+    "retrieved_at": "2026-02-18T16:05:00Z",
+    "used_in_files": [
+      "02-daytona-patterns.md",
+      "03-oss-sandbox-comparison.md",
+      "06-claim-validation-ledger.md"
+    ],
+    "evidence_strength": "high"
+  },
+  {
+    "id": "daytona-sandbox-manager",
+    "title": "Daytona sandbox manager source",
+    "url": "https://github.com/daytonaio/daytona/blob/main/apps/api/src/sandbox/managers/sandbox.manager.ts",
+    "source_type": "official_repo",
+    "retrieved_at": "2026-02-18T16:05:00Z",
+    "used_in_files": [
+      "02-daytona-patterns.md",
+      "06-claim-validation-ledger.md"
+    ],
+    "evidence_strength": "high"
+  },
+  {
+    "id": "daytona-job-service",
+    "title": "Daytona job service source",
+    "url": "https://github.com/daytonaio/daytona/blob/main/apps/api/src/sandbox/services/job.service.ts",
+    "source_type": "official_repo",
+    "retrieved_at": "2026-02-18T16:05:00Z",
+    "used_in_files": [
+      "02-daytona-patterns.md"
+    ],
+    "evidence_strength": "high"
+  },
+  {
+    "id": "daytona-netrules",
+    "title": "Daytona runner netrules package",
+    "url": "https://github.com/daytonaio/daytona/tree/main/apps/runner/pkg/netrules",
+    "source_type": "official_repo",
+    "retrieved_at": "2026-02-18T16:05:00Z",
+    "used_in_files": [
+      "02-daytona-patterns.md",
+      "06-claim-validation-ledger.md"
+    ],
+    "evidence_strength": "high"
+  },
+  {
+    "id": "openhands-process",
+    "title": "OpenHands process sandbox docs",
+    "url": "https://docs.openhands.dev/openhands/usage/sandboxes/process",
+    "source_type": "official_docs",
+    "retrieved_at": "2026-02-18T16:07:00Z",
+    "used_in_files": [
+      "03-oss-sandbox-comparison.md",
+      "06-claim-validation-ledger.md"
+    ],
+    "evidence_strength": "high"
+  },
+  {
+    "id": "openhands-docker",
+    "title": "OpenHands docker sandbox docs",
+    "url": "https://docs.openhands.dev/openhands/usage/sandboxes/docker",
+    "source_type": "official_docs",
+    "retrieved_at": "2026-02-18T16:07:00Z",
+    "used_in_files": [
+      "03-oss-sandbox-comparison.md"
+    ],
+    "evidence_strength": "high"
+  },
+  {
+    "id": "e2b-internet-access",
+    "title": "E2B internet access docs",
+    "url": "https://e2b.dev/docs/sandbox/internet-access",
+    "source_type": "official_docs",
+    "retrieved_at": "2026-02-18T16:07:00Z",
+    "used_in_files": [
+      "03-oss-sandbox-comparison.md",
+      "06-claim-validation-ledger.md"
+    ],
+    "evidence_strength": "high"
+  },
+  {
+    "id": "codesandbox-sdk",
+    "title": "CodeSandbox SDK repository",
+    "url": "https://github.com/codesandbox/codesandbox-sdk",
+    "source_type": "official_repo",
+    "retrieved_at": "2026-02-18T16:08:00Z",
+    "used_in_files": [
+      "03-oss-sandbox-comparison.md",
+      "06-claim-validation-ledger.md"
+    ],
+    "evidence_strength": "medium"
+  },
+  {
+    "id": "coder-provisioners",
+    "title": "Coder provisioner documentation",
+    "url": "https://coder.com/docs/admin/provisioners",
+    "source_type": "official_docs",
+    "retrieved_at": "2026-02-18T16:08:00Z",
+    "used_in_files": [
+      "03-oss-sandbox-comparison.md"
+    ],
+    "evidence_strength": "medium"
+  },
+  {
+    "id": "devpod-providers",
+    "title": "DevPod provider documentation",
+    "url": "https://devpod.sh/docs/managing-providers/what-are-providers",
+    "source_type": "official_docs",
+    "retrieved_at": "2026-02-18T16:08:00Z",
+    "used_in_files": [
+      "03-oss-sandbox-comparison.md",
+      "06-claim-validation-ledger.md"
+    ],
+    "evidence_strength": "medium"
+  },
+  {
+    "id": "k8s-networkpolicy",
+    "title": "Kubernetes NetworkPolicy",
+    "url": "https://kubernetes.io/docs/concepts/services-networking/network-policies/",
+    "source_type": "official_docs",
+    "retrieved_at": "2026-02-18T16:09:00Z",
+    "used_in_files": [
+      "04-hardening-control-matrix.md",
+      "06-claim-validation-ledger.md"
+    ],
+    "evidence_strength": "high"
+  },
+  {
+    "id": "cilium-egress-gateway",
+    "title": "Cilium egress gateway documentation",
+    "url": "https://docs.cilium.io/en/latest/network/egress-gateway/egress-gateway.html",
+    "source_type": "official_docs",
+    "retrieved_at": "2026-02-18T16:09:00Z",
+    "used_in_files": [
+      "04-hardening-control-matrix.md",
+      "06-claim-validation-ledger.md"
+    ],
+    "evidence_strength": "high"
+  },
+  {
+    "id": "k8s-security-context",
+    "title": "Kubernetes security context docs",
+    "url": "https://kubernetes.io/docs/tasks/configure-pod-container/security-context/",
+    "source_type": "official_docs",
+    "retrieved_at": "2026-02-18T16:09:00Z",
+    "used_in_files": [
+      "04-hardening-control-matrix.md"
+    ],
+    "evidence_strength": "high"
+  },
+  {
+    "id": "k8s-seccomp",
+    "title": "Kubernetes seccomp docs",
+    "url": "https://kubernetes.io/docs/reference/node/seccomp/",
+    "source_type": "official_docs",
+    "retrieved_at": "2026-02-18T16:09:00Z",
+    "used_in_files": [
+      "04-hardening-control-matrix.md",
+      "06-claim-validation-ledger.md"
+    ],
+    "evidence_strength": "high"
+  },
+  {
+    "id": "k8s-apparmor",
+    "title": "Kubernetes AppArmor docs",
+    "url": "https://kubernetes.io/docs/tutorials/security/apparmor/",
+    "source_type": "official_docs",
+    "retrieved_at": "2026-02-18T16:09:00Z",
+    "used_in_files": [
+      "04-hardening-control-matrix.md",
+      "06-claim-validation-ledger.md"
+    ],
+    "evidence_strength": "high"
+  },
+  {
+    "id": "cgroup-v2",
+    "title": "Linux cgroup v2 documentation",
+    "url": "https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html",
+    "source_type": "official_docs",
+    "retrieved_at": "2026-02-18T16:09:00Z",
+    "used_in_files": [
+      "04-hardening-control-matrix.md",
+      "06-claim-validation-ledger.md"
+    ],
+    "evidence_strength": "high"
+  },
+  {
+    "id": "auditd-conf",
+    "title": "auditd.conf man page",
+    "url": "https://man7.org/linux/man-pages/man5/auditd.conf.5.html",
+    "source_type": "official_docs",
+    "retrieved_at": "2026-02-18T16:09:00Z",
+    "used_in_files": [
+      "04-hardening-control-matrix.md"
+    ],
+    "evidence_strength": "high"
+  },
+  {
+    "id": "vee-2020",
+    "title": "Blending Containers and VMs",
+    "url": "https://api.crossref.org/works/10.1145/3381052.3381315",
+    "source_type": "paper",
+    "retrieved_at": "2026-02-18T16:10:00Z",
+    "used_in_files": [
+      "05-academic-findings-2020-2026.md"
+    ],
+    "evidence_strength": "medium"
+  },
+  {
+    "id": "usenix-attacks-forwarded",
+    "title": "Attacks are Forwarded (USENIX Security 2023)",
+    "url": "https://www.usenix.org/conference/usenixsecurity23/presentation/xiao-jietao",
+    "source_type": "paper",
+    "retrieved_at": "2026-02-18T16:10:00Z",
+    "used_in_files": [
+      "05-academic-findings-2020-2026.md",
+      "06-claim-validation-ledger.md"
+    ],
+    "evidence_strength": "high"
+  },
+  {
+    "id": "firecracker-microarch",
+    "title": "Microarchitectural Security of Firecracker",
+    "url": "https://arxiv.org/abs/2311.15999",
+    "source_type": "paper",
+    "retrieved_at": "2026-02-18T16:10:00Z",
+    "used_in_files": [
+      "05-academic-findings-2020-2026.md",
+      "06-claim-validation-ledger.md"
+    ],
+    "evidence_strength": "medium"
+  },
+  {
+    "id": "cap-vms",
+    "title": "CAP-VMs (OSDI 2022)",
+    "url": "https://www.usenix.org/conference/osdi22/presentation/sartakov",
+    "source_type": "paper",
+    "retrieved_at": "2026-02-18T16:10:00Z",
+    "used_in_files": [
+      "05-academic-findings-2020-2026.md",
+      "06-claim-validation-ledger.md"
+    ],
+    "evidence_strength": "high"
+  },
+  {
+    "id": "camel",
+    "title": "CaMeL",
+    "url": "https://arxiv.org/abs/2503.18813",
+    "source_type": "paper",
+    "retrieved_at": "2026-02-18T16:10:00Z",
+    "used_in_files": [
+      "05-academic-findings-2020-2026.md",
+      "06-claim-validation-ledger.md"
+    ],
+    "evidence_strength": "medium"
+  },
+  {
+    "id": "progent",
+    "title": "Progent",
+    "url": "https://arxiv.org/abs/2504.11703",
+    "source_type": "paper",
+    "retrieved_at": "2026-02-18T16:10:00Z",
+    "used_in_files": [
+      "05-academic-findings-2020-2026.md",
+      "06-claim-validation-ledger.md"
+    ],
+    "evidence_strength": "medium"
+  },
+  {
+    "id": "miniscope",
+    "title": "MiniScope",
+    "url": "https://arxiv.org/abs/2512.11147",
+    "source_type": "paper",
+    "retrieved_at": "2026-02-18T16:10:00Z",
+    "used_in_files": [
+      "05-academic-findings-2020-2026.md",
+      "06-claim-validation-ledger.md"
+    ],
+    "evidence_strength": "medium"
+  },
+  {
+    "id": "bpfcontain",
+    "title": "BPFContain",
+    "url": "https://arxiv.org/abs/2102.06972",
+    "source_type": "paper",
+    "retrieved_at": "2026-02-18T16:10:00Z",
+    "used_in_files": [
+      "05-academic-findings-2020-2026.md",
+      "06-claim-validation-ledger.md"
+    ],
+    "evidence_strength": "medium"
+  },
+  {
+    "id": "optimus",
+    "title": "Optimus",
+    "url": "https://link.springer.com/article/10.1186/s13677-024-00639-3",
+    "source_type": "paper",
+    "retrieved_at": "2026-02-18T16:10:00Z",
+    "used_in_files": [
+      "05-academic-findings-2020-2026.md",
+      "06-claim-validation-ledger.md"
+    ],
+    "evidence_strength": "medium"
+  }
+]

@@ -163,6 +163,20 @@ Key files:
 - `container/agent-runner/src/tool-registry.ts` - Provider-agnostic tool definitions
 - `groups/*/CLAUDE.md` - Per-group memory
 
+Go sandbox-core scaffold:
+
+- `src-go/cmd/nanoclawd` - Go control plane HTTP API (`/v1/tasks/runs`, `/v1/sandboxes`, `/v1/sessions`)
+- `src-go/cmd/vm-supervisor` - Go VM supervisor service (kill-switch endpoint)
+- `src-go/cmd/sessiond` - Go session bridge service
+- `src-go/internal/contracts` - Breaking v1 API contracts (`TaskRunSpec`, `SandboxSpec`, `SandboxStatus`, `CapabilityPolicy`)
+- `src-go/internal/policy` - Signed capability-policy decisions
+- `src-go/internal/reconciler` - Desired vs observed state reconciliation
+- `src-go/internal/store` - Persistent in-memory store with recovery
+
+Research dump:
+
+- `research/` - Curated architecture/security research and source ledger for the Go migration
+
 ## FAQ
 
 **Why Telegram?**

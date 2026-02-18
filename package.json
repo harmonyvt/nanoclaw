@@ -26,7 +26,10 @@
     "dev:v2:sim": "NANOCLAW_SIMULATE=1 bun --watch src-v2/index.ts",
     "build:v2": "tsc -p tsconfig.v2.json",
     "typecheck:v2": "tsc -p tsconfig.v2.json --noEmit",
-    "test:v2": "bun test src-v2/__tests__/ container/agent-runner-v2/src/__tests__/"
+    "test:v2": "bun test src-v2/__tests__/ container/agent-runner-v2/src/__tests__/",
+    "go:run": "cd src-go && go run ./cmd/nanoclawd",
+    "go:test": "cd src-go && go test ./...",
+    "go:fmt": "cd src-go && gofmt -w $(find . -name '*.go')"
   },
   "dependencies": {
     "@grammyjs/files": "^1.2.0",
