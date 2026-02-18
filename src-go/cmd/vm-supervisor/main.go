@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -22,10 +23,7 @@ func main() {
 	sup := vm.NewSupervisor(cfg.EnableSimulatedVM, cfg.FirecrackerBin)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "summary": sup.Summary()})
-	})
-	mux.HandleFunc("/v1/supervisor/sandboxes", func(w http.ResponseWriter, r *http.Request) {
+	newSandbox := func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
@@ -43,12 +41,17 @@ func main() {
 		}
 		status := sup.CreateSandbox(spec)
 		_ = json.NewEncoder(w).Encode(map[string]any{"spec": spec, "status": status})
+	}
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "summary": sup.Summary()})
+	})
+	mux.HandleFunc("/v1/supervisor/sandboxes", func(w http.ResponseWriter, r *http.Request) {
+		newSandbox(w, r)
 	})
 	mux.HandleFunc("/v1/supervisor/sandboxes/", func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/v1/supervisor/sandboxes/")
 		if path == "" {
-			w.WriteHeader(http.StatusBadRequest)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "missing sandbox path"})
+			newSandbox(w, r)
 			return
 		}
 
@@ -100,7 +103,11 @@ func main() {
 			return
 		}
 		if err != nil {
-			w.WriteHeader(http.StatusNotFound)
+			if errors.Is(err, vm.ErrSandboxNotFound) {
+				w.WriteHeader(http.StatusNotFound)
+			} else {
+				w.WriteHeader(http.StatusInternalServerError)
+			}
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return
 		}
