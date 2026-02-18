@@ -38,6 +38,11 @@ const program = Effect.gen(function* () {
   yield* Effect.log(
     `Container image: ${config.containerImage} (agent v${config.containerAgentVersion})`,
   );
+  if (config.containerAgentVersion !== '2') {
+    yield* Effect.log(
+      `Warning: v2 runtime is optimized for NANOCLAW_AGENT_VERSION=2 (current=${config.containerAgentVersion})`,
+    );
+  }
   if (SIMULATE_LOCAL_IO) {
     yield* Effect.log(
       'Local simulation mode enabled (terminal input/output transport)',

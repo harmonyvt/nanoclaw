@@ -32,6 +32,7 @@ import {
 } from './MessagePipeline.js';
 import type { RegisteredGroup } from '../schemas/Groups.js';
 import type { ContainerInput } from '../schemas/ContainerIO.js';
+import type { PipelineEvent } from '../schemas/IpcMessages.js';
 import { looksLikeCode } from '../services/TTSLive.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -63,6 +64,18 @@ function escapeXml(s: string): string {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+function isPipelineEvent(value: unknown): value is PipelineEvent {
+  if (typeof value !== 'object' || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    v.type === 'thinking' ||
+    v.type === 'response_delta' ||
+    v.type === 'tool_start' ||
+    v.type === 'tool_progress' ||
+    v.type === 'adapter_stderr'
+  );
 }
 
 /**
@@ -337,9 +350,19 @@ export const createGroupCoordinator = (
               typeof (evt.params as { text?: unknown }).text === 'string'
                 ? (evt.params as { text: string }).text
                 : null;
+            const statusEvent =
+              evt.method === 'status.event' && isPipelineEvent(evt.params)
+                ? evt.params
+                : null;
 
             if (statusText) {
               await pipeline.onStatusText(statusText).pipe(Effect.ignore).pipe(
+                Effect.runPromise,
+              );
+            }
+
+            if (statusEvent) {
+              await pipeline.handleEvent(statusEvent).pipe(Effect.ignore).pipe(
                 Effect.runPromise,
               );
             }

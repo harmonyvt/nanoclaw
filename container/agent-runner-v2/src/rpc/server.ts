@@ -18,6 +18,8 @@ import { serializeRpcMessage, parseRpcLines } from './protocol.js';
 const AGENT_RPC_SOCKET = '/workspace/ipc/agent.sock';
 const HEARTBEAT_FILE = '/workspace/ipc/agent-heartbeat';
 const HEARTBEAT_INTERVAL = 10000;
+const TCP_RPC_PORT = Number.parseInt(process.env.NANOCLAW_RPC_TCP_PORT || '', 10);
+const TCP_RPC_HOST = process.env.NANOCLAW_RPC_TCP_HOST || '0.0.0.0';
 
 function log(msg: string): void {
   process.stderr.write(`[rpc-server] ${msg}\n`);
@@ -79,8 +81,36 @@ export const RpcServerLive: Layer.Layer<RpcServer> = Layer.succeed(
 
         const activeSockets = new Set<net.Socket>();
         let queryInFlight = false;
+        let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+        let unixReady = false;
+        let tcpReady = !Number.isFinite(TCP_RPC_PORT) || TCP_RPC_PORT <= 0;
+        let shuttingDown = false;
 
-        const server = net.createServer((socket) => {
+        const updateHeartbeat = (): void => {
+          try {
+            atomicWriteFileSync(
+              HEARTBEAT_FILE,
+              JSON.stringify({
+                pid: process.pid,
+                timestamp: Date.now(),
+                iso: new Date().toISOString(),
+              }),
+            );
+          } catch { /* ignore */ }
+        };
+
+        const startHeartbeatIfReady = (): void => {
+          if (!unixReady || !tcpReady || heartbeatTimer) return;
+          updateHeartbeat();
+          heartbeatTimer = setInterval(updateHeartbeat, HEARTBEAT_INTERVAL);
+          if (Number.isFinite(TCP_RPC_PORT) && TCP_RPC_PORT > 0) {
+            log(`Agent ready, accepting RPC requests (unix + tcp ${TCP_RPC_HOST}:${TCP_RPC_PORT})`);
+          } else {
+            log('Agent ready, accepting RPC requests');
+          }
+        };
+
+        const handleSocket = (socket: net.Socket): void => {
           activeSockets.add(socket);
           const state: ConnectionState = {
             buffer: '',
@@ -219,41 +249,49 @@ export const RpcServerLive: Layer.Layer<RpcServer> = Layer.succeed(
             }
             state.pendingHostResponses.clear();
           });
-        });
+        };
 
-        const updateHeartbeat = (): void => {
-          try {
-            atomicWriteFileSync(
-              HEARTBEAT_FILE,
-              JSON.stringify({
-                pid: process.pid,
-                timestamp: Date.now(),
-                iso: new Date().toISOString(),
-              }),
-            );
-          } catch { /* ignore */ }
+        const server = net.createServer(handleSocket);
+        const tcpServer =
+          Number.isFinite(TCP_RPC_PORT) && TCP_RPC_PORT > 0
+            ? net.createServer(handleSocket)
+            : null;
+
+        const shutdown = (signal: string) => {
+          if (shuttingDown) return;
+          shuttingDown = true;
+          log(`Received ${signal}, shutting down`);
+          if (heartbeatTimer) clearInterval(heartbeatTimer);
+          for (const s of activeSockets) {
+            try { s.destroy(); } catch { /* ignore */ }
+          }
+          try { server.close(); } catch { /* ignore */ }
+          try { tcpServer?.close(); } catch { /* ignore */ }
+          try { if (fs.existsSync(HEARTBEAT_FILE)) fs.unlinkSync(HEARTBEAT_FILE); } catch { /* ignore */ }
+          try { if (fs.existsSync(AGENT_RPC_SOCKET)) fs.unlinkSync(AGENT_RPC_SOCKET); } catch { /* ignore */ }
+          process.exit(0);
         };
 
         server.listen(AGENT_RPC_SOCKET, () => {
-          updateHeartbeat();
-          const heartbeatTimer = setInterval(updateHeartbeat, HEARTBEAT_INTERVAL);
-          log('Agent ready, accepting RPC requests');
-
-          const shutdown = (signal: string) => {
-            log(`Received ${signal}, shutting down`);
-            clearInterval(heartbeatTimer);
-            for (const s of activeSockets) {
-              try { s.destroy(); } catch { /* ignore */ }
-            }
-            try { server.close(); } catch { /* ignore */ }
-            try { if (fs.existsSync(HEARTBEAT_FILE)) fs.unlinkSync(HEARTBEAT_FILE); } catch { /* ignore */ }
-            try { if (fs.existsSync(AGENT_RPC_SOCKET)) fs.unlinkSync(AGENT_RPC_SOCKET); } catch { /* ignore */ }
-            process.exit(0);
-          };
-
-          process.on('SIGTERM', () => shutdown('SIGTERM'));
-          process.on('SIGINT', () => shutdown('SIGINT'));
+          unixReady = true;
+          startHeartbeatIfReady();
         });
+        server.on('error', (err) => {
+          log(`Unix RPC server error: ${err.message}`);
+        });
+
+        if (tcpServer) {
+          tcpServer.listen(TCP_RPC_PORT, TCP_RPC_HOST, () => {
+            tcpReady = true;
+            startHeartbeatIfReady();
+          });
+          tcpServer.on('error', (err) => {
+            log(`TCP RPC server error: ${err.message}`);
+          });
+        }
+
+        process.on('SIGTERM', () => shutdown('SIGTERM'));
+        process.on('SIGINT', () => shutdown('SIGINT'));
 
         // Never resolves — server runs forever until signal
       }),

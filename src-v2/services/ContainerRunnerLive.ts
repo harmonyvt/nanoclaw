@@ -39,6 +39,11 @@ const HEARTBEAT_WAIT_TIMEOUT = 30_000;
 const HEARTBEAT_POLL_INTERVAL = 300;
 const HEARTBEAT_STALE_THRESHOLD = 30_000;
 const AGENT_RPC_SOCKET = 'agent.sock';
+const PERSISTENT_RPC_PORT_BASE = (() => {
+  const raw = Number.parseInt(process.env.NANOCLAW_RPC_BASE_PORT || '47000', 10);
+  return Number.isFinite(raw) && raw >= 1025 && raw <= 64535 ? raw : 47000;
+})();
+const PERSISTENT_RPC_PORT_RANGE = 1000;
 
 const FORCE_ONESHOT = process.env.NANOCLAW_ONESHOT === '1';
 
@@ -47,6 +52,7 @@ const FORCE_ONESHOT = process.env.NANOCLAW_ONESHOT === '1';
 interface PersistentContainer {
   readonly containerId: string;
   readonly groupFolder: string;
+  readonly rpcPort: number;
   lastActivity: number;
   readonly ipcDir: string;
 }
@@ -70,6 +76,14 @@ function getOneShotContainerName(groupFolder: string): string {
   return `nanoclaw-oneshot-${sanitizeDockerNamePart(groupFolder)}-${suffix}`.slice(0, 63);
 }
 
+function getPersistentRpcPort(groupFolder: string): number {
+  let hash = 0;
+  for (let i = 0; i < groupFolder.length; i++) {
+    hash = ((hash * 31) + groupFolder.charCodeAt(i)) >>> 0;
+  }
+  return PERSISTENT_RPC_PORT_BASE + (hash % PERSISTENT_RPC_PORT_RANGE);
+}
+
 function isHeartbeatAlive(dataDir: string, groupFolder: string): boolean {
   const heartbeatPath = path.join(dataDir, 'ipc', groupFolder, 'agent-heartbeat');
   try {
@@ -83,6 +97,77 @@ function isHeartbeatAlive(dataDir: string, groupFolder: string): boolean {
 
 function isRpcSocketReady(dataDir: string, groupFolder: string): boolean {
   return fs.existsSync(path.join(dataDir, 'ipc', groupFolder, AGENT_RPC_SOCKET));
+}
+
+function clearPersistentIpcArtifacts(dataDir: string, groupFolder: string): void {
+  const groupIpcDir = path.join(dataDir, 'ipc', groupFolder);
+  const heartbeatPath = path.join(groupIpcDir, 'agent-heartbeat');
+  const socketPath = path.join(groupIpcDir, AGENT_RPC_SOCKET);
+  try {
+    if (fs.existsSync(heartbeatPath)) fs.unlinkSync(heartbeatPath);
+  } catch {
+    // Best effort cleanup.
+  }
+  try {
+    if (fs.existsSync(socketPath)) fs.unlinkSync(socketPath);
+  } catch {
+    // Best effort cleanup.
+  }
+}
+
+async function canConnectRpcSocket(socketPath: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (ok: boolean): void => {
+      if (settled) return;
+      settled = true;
+      try {
+        socket.destroy();
+      } catch {
+        // ignore
+      }
+      resolve(ok);
+    };
+
+    const socket = net.createConnection({ path: socketPath });
+    socket.setTimeout(750);
+    socket.once('connect', () => done(true));
+    socket.once('timeout', () => done(false));
+    socket.once('error', () => done(false));
+  });
+}
+
+async function canConnectTcpPort(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (ok: boolean): void => {
+      if (settled) return;
+      settled = true;
+      try {
+        socket.destroy();
+      } catch {
+        // ignore
+      }
+      resolve(ok);
+    };
+
+    const socket = net.createConnection({ host: '127.0.0.1', port });
+    socket.setTimeout(750);
+    socket.once('connect', () => done(true));
+    socket.once('timeout', () => done(false));
+    socket.once('error', () => done(false));
+  });
+}
+
+async function canConnectPersistentEndpoint(
+  dataDir: string,
+  groupFolder: string,
+  rpcPort: number,
+): Promise<boolean> {
+  if (await canConnectTcpPort(rpcPort)) return true;
+  const socketPath = path.join(dataDir, 'ipc', groupFolder, AGENT_RPC_SOCKET);
+  if (!fs.existsSync(socketPath)) return false;
+  return canConnectRpcSocket(socketPath);
 }
 
 function serializeRpcMessage(msg: RpcMessage): string {
@@ -129,6 +214,23 @@ function toContainerError(groupFolder: string) {
       message: err instanceof Error ? err.message : String(err),
       groupFolder,
     });
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return 'unknown size';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex++;
+  }
+  const decimals = value >= 100 || unitIndex === 0 ? 0 : 1;
+  return `${value.toFixed(decimals)} ${units[unitIndex]}`;
+}
+
+function shortContainerId(raw: string): string {
+  return raw.trim().replace(/^sha256:/, '').slice(0, 12);
 }
 
 function buildMounts(
@@ -215,6 +317,33 @@ export const ContainerRunnerLive: Layer.Layer<
     const rebuildingRef = yield* Ref.make<Fiber.Fiber<void, never> | null>(
       null,
     );
+
+    const readImageDiagnostics = (image: string): Effect.Effect<string | null> =>
+      Effect.gen(function* () {
+        const [sizeRaw, idRaw] = yield* Effect.all(
+          [
+            docker.inspect(image, '{{.Size}}').pipe(
+              Effect.catchAll(() => Effect.succeed('')),
+            ),
+            docker.inspect(image, '{{.Id}}').pipe(
+              Effect.catchAll(() => Effect.succeed('')),
+            ),
+          ],
+          { concurrency: 'unbounded' },
+        );
+
+        const size = Number.parseInt(sizeRaw.trim(), 10);
+        const sizeLabel =
+          Number.isFinite(size) && size >= 0 ? formatBytes(size) : null;
+        const id = idRaw.trim() ? shortContainerId(idRaw) : null;
+
+        if (!sizeLabel && !id) return null;
+
+        const details = [`image=${image}`];
+        if (sizeLabel) details.push(`size=${sizeLabel}`);
+        if (id) details.push(`id=${id}`);
+        return `container image ready (${details.join(', ')})`;
+      });
 
     // Write resolved credentials to env file for containers
     const writeEnvFile = (envVars: Record<string, string>) =>
@@ -373,11 +502,12 @@ export const ContainerRunnerLive: Layer.Layer<
     const getOrStartContainer = (
       input: ContainerInput,
       mounts: VolumeMount[],
-      onStarting?: () => Effect.Effect<void>,
+      emitStatus?: (text: string) => Effect.Effect<void>,
     ): Effect.Effect<PersistentContainer | null, ContainerError> =>
       Effect.gen(function* () {
         const containers = yield* SynchronizedRef.get(persistentContainers);
         const existing = containers[input.groupFolder];
+        const rpcPort = getPersistentRpcPort(input.groupFolder);
 
         if (existing) {
           const alive = yield* docker
@@ -387,23 +517,39 @@ export const ContainerRunnerLive: Layer.Layer<
               Effect.catchAll(() => Effect.succeed(false)),
             );
 
-          if (
-            alive &&
-            isHeartbeatAlive(config.dataDir, input.groupFolder) &&
-            isRpcSocketReady(config.dataDir, input.groupFolder)
-          ) {
+          const endpointReady = yield* Effect.tryPromise({
+            try: () =>
+              canConnectPersistentEndpoint(
+                config.dataDir,
+                input.groupFolder,
+                existing.rpcPort,
+              ),
+            catch: (err) =>
+              new ContainerError({
+                message: `Persistent endpoint check failed: ${err}`,
+                groupFolder: input.groupFolder,
+              }),
+          });
+
+          if (alive && isHeartbeatAlive(config.dataDir, input.groupFolder) && endpointReady) {
+            if (emitStatus) {
+              yield* emitStatus('container ready (warm start)');
+            }
             existing.lastActivity = Date.now();
             return existing;
           }
           yield* docker.remove(existing.containerId).pipe(Effect.ignore);
+          yield* Effect.sync(() =>
+            clearPersistentIpcArtifacts(config.dataDir, input.groupFolder),
+          );
           yield* SynchronizedRef.update(persistentContainers, (c) => {
             const { [input.groupFolder]: _, ...rest } = c;
             return rest;
           });
         }
 
-        if (onStarting) {
-          yield* onStarting();
+        if (emitStatus) {
+          yield* emitStatus('container loading (persistent)');
         }
 
         fs.mkdirSync(path.join(config.groupsDir, input.groupFolder), {
@@ -412,6 +558,9 @@ export const ContainerRunnerLive: Layer.Layer<
 
         const containerName = getPersistentContainerName(input.groupFolder);
         yield* docker.remove(containerName).pipe(Effect.ignore);
+        yield* Effect.sync(() =>
+          clearPersistentIpcArtifacts(config.dataDir, input.groupFolder),
+        );
 
         yield* docker
           .run({
@@ -422,7 +571,10 @@ export const ContainerRunnerLive: Layer.Layer<
             env: {
               NANOCLAW_PERSISTENT: '1',
               NANOCLAW_AGENT_VERSION: config.containerAgentVersion,
+              NANOCLAW_RPC_TCP_PORT: String(rpcPort),
+              NANOCLAW_RPC_TCP_HOST: '0.0.0.0',
             },
+            ports: [{ host: rpcPort, container: rpcPort }],
             labels: {
               'com.nanoclaw.app': 'nanoclaw',
               'com.nanoclaw.role': 'agent',
@@ -431,15 +583,31 @@ export const ContainerRunnerLive: Layer.Layer<
           })
           .pipe(Effect.mapError(toContainerError(input.groupFolder)));
 
+        if (emitStatus) {
+          yield* emitStatus('container booting (waiting for heartbeat)');
+        }
+
         // Wait for heartbeat
         const ready = yield* Effect.tryPromise({
           try: async () => {
             const deadline = Date.now() + HEARTBEAT_WAIT_TIMEOUT;
             while (Date.now() < deadline) {
-              if (
-                isHeartbeatAlive(config.dataDir, input.groupFolder) &&
-                isRpcSocketReady(config.dataDir, input.groupFolder)
-              ) {
+              const running = await Effect.runPromise(
+                docker.isContainerRunning(containerName).pipe(
+                  Effect.catchAll(() => Effect.succeed(false)),
+                ),
+              );
+              if (!running) {
+                return false;
+              }
+
+              if (isHeartbeatAlive(config.dataDir, input.groupFolder) && (
+                await canConnectPersistentEndpoint(
+                  config.dataDir,
+                  input.groupFolder,
+                  rpcPort,
+                )
+              )) {
                 return true;
               }
               await new Promise((r) => setTimeout(r, HEARTBEAT_POLL_INTERVAL));
@@ -454,7 +622,13 @@ export const ContainerRunnerLive: Layer.Layer<
         });
 
         if (!ready) {
+          if (emitStatus) {
+            yield* emitStatus('container startup timeout (falling back)');
+          }
           yield* docker.remove(containerName).pipe(Effect.ignore);
+          yield* Effect.sync(() =>
+            clearPersistentIpcArtifacts(config.dataDir, input.groupFolder),
+          );
           return null;
         }
 
@@ -462,6 +636,7 @@ export const ContainerRunnerLive: Layer.Layer<
         const entry: PersistentContainer = {
           containerId: containerName,
           groupFolder: input.groupFolder,
+          rpcPort,
           lastActivity: Date.now(),
           ipcDir: groupIpcDir,
         };
@@ -470,6 +645,10 @@ export const ContainerRunnerLive: Layer.Layer<
           ...c,
           [input.groupFolder]: entry,
         }));
+
+        if (emitStatus) {
+          yield* emitStatus('container ready (persistent)');
+        }
 
         return entry;
       });
@@ -482,7 +661,6 @@ export const ContainerRunnerLive: Layer.Layer<
       Effect.tryPromise({
         try: () =>
           new Promise<ContainerOutput>((resolve) => {
-            const socketPath = path.join(container.ipcDir, AGENT_RPC_SOCKET);
             const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
             const requestId = `run-${runId}`;
             let settled = false;
@@ -500,7 +678,10 @@ export const ContainerRunnerLive: Layer.Layer<
               resolve(output);
             };
 
-            const socket = net.createConnection({ path: socketPath });
+            const socket = net.createConnection({
+              host: '127.0.0.1',
+              port: container.rpcPort,
+            });
 
             const timer = setTimeout(() => {
               finish({
@@ -609,7 +790,7 @@ export const ContainerRunnerLive: Layer.Layer<
               finish({
                 status: 'error',
                 result: null,
-                error: `Persistent socket error: ${err.message}`,
+                error: `Persistent socket error (tcp:${container.rpcPort}): ${err.message}`,
               });
             });
 
@@ -758,8 +939,9 @@ export const ContainerRunnerLive: Layer.Layer<
           );
 
           yield* Effect.log(
-            `[ContainerRunner] Launching container (image=${config.containerImage}, oneshot=${FORCE_ONESHOT})`,
+            `[ContainerRunner] Launching container (image=${config.containerImage}, agent=v${config.containerAgentVersion}, oneshot=${FORCE_ONESHOT})`,
           );
+          yield* emitStatus('container preparing');
 
           const imageExists = yield* docker
             .imageExists(config.containerImage)
@@ -769,17 +951,28 @@ export const ContainerRunnerLive: Layer.Layer<
             yield* ensureImage;
           }
 
+          const imageDiagnostics = yield* readImageDiagnostics(
+            config.containerImage,
+          );
+          if (imageDiagnostics) {
+            yield* emitStatus(imageDiagnostics);
+          }
+
+          const supportsPersistent = config.containerAgentVersion === '2';
+          if (!supportsPersistent && !FORCE_ONESHOT) {
+            const reason =
+              `persistent mode disabled for agent v${config.containerAgentVersion}; set NANOCLAW_AGENT_VERSION=2`;
+            yield* Effect.log(`[ContainerRunner] ${reason}`);
+            yield* emitStatus(reason);
+          }
+
           const result = yield* Effect.gen(function* () {
-            if (FORCE_ONESHOT) {
+            if (FORCE_ONESHOT || !supportsPersistent) {
               return yield* runOneShot(input, mounts, handlers);
             }
 
             // Try persistent mode
-            const container = yield* getOrStartContainer(
-              input,
-              mounts,
-              () => emitStatus('container loading'),
-            );
+            const container = yield* getOrStartContainer(input, mounts, emitStatus);
             if (!container) {
               yield* Effect.log(`[ContainerRunner] Persistent mode failed, falling back to one-shot`);
               return yield* runOneShot(input, mounts, handlers);
@@ -804,12 +997,15 @@ export const ContainerRunnerLive: Layer.Layer<
 
             if (persistentTransportFailed) {
               yield* docker.remove(container.containerId).pipe(Effect.ignore);
+              yield* Effect.sync(() =>
+                clearPersistentIpcArtifacts(config.dataDir, input.groupFolder),
+              );
               yield* SynchronizedRef.update(persistentContainers, (c) => {
                 const { [input.groupFolder]: _, ...rest } = c;
                 return rest;
               });
               yield* Effect.log(
-                `[ContainerRunner] Persistent transport failed, falling back to one-shot`,
+                `[ContainerRunner] Persistent transport failed (${output.error}), falling back to one-shot`,
               );
               return yield* runOneShot(input, mounts, handlers);
             }
