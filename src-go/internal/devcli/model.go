@@ -52,10 +52,12 @@ func NewModel(workdir string) *Model {
 		services = append(services, NewService(workdir, spec))
 	}
 
-	return &Model{
+	model := &Model{
 		services: services,
 		status:   "Press s to start selected service.",
 	}
+	model.clampCursor()
+	return model
 }
 
 func (m *Model) Init() tea.Cmd {
@@ -67,6 +69,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.clampCursor()
 		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -81,19 +84,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor++
 			}
 		case "s", "enter":
-			service := m.selected()
+			service := m.selectedService()
 			if service != nil {
 				return m, m.serviceCmd(service, "start", service.Start)
 			}
 		case "t", "x":
-			service := m.selected()
+			service := m.selectedService()
 			if service != nil {
 				return m, m.serviceCmd(service, "stop", func() error {
 					return service.Stop(3 * time.Second)
 				})
 			}
 		case "r":
-			service := m.selected()
+			service := m.selectedService()
 			if service != nil {
 				return m, m.serviceCmd(service, "restart", func() error {
 					if err := service.Stop(3 * time.Second); err != nil {
@@ -145,7 +148,7 @@ func (m *Model) View() string {
 	}
 
 	builder.WriteString("\n")
-	selected := m.selected()
+	selected := m.selectedService()
 	if selected != nil {
 		logTitle := lipgloss.NewStyle().Bold(true).Render("Logs: " + selected.Spec().Name)
 		builder.WriteString(logTitle)
@@ -181,9 +184,17 @@ func (m *Model) Shutdown() {
 	}
 }
 
-func (m *Model) selected() *Service {
-	if len(m.services) == 0 {
+func (m *Model) selectedService() *Service {
+	if len(m.services) == 0 || m.cursor < 0 || m.cursor >= len(m.services) {
 		return nil
+	}
+	return m.services[m.cursor]
+}
+
+func (m *Model) clampCursor() {
+	if len(m.services) == 0 {
+		m.cursor = 0
+		return
 	}
 	if m.cursor < 0 {
 		m.cursor = 0
@@ -191,7 +202,6 @@ func (m *Model) selected() *Service {
 	if m.cursor >= len(m.services) {
 		m.cursor = len(m.services) - 1
 	}
-	return m.services[m.cursor]
 }
 
 func (m *Model) startAllCmd() tea.Cmd {

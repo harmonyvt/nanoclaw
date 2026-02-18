@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -87,15 +88,20 @@ func (s *Service) Logs(limit int) []string {
 
 func (s *Service) Start() error {
 	s.mu.Lock()
-	if s.state == StateRunning || s.state == StateStarting {
+	if s.state == StateRunning || s.state == StateStarting || s.state == StateStopping {
 		s.mu.Unlock()
-		return nil
+		return fmt.Errorf("service is %s", s.state)
 	}
 	s.state = StateStarting
 	s.lastErr = ""
 	cmd := exec.Command("go", "run", s.spec.PackagePath)
 	cmd.Dir = s.workdir
 	cmd.Env = append(os.Environ(), envPairs(s.spec.Env)...)
+	if runtime.GOOS != "windows" {
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			Setpgid: true,
+		}
+	}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -134,6 +140,10 @@ func (s *Service) Start() error {
 
 func (s *Service) Stop(timeout time.Duration) error {
 	s.mu.Lock()
+	if s.state == StateStopping {
+		s.mu.Unlock()
+		return nil
+	}
 	cmd := s.cmd
 	if cmd == nil || cmd.Process == nil || s.state == StateStopped {
 		s.mu.Unlock()
@@ -146,7 +156,7 @@ func (s *Service) Stop(timeout time.Duration) error {
 	if runtime.GOOS == "windows" {
 		_ = cmd.Process.Kill()
 	} else {
-		_ = cmd.Process.Signal(os.Interrupt)
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGINT)
 	}
 
 	deadline := time.Now().Add(timeout)
@@ -162,7 +172,12 @@ func (s *Service) Stop(timeout time.Duration) error {
 	cmd = s.cmd
 	s.mu.RUnlock()
 	if cmd != nil && cmd.Process != nil {
-		_ = cmd.Process.Kill()
+		pid := cmd.Process.Pid
+		if runtime.GOOS == "windows" {
+			_ = cmd.Process.Kill()
+		} else {
+			_ = syscall.Kill(-pid, syscall.SIGKILL)
+		}
 	}
 
 	deadline = time.Now().Add(2 * time.Second)
@@ -173,6 +188,11 @@ func (s *Service) Stop(timeout time.Duration) error {
 		}
 		time.Sleep(120 * time.Millisecond)
 	}
+	s.mu.Lock()
+	s.lastErr = "stop timed out"
+	s.state = StateFailed
+	s.appendLogLocked("stop timed out")
+	s.mu.Unlock()
 
 	return errors.New("stop timed out")
 }
