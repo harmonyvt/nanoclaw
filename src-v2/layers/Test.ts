@@ -54,6 +54,7 @@ export const TestAppConfig: AppConfigShape = {
   agentRetryDelay: 100,
   ipcPollInterval: 1000,
   schedulerPollInterval: 60_000,
+  ipcBrowseActionTimeoutMs: 60_000,
   sandboxIdleTimeoutMs: 300_000,
   sandboxTailscaleEnabled: false,
   cuaTakeoverWebEnabled: false,
@@ -413,15 +414,17 @@ export const BrowseHostTest: Layer.Layer<BrowseHost> = Layer.succeed(
   {
     processAction: (_sourceGroup, action, _params) =>
       Effect.succeed({
-        success: true,
-        data: `test: ${action}`,
+        status: 'ok',
+        result: `test: ${action}`,
       } satisfies BrowseResult),
     waitForUser: (_requestId, _groupFolder, _message, _chatJid?) =>
       Effect.succeed({
-        success: true,
-        data: 'User continued (test)',
+        status: 'ok',
+        result: 'User continued (test)',
       } satisfies BrowseResult),
     resolveWait: (_groupFolder, _requestId?) => Effect.succeed(true),
+    resolveWaitByToken: (_token) => Effect.succeed(true),
+    getWaitByToken: (_token) => Effect.succeed(null),
     cancelWaiting: (_groupFolder, _reason?) => Effect.succeed(0),
     hasWaitingRequests: (_groupFolder) => Effect.succeed(false),
   } satisfies BrowseHostService,

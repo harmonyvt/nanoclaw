@@ -372,32 +372,30 @@ export const createMessagePipeline = (
               statusMsgId,
               chunks[0],
             )
-            .pipe(Effect.ignore);
+            .pipe(Effect.orElseSucceed(() => false));
           if (!edited) return;
 
           lastStatusText = newText;
           lastEditTime = now;
 
           for (const chunk of chunks.slice(1)) {
-            const msgId = yield* telegram.sendStatusMessage(
-              pipelineConfig.chatJid,
-              chunk,
-            );
+            const msgId = yield* telegram
+              .sendStatusMessage(pipelineConfig.chatJid, chunk)
+              .pipe(Effect.orElseSucceed(() => null));
             if (msgId) statusExtraIds.push(msgId);
           }
           return;
         }
 
-        const msgId = yield* telegram.sendStatusMessage(
-          pipelineConfig.chatJid,
-          newText,
-        );
+        const msgId = yield* telegram
+          .sendStatusMessage(pipelineConfig.chatJid, newText)
+          .pipe(Effect.orElseSucceed(() => null));
         if (msgId) {
           statusMsgId = msgId;
           lastStatusText = newText;
           lastEditTime = now;
         }
-      });
+      }).pipe(Effect.catchAll(() => Effect.void));
 
     return handle;
   });

@@ -42,6 +42,7 @@ export interface AppConfigShape {
   // ── IPC ──
   readonly ipcPollInterval: number;
   readonly schedulerPollInterval: number;
+  readonly ipcBrowseActionTimeoutMs: number;
 
   // ── Sandbox / CUA ──
   readonly sandboxIdleTimeoutMs: number;
@@ -198,6 +199,7 @@ export const AppConfigLive: Layer.Layer<AppConfig> = Layer.succeed(
 
       ipcPollInterval: 1000,
       schedulerPollInterval: 60_000,
+      ipcBrowseActionTimeoutMs: envInt('IPC_BROWSE_ACTION_TIMEOUT_MS', 60_000),
 
       sandboxIdleTimeoutMs: envInt('SANDBOX_IDLE_TIMEOUT_MS', 30 * 60 * 1000),
       sandboxTailscaleEnabled: envBoolNotFalse('SANDBOX_TAILSCALE_ENABLED'),
