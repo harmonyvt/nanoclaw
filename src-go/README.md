@@ -17,7 +17,8 @@ go run ./cmd/nanoclawd
 ## End-to-end test
 
 ```bash
-cd /Users/harmony/nanoclaw
+cd src-go && ./scripts/e2e.sh
+# or from repository root:
 bun run go:test:e2e
 ```
 
