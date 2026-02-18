@@ -17,6 +17,51 @@ import { GroupRegistry } from '../state/GroupRegistry.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
+const IPC_WATCHER_FILE_PATH = 'src-v2/coordinators/IpcWatcher.ts';
+
+function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (
+    typeof err === 'object' &&
+    err !== null &&
+    'message' in err &&
+    typeof (err as { message?: unknown }).message === 'string'
+  ) {
+    return (err as { message: string }).message;
+  }
+  return String(err);
+}
+
+function logIpcWatcherError(
+  event: string,
+  err: unknown,
+  context: Record<string, unknown> = {},
+): void {
+  const details = err instanceof Error
+    ? { message: err.message, stack: err.stack }
+    : { message: errorMessage(err), stack: undefined };
+  process.stderr.write(
+    `[IpcWatcher] ${JSON.stringify({
+      component: 'IpcWatcher',
+      file: IPC_WATCHER_FILE_PATH,
+      event,
+      ...context,
+      error: details.message,
+      stack: details.stack,
+    })}\n`,
+  );
+}
+
+function logIpcWatcherErrorEffect(
+  event: string,
+  err: unknown,
+  context: Record<string, unknown> = {},
+): Effect.Effect<void> {
+  return Effect.sync(() => {
+    logIpcWatcherError(event, err, context);
+  });
+}
+
 function listJsonFiles(dir: string, pattern?: string): string[] {
   try {
     if (!fs.existsSync(dir)) return [];
@@ -31,7 +76,8 @@ function listJsonFiles(dir: string, pattern?: string): string[] {
       return true;
     });
     return files.map((f) => path.join(dir, f));
-  } catch {
+  } catch (err) {
+    logIpcWatcherError('list_json_files_failed', err, { dir, pattern });
     return [];
   }
 }
@@ -40,7 +86,8 @@ function readJsonFile(filePath: string): Record<string, unknown> | null {
   try {
     const raw = fs.readFileSync(filePath, 'utf-8');
     return JSON.parse(raw) as Record<string, unknown>;
-  } catch {
+  } catch (err) {
+    logIpcWatcherError('read_json_file_failed', err, { filePath });
     return null;
   }
 }
@@ -48,15 +95,20 @@ function readJsonFile(filePath: string): Record<string, unknown> | null {
 function deleteFile(filePath: string): void {
   try {
     fs.unlinkSync(filePath);
-  } catch {
-    // best effort
+  } catch (err) {
+    logIpcWatcherError('delete_file_failed', err, { filePath });
   }
 }
 
 function writeJsonAtomic(filePath: string, data: unknown): void {
-  const tmpPath = filePath + '.tmp';
-  fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2));
-  fs.renameSync(tmpPath, filePath);
+  try {
+    const tmpPath = filePath + '.tmp';
+    fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2));
+    fs.renameSync(tmpPath, filePath);
+  } catch (err) {
+    logIpcWatcherError('write_json_atomic_failed', err, { filePath });
+    throw err;
+  }
 }
 
 // ─── IPC Watcher ────────────────────────────────────────────────────────────
@@ -111,7 +163,19 @@ export const startIpcWatcher: Effect.Effect<
         if (targetChatJid && text) {
           yield* telegram
             .sendMessage(targetChatJid, text)
-            .pipe(Effect.ignore);
+            .pipe(
+              Effect.catchAll((err) =>
+                logIpcWatcherErrorEffect(
+                  'telegram_send_failed',
+                  err,
+                  {
+                    filePath: file,
+                    groupFolder: group.folder,
+                    targetChatJid,
+                  },
+                ),
+              ),
+            );
         }
 
         deleteFile(file);
@@ -178,10 +242,21 @@ export const startIpcWatcher: Effect.Effect<
               .pipe(
                 Effect.map((r) => r as unknown as Record<string, unknown>),
                 Effect.catchAll((err) =>
-                  Effect.succeed({
-                    success: false,
-                    error: String(err),
-                  } as Record<string, unknown>),
+                  logIpcWatcherErrorEffect(
+                    'browse_wait_for_user_failed',
+                    err,
+                    {
+                      filePath: file,
+                      reqId,
+                      action,
+                      groupFolder: group.folder,
+                    },
+                  ).pipe(
+                    Effect.as({
+                      success: false,
+                      error: errorMessage(err),
+                    } as Record<string, unknown>),
+                  ),
                 ),
                 Effect.tap((result) =>
                   Effect.try({
@@ -189,8 +264,20 @@ export const startIpcWatcher: Effect.Effect<
                       const resPath = path.join(browseDir, `res-${reqId}.json`);
                       writeJsonAtomic(resPath, result);
                     },
-                    catch: () => new Error('Failed to write browse response'),
-                  }).pipe(Effect.ignore),
+                    catch: (err) => err,
+                  }).pipe(
+                    Effect.catchAll((err) =>
+                      logIpcWatcherErrorEffect(
+                        'browse_wait_for_user_write_response_failed',
+                        err,
+                        {
+                          filePath: file,
+                          reqId,
+                          groupFolder: group.folder,
+                        },
+                      ),
+                    ),
+                  ),
                 ),
               ),
           );
@@ -203,21 +290,59 @@ export const startIpcWatcher: Effect.Effect<
           .pipe(
             Effect.map((r) => r as unknown as Record<string, unknown>),
             Effect.catchAll((err) =>
-              Effect.succeed({
-                success: false,
-                error: String(err),
-              } as Record<string, unknown>),
+              logIpcWatcherErrorEffect(
+                'browse_process_action_failed',
+                err,
+                {
+                  filePath: file,
+                  reqId,
+                  action,
+                  groupFolder: group.folder,
+                },
+              ).pipe(
+                Effect.as({
+                  success: false,
+                  error: errorMessage(err),
+                } as Record<string, unknown>),
+              ),
             ),
           );
 
         // Write response atomically (temp + rename)
         const resPath = path.join(browseDir, `res-${reqId}.json`);
-        writeJsonAtomic(resPath, result);
+        yield* Effect.try({
+          try: () => {
+            writeJsonAtomic(resPath, result);
+          },
+          catch: (err) => err,
+        }).pipe(
+          Effect.catchAll((err) =>
+            logIpcWatcherErrorEffect(
+              'browse_write_response_failed',
+              err,
+              {
+                filePath: file,
+                reqId,
+                action,
+                resPath,
+                groupFolder: group.folder,
+              },
+            ),
+          ),
+        );
         deleteFile(file);
       }
     }
-  }).pipe(Effect.catchAll((err) => Effect.log(`IPC poll error: ${err}`)));
+  }).pipe(
+    Effect.catchAll((err) =>
+      logIpcWatcherErrorEffect('ipc_poll_failed', err),
+    ),
+  );
 
   // Poll every 1 second
   yield* pollOnce.pipe(Effect.repeat(Schedule.fixed('1 second')));
-}).pipe(Effect.catchAll(() => Effect.void));
+}).pipe(
+  Effect.catchAll((err) =>
+    logIpcWatcherErrorEffect('ipc_watcher_failed', err),
+  ),
+);

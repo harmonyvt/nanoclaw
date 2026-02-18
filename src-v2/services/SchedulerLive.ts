@@ -20,6 +20,42 @@ import type { ScheduledTask } from '../schemas/Tasks.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
+const SCHEDULER_FILE_PATH = 'src-v2/services/SchedulerLive.ts';
+
+function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (
+    typeof err === 'object' &&
+    err !== null &&
+    'message' in err &&
+    typeof (err as { message?: unknown }).message === 'string'
+  ) {
+    return (err as { message: string }).message;
+  }
+  return String(err);
+}
+
+function logSchedulerError(
+  message: string,
+  err: unknown,
+  context: Record<string, unknown> = {},
+): Effect.Effect<void> {
+  const details = err instanceof Error
+    ? { message: err.message, stack: err.stack }
+    : { message: errorMessage(err), stack: undefined };
+
+  return Effect.logError(
+    JSON.stringify({
+      component: 'SchedulerLive',
+      file: SCHEDULER_FILE_PATH,
+      message,
+      ...context,
+      error: details.message,
+      stack: details.stack,
+    }),
+  );
+}
+
 function computeNextRun(
   task: ScheduledTask,
   timezone: string,
@@ -53,7 +89,11 @@ export const SchedulerLive: Layer.Layer<
     const config = yield* AppConfig;
 
     /** Write tasks snapshot for container to read. */
-    const writeTaskSnapshot = (groupFolder: string, isMain: boolean) =>
+    const writeTaskSnapshot = (
+      groupFolder: string,
+      isMain: boolean,
+      taskId?: string,
+    ) =>
       Effect.gen(function* () {
         const allTasks = yield* db.getAllTasks;
         const visibleTasks = isMain
@@ -86,26 +126,42 @@ export const SchedulerLive: Layer.Layer<
               ),
             );
           },
-          catch: () =>
-            new SchedulerError({ message: 'Failed to write task snapshot' }),
+          catch: (err) =>
+            new SchedulerError({
+              message: `Failed to write task snapshot: ${errorMessage(err)}`,
+              taskId,
+              cause: err,
+            }),
         });
-      }).pipe(Effect.ignore);
+      });
 
     /** Run a single task. */
-    const runTask = (task: ScheduledTask) =>
-      Effect.gen(function* () {
-        const startTime = Date.now();
-        const isMain = task.group_folder === config.mainGroupFolder;
+    const runTask = (task: ScheduledTask) => {
+      const startTime = Date.now();
+      const runAt = new Date().toISOString();
+      const isMain = task.group_folder === config.mainGroupFolder;
 
+      return Effect.gen(function* () {
         // Write snapshot before running
-        yield* writeTaskSnapshot(task.group_folder, isMain);
+        yield* writeTaskSnapshot(task.group_folder, isMain, task.id).pipe(
+          Effect.catchAll((err) =>
+            logSchedulerError(
+              'write_snapshot_before_run_failed',
+              err,
+              {
+                taskId: task.id,
+                groupFolder: task.group_folder,
+              },
+            ),
+          ),
+        );
 
         // Resolve group
         const group = yield* registry.get(task.chat_jid);
         if (!group) {
           yield* db.logTaskRun({
             task_id: task.id,
-            run_at: new Date().toISOString(),
+            run_at: runAt,
             duration_ms: Date.now() - startTime,
             status: 'error',
             result: null,
@@ -149,7 +205,7 @@ export const SchedulerLive: Layer.Layer<
               taskId: task.id,
               status: 'error' as const,
               result: null,
-              error: String(err),
+              error: errorMessage(err),
               durationMs: Date.now() - startTime,
             } satisfies TaskRunResult),
           ),
@@ -158,7 +214,7 @@ export const SchedulerLive: Layer.Layer<
         // Log run
         yield* db.logTaskRun({
           task_id: task.id,
-          run_at: new Date().toISOString(),
+          run_at: runAt,
           duration_ms: result.durationMs,
           status: result.status,
           result: result.result,
@@ -175,8 +231,45 @@ export const SchedulerLive: Layer.Layer<
         yield* db.updateTaskAfterRun(task.id, nextRun, resultSummary);
 
         // Update snapshot after run
-        yield* writeTaskSnapshot(task.group_folder, isMain);
-      }).pipe(Effect.catchAll(() => Effect.void));
+        yield* writeTaskSnapshot(task.group_folder, isMain, task.id).pipe(
+          Effect.catchAll((err) =>
+            logSchedulerError(
+              'write_snapshot_after_run_failed',
+              err,
+              {
+                taskId: task.id,
+                groupFolder: task.group_folder,
+              },
+            ),
+          ),
+        );
+      }).pipe(
+        Effect.catchAll((err) =>
+          Effect.gen(function* () {
+            const errMsg = errorMessage(err);
+            yield* logSchedulerError('task_run_failed', err, {
+              taskId: task.id,
+              groupFolder: task.group_folder,
+            });
+
+            yield* db.logTaskRun({
+              task_id: task.id,
+              run_at: runAt,
+              duration_ms: Date.now() - startTime,
+              status: 'error',
+              result: null,
+              error: errMsg,
+            }).pipe(
+              Effect.catchAll((logErr) =>
+                logSchedulerError('task_run_log_failed', logErr, {
+                  taskId: task.id,
+                }),
+              ),
+            );
+          }),
+        ),
+      );
+    };
 
     /** Poll for due tasks. */
     const pollDueTasks = Effect.gen(function* () {
@@ -189,7 +282,13 @@ export const SchedulerLive: Layer.Layer<
         // Fork each task so they don't block each other
         yield* Effect.fork(runTask(current));
       }
-    }).pipe(Effect.catchAll(() => Effect.void));
+    }).pipe(
+      Effect.catchAll((err) =>
+        logSchedulerError('poll_due_tasks_failed', err, {
+          phase: 'poll_due_tasks',
+        }),
+      ),
+    );
 
     // ── Start scheduler fiber ────────────────────────────────────────
 
