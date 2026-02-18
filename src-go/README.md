@@ -14,6 +14,13 @@ cd src-go
 go run ./cmd/nanoclawd
 ```
 
+## End-to-end test
+
+```bash
+cd /Users/harmony/nanoclaw
+bun run go:test:e2e
+```
+
 Environment variables:
 - `NANOCLAW_GO_API_ADDR` (default `:8088`)
 - `NANOCLAW_GO_SESSION_ADDR` (default `:8089`)
