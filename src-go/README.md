@@ -14,6 +14,24 @@ cd src-go
 go run ./cmd/nanoclawd
 ```
 
+### Dev CLI (Bubble Tea)
+
+Run the interactive service runner:
+
+```bash
+cd src-go
+go run ./cmd/devctl
+```
+
+Controls:
+- `up/down` or `j/k`: select service
+- `s` (or `enter`): start selected service
+- `t` (or `x`): stop selected service
+- `r`: restart selected service
+- `a`: start all services
+- `z`: stop all services
+- `q`: quit (stops managed services)
+
 ## End-to-end test
 
 ```bash
