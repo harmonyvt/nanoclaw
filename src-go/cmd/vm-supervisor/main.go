@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
-	"errors"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -62,7 +62,11 @@ func main() {
 			}
 			status, err := sup.GetStatus(path)
 			if err != nil {
-				w.WriteHeader(http.StatusNotFound)
+				if errors.Is(err, vm.ErrSandboxNotFound) {
+					w.WriteHeader(http.StatusNotFound)
+				} else {
+					w.WriteHeader(http.StatusInternalServerError)
+				}
 				_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 				return
 			}
