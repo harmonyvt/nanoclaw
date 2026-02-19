@@ -150,8 +150,8 @@ func TestReconcilerPersistsTransientFailureAfterRetryExhaustion(t *testing.T) {
 		t.Fatalf("upsert failed: %v", err)
 	}
 
-	if err := rec.ReconcileSandbox(context.Background(), spec.SandboxID); err != nil {
-		t.Fatalf("reconcile failed: %v", err)
+	if err := rec.ReconcileSandbox(context.Background(), spec.SandboxID); err == nil {
+		t.Fatalf("expected reconcile to return runtime error after retry exhaustion")
 	}
 	if rt.startCalls != 3 {
 		t.Fatalf("expected 3 start attempts, got %d", rt.startCalls)

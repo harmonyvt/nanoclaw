@@ -98,7 +98,10 @@ func (r *Reconciler) ReconcileSandbox(ctx context.Context, sandboxID string) err
 			retryable,
 			attempts,
 		)
-		return r.persistStatus(status)
+		if err := r.persistStatus(status); err != nil {
+			return errors.Join(runErr, err)
+		}
+		return runErr
 	}
 
 	nextStatus.FailureReason = ""

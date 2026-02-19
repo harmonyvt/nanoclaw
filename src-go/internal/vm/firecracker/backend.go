@@ -94,6 +94,7 @@ func (b *Backend) StartSandbox(ctx context.Context, spec contracts.SandboxSpec, 
 		now := time.Now().UTC()
 		status.ObservedState = "running"
 		status.Health = "healthy"
+		status.FailureReason = ""
 		status.LastHeartbeat = &now
 		if status.StartedAt == nil {
 			status.StartedAt = &now
@@ -194,6 +195,7 @@ func (b *Backend) StartSandbox(ctx context.Context, spec contracts.SandboxSpec, 
 	now := time.Now().UTC()
 	status.ObservedState = "running"
 	status.Health = "healthy"
+	status.FailureReason = ""
 	status.StartedAt = &now
 	status.LastHeartbeat = &now
 	return status, nil
@@ -328,11 +330,29 @@ func (b *Backend) KillSwitch(ctx context.Context, current contracts.SandboxStatu
 }
 
 func (b *Backend) GetStatus(_ context.Context, current contracts.SandboxStatus) (contracts.SandboxStatus, error) {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
+	b.mu.Lock()
 	if rt, ok := b.runtimes[current.SandboxID]; ok {
+		processRunning := false
+		if rt.cmd != nil {
+			processRunning = isRunning(rt.cmd)
+		}
+		if !processRunning {
+			rt.pid = 0
+		}
+
 		current = b.applyRuntimeMetadataLocked(current, rt)
+		if current.ObservedState == "running" && !processRunning {
+			current.ObservedState = "stopped"
+			current.Health = "error"
+			if current.FailureReason == "" {
+				current.FailureReason = runtimeExitFailureReason(current.LastExitCode)
+			}
+			now := time.Now().UTC()
+			current.LastHeartbeat = &now
+		}
 	}
+	b.mu.Unlock()
+
 	current.Backend = b.Name()
 	if current.LastHeartbeat == nil {
 		now := time.Now().UTC()
@@ -380,8 +400,8 @@ func (b *Backend) monitorProcessExit(sandboxID string, cmd *exec.Cmd, waitDone c
 }
 
 func (b *Backend) ensureRuntime(sandboxID string) (*runtimeState, error) {
-	if sandboxID == "" {
-		return nil, errors.New("sandbox id is required")
+	if err := validateSandboxID(sandboxID); err != nil {
+		return nil, err
 	}
 
 	b.mu.Lock()
@@ -406,6 +426,23 @@ func (b *Backend) ensureRuntime(sandboxID string) (*runtimeState, error) {
 	}
 	b.runtimes[sandboxID] = rt
 	return rt, nil
+}
+
+func validateSandboxID(sandboxID string) error {
+	if sandboxID == "" {
+		return errors.New("sandbox id is required")
+	}
+	for _, r := range sandboxID {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-', r == '_':
+		default:
+			return fmt.Errorf("sandbox id %q contains unsupported character %q", sandboxID, r)
+		}
+	}
+	return nil
 }
 
 func (b *Backend) applyRuntimeMetadataLocked(status contracts.SandboxStatus, rt *runtimeState) contracts.SandboxStatus {
@@ -439,6 +476,13 @@ func vmIDForSandbox(sandboxID string) string {
 		sanitized = "vm"
 	}
 	return "vm-" + sanitized
+}
+
+func runtimeExitFailureReason(exitCode int) string {
+	if exitCode == 0 {
+		return "firecracker process exited unexpectedly"
+	}
+	return fmt.Sprintf("firecracker process exited with code %d", exitCode)
 }
 
 func ensureDir(path string) error {

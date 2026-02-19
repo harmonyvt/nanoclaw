@@ -235,21 +235,27 @@ cmd_status() {
 
 cmd_task() {
   require_cmd curl
+  require_cmd jq
   local task_cmd="${1:-echo smoke}"
+  local payload
+  payload="$(jq -n \
+    --arg image_ref "$CLI_ROOTFS_IMAGE" \
+    --arg command "$task_cmd" \
+    '{
+      risk_class: "high",
+      image_ref: $image_ref,
+      command: $command,
+      resource_profile: {cpu: 1, memory: 256, pids: 64},
+      capabilities: {
+        fs_scopes: [{path: "/workspace", mode: "write"}],
+        egress_rules: [{host: "api.example.com", port: 443}],
+        tool_rules: [{name: "shell", allowed: true}],
+        secret_rules: []
+      }
+    }')"
   curl -fsS -X POST "http://$API_ADDR/v1/tasks/runs" \
     -H 'content-type: application/json' \
-    -d "{
-      \"risk_class\":\"high\",
-      \"image_ref\":\"$CLI_ROOTFS_IMAGE\",
-      \"command\":\"$task_cmd\",
-      \"resource_profile\":{\"cpu\":1,\"memory\":256,\"pids\":64},
-      \"capabilities\":{
-        \"fs_scopes\":[{\"path\":\"/workspace\",\"mode\":\"write\"}],
-        \"egress_rules\":[{\"host\":\"api.example.com\",\"port\":443}],
-        \"tool_rules\":[{\"name\":\"shell\",\"allowed\":true}],
-        \"secret_rules\":[]
-      }
-    }"
+    -d "$payload"
   echo
 }
 

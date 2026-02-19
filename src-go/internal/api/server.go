@@ -135,7 +135,7 @@ func (s *Server) handleTaskRuns(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	s.emit("task.completed", map[string]any{"task_id": result.TaskID, "sandbox_id": result.SandboxID})
+	s.emit("task.accepted", map[string]any{"task_id": result.TaskID, "sandbox_id": result.SandboxID})
 	s.emitSandboxStateChanged(sandboxStatus, "task_run")
 	writeJSON(w, http.StatusAccepted, s.taskRunAcceptedResponse(result, sandboxStatus, spec))
 }
@@ -200,8 +200,12 @@ func (s *Server) handleSandboxCreate(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, err)
 			return
 		}
-		status, _ = s.supervisor.GetStatus(spec.SandboxID)
-		_ = s.store.UpdateSandboxStatus(status)
+		_, latestStatus, err := s.store.GetSandbox(spec.SandboxID)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		status = latestStatus
 		s.emitSandboxStateChanged(status, "sandbox_create")
 	}
 	s.emit("sandbox.created", map[string]any{"sandbox_id": spec.SandboxID})
@@ -224,7 +228,7 @@ func (s *Server) handleSandboxActions(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("missing sandbox id"))
 		return
 	}
-	spec, _, err := s.store.GetSandbox(id)
+	spec, status, err := s.store.GetSandbox(id)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, err)
 		return
@@ -251,7 +255,6 @@ func (s *Server) handleSandboxActions(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("unknown action %q", action))
 		return
 	}
-	status, _ := s.supervisor.GetStatus(id)
 	if err := s.store.UpsertSandbox(spec, status); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -260,8 +263,11 @@ func (s *Server) handleSandboxActions(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	status, _ = s.supervisor.GetStatus(id)
-	_ = s.store.UpdateSandboxStatus(status)
+	_, status, err = s.store.GetSandbox(id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
 	s.emitSandboxStateChanged(status, "sandbox_action")
 	writeJSON(w, http.StatusAccepted, status)
 }

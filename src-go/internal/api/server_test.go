@@ -77,6 +77,13 @@ func TestTaskRunAndSandboxActions(t *testing.T) {
 	if mode, _ := execution["mode"].(string); mode != "accepted" {
 		t.Fatalf("expected execution mode accepted, got %q", mode)
 	}
+	acceptedEvt := waitForEventType(t, events, "task.accepted")
+	if acceptedEvt.Payload["task_id"] != taskID {
+		t.Fatalf("expected task.accepted payload task_id %q, got %v", taskID, acceptedEvt.Payload["task_id"])
+	}
+	if acceptedEvt.Payload["sandbox_id"] != sandboxID {
+		t.Fatalf("expected task.accepted payload sandbox_id %q, got %v", sandboxID, acceptedEvt.Payload["sandbox_id"])
+	}
 	stateEvt := waitForEventType(t, events, "sandbox.state_changed")
 	if _, ok := stateEvt.Payload["backend"]; !ok {
 		t.Fatalf("expected backend metadata in sandbox state event payload")
