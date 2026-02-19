@@ -6,6 +6,8 @@ dist/
 
 # Local data & auth
 store/
+!src-go/internal/store/
+!src-go/internal/store/*.go
 data/
 /logs/
 
