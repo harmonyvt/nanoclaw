@@ -19,7 +19,7 @@ func Load() Config {
 	cfg := Config{
 		APIListenAddr:     getenv("NANOCLAW_GO_API_ADDR", ":8088"),
 		SessionListenAddr: getenv("NANOCLAW_GO_SESSION_ADDR", ":8089"),
-		SupervisorAddr:    getenv("NANOCLAW_GO_SUPERVISOR_ADDR", ":8090"),
+		SupervisorAddr:    getenv("NANOCLAW_GO_SUPERVISOR_ADDR", ":8071"),
 		StateFile:         getenv("NANOCLAW_GO_STATE_FILE", ""),
 		PolicySigningKey:  getenv("NANOCLAW_GO_POLICY_KEY", "nanoclaw-dev-signing-key"),
 		FirecrackerBin:    getenv("NANOCLAW_GO_FIRECRACKER_BIN", ""),

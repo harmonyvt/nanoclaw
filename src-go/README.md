@@ -2,6 +2,8 @@
 
 Go sandbox-core runtime scaffold for NanoClaw.
 
+Detailed architecture and flow documentation lives in `SYSTEM.md`.
+
 ## Binaries
 - `cmd/nanoclawd`: control plane API.
 - `cmd/vm-supervisor`: sandbox supervisor process (kill-switch endpoint included).
@@ -43,7 +45,7 @@ bun run go:test:e2e
 Environment variables:
 - `NANOCLAW_GO_API_ADDR` (default `:8088`)
 - `NANOCLAW_GO_SESSION_ADDR` (default `:8089`)
-- `NANOCLAW_GO_SUPERVISOR_ADDR` (default `:8090`)
+- `NANOCLAW_GO_SUPERVISOR_ADDR` (default `:8071`)
 - `NANOCLAW_GO_STATE_FILE` (optional persisted state path)
 - `NANOCLAW_GO_POLICY_KEY` (HMAC policy signing key)
 - `NANOCLAW_GO_FIRECRACKER_BIN` (optional path; if unset, simulated VM mode)
