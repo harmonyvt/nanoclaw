@@ -12,6 +12,7 @@ type runtimeState struct {
 	apiSocket  string
 
 	cmd      *exec.Cmd
+	starting bool
 	pid      int
 	waitDone chan struct{}
 	waitErr  error

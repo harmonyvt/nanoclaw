@@ -86,6 +86,14 @@ func (b *Backend) StartSandbox(ctx context.Context, spec contracts.SandboxSpec, 
 		return contracts.SandboxStatus{}, err
 	}
 
+	clearStarting := func(sandboxID string) {
+		b.mu.Lock()
+		if latest, ok := b.runtimes[sandboxID]; ok {
+			latest.starting = false
+		}
+		b.mu.Unlock()
+	}
+
 	b.mu.Lock()
 	if rt.cmd != nil && isRunning(rt.cmd) {
 		rt.pid = rt.cmd.Process.Pid
@@ -101,6 +109,17 @@ func (b *Backend) StartSandbox(ctx context.Context, spec contracts.SandboxSpec, 
 		}
 		return status, nil
 	}
+	if rt.starting {
+		now := time.Now().UTC()
+		status := b.applyRuntimeMetadataLocked(current, rt)
+		b.mu.Unlock()
+		status.ObservedState = "starting"
+		status.Health = "starting"
+		status.FailureReason = ""
+		status.LastHeartbeat = &now
+		return status, nil
+	}
+	rt.starting = true
 	runtimeDir := rt.runtimeDir
 	apiSocket := rt.apiSocket
 	b.mu.Unlock()
@@ -108,6 +127,7 @@ func (b *Backend) StartSandbox(ctx context.Context, spec contracts.SandboxSpec, 
 	_ = os.Remove(apiSocket)
 	cmd, err := launchFirecrackerProcess(b.opts.BinaryPath, runtimeDir, apiSocket)
 	if err != nil {
+		clearStarting(current.SandboxID)
 		return contracts.SandboxStatus{}, err
 	}
 
@@ -116,6 +136,7 @@ func (b *Backend) StartSandbox(ctx context.Context, spec contracts.SandboxSpec, 
 	if err := waitForAPISocket(socketCtx, apiSocket); err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
+		clearStarting(current.SandboxID)
 		return contracts.SandboxStatus{}, err
 	}
 
@@ -126,23 +147,27 @@ func (b *Backend) StartSandbox(ctx context.Context, spec contracts.SandboxSpec, 
 	if kernelImage == "" {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
+		clearStarting(current.SandboxID)
 		return contracts.SandboxStatus{}, errors.New("firecracker kernel image is required")
 	}
 	if spec.VMProfile.RootFSImage == "" {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
+		clearStarting(current.SandboxID)
 		return contracts.SandboxStatus{}, errors.New("firecracker rootfs image is required")
 	}
 	resolvedKernelImage, err := resolveHostPath(kernelImage)
 	if err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
+		clearStarting(current.SandboxID)
 		return contracts.SandboxStatus{}, fmt.Errorf("resolve kernel image path: %w", err)
 	}
 	resolvedRootFSImage, err := resolveHostPath(spec.VMProfile.RootFSImage)
 	if err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
+		clearStarting(current.SandboxID)
 		return contracts.SandboxStatus{}, fmt.Errorf("resolve rootfs image path: %w", err)
 	}
 
@@ -150,26 +175,31 @@ func (b *Backend) StartSandbox(ctx context.Context, spec contracts.SandboxSpec, 
 	if err := client.configureMachine(ctx, spec.VMProfile.VCPU, spec.VMProfile.MemoryMiB); err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
+		clearStarting(current.SandboxID)
 		return contracts.SandboxStatus{}, err
 	}
 	if err := client.configureBootSource(ctx, resolvedKernelImage); err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
+		clearStarting(current.SandboxID)
 		return contracts.SandboxStatus{}, err
 	}
 	if err := client.configureRootDrive(ctx, resolvedRootFSImage); err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
+		clearStarting(current.SandboxID)
 		return contracts.SandboxStatus{}, err
 	}
 	if err := b.configureNetworking(ctx, spec, rt); err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
+		clearStarting(current.SandboxID)
 		return contracts.SandboxStatus{}, err
 	}
 	if err := client.startInstance(ctx); err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
+		clearStarting(current.SandboxID)
 		return contracts.SandboxStatus{}, err
 	}
 
@@ -180,10 +210,12 @@ func (b *Backend) StartSandbox(ctx context.Context, spec contracts.SandboxSpec, 
 		b.mu.Unlock()
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
+		clearStarting(current.SandboxID)
 		return contracts.SandboxStatus{}, fmt.Errorf("runtime disappeared for sandbox %s", current.SandboxID)
 	}
 	rt.cmd = cmd
 	rt.pid = cmd.Process.Pid
+	rt.starting = false
 	rt.waitDone = waitDone
 	rt.waitErr = nil
 	rt.lastExitCode = 0
