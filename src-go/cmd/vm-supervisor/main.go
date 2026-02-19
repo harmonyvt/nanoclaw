@@ -20,7 +20,11 @@ import (
 
 func main() {
 	cfg := config.Load()
-	sup := vm.NewSupervisor(cfg.EnableSimulatedVM, cfg.FirecrackerBin)
+	backend, err := vm.NewBackendFromConfig(cfg)
+	if err != nil {
+		log.Fatalf("vm backend init failed: %v", err)
+	}
+	sup := vm.NewSupervisorWithBackend(backend)
 
 	mux := http.NewServeMux()
 	newSandbox := func(w http.ResponseWriter, r *http.Request) {
@@ -86,10 +90,7 @@ func main() {
 		}
 		id, action := parts[0], parts[1]
 		ctx := context.Background()
-		var (
-			status contracts.SandboxStatus
-			err    error
-		)
+		var status contracts.SandboxStatus
 		switch action {
 		case "start":
 			status, err = sup.StartSandbox(ctx, id)

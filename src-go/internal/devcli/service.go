@@ -53,7 +53,19 @@ func NewService(workdir string, spec ServiceSpec) *Service {
 }
 
 func (s *Service) Spec() ServiceSpec {
-	return s.spec
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return ServiceSpec{
+		Name:        s.spec.Name,
+		PackagePath: s.spec.PackagePath,
+		Env:         cloneEnvMap(s.spec.Env),
+	}
+}
+
+func (s *Service) SetEnv(env map[string]string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.spec.Env = cloneEnvMap(env)
 }
 
 func (s *Service) State() ServiceState {
@@ -256,4 +268,15 @@ func envPairs(values map[string]string) []string {
 		pairs = append(pairs, fmt.Sprintf("%s=%s", key, value))
 	}
 	return pairs
+}
+
+func cloneEnvMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	cloned := make(map[string]string, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
 }

@@ -25,7 +25,11 @@ func main() {
 		log.Fatalf("store init failed: %v", err)
 	}
 
-	sup := vm.NewSupervisor(cfg.EnableSimulatedVM, cfg.FirecrackerBin)
+	backend, err := vm.NewBackendFromConfig(cfg)
+	if err != nil {
+		log.Fatalf("vm backend init failed: %v", err)
+	}
+	sup := vm.NewSupervisorWithBackend(backend)
 	pol := policy.NewEngine(cfg.PolicySigningKey)
 	rec := reconciler.New(st, sup)
 	sess := session.NewManager(st)

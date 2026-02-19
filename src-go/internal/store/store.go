@@ -7,12 +7,19 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/harmony/nanoclaw/src-go/internal/contracts"
 )
 
 var ErrNotFound = errors.New("not found")
+
+const (
+	defaultMaxPersistedEvents = 2000
+	eventRetentionEnvKey      = "NANOCLAW_GO_EVENT_RETENTION"
+)
 
 type sandboxRecord struct {
 	Spec   contracts.SandboxSpec   `json:"spec"`
@@ -30,6 +37,7 @@ type MemoryStore struct {
 	mu sync.RWMutex
 
 	stateFile string
+	maxEvents int
 	sandboxes map[string]sandboxRecord
 	tasks     map[string]contracts.TaskRunResult
 	sessions  map[string]contracts.SessionInfo
@@ -39,6 +47,7 @@ type MemoryStore struct {
 func NewMemoryStore(stateFile string) (*MemoryStore, error) {
 	st := &MemoryStore{
 		stateFile: stateFile,
+		maxEvents: eventRetentionLimit(),
 		sandboxes: map[string]sandboxRecord{},
 		tasks:     map[string]contracts.TaskRunResult{},
 		sessions:  map[string]contracts.SessionInfo{},
@@ -130,6 +139,7 @@ func (s *MemoryStore) SaveEvent(event contracts.Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.events = append(s.events, event)
+	s.events = trimEvents(s.events, s.maxEvents)
 	return s.persistLocked()
 }
 
@@ -164,7 +174,7 @@ func (s *MemoryStore) loadFromDisk() error {
 		s.sessions = parsed.Sessions
 	}
 	if parsed.Events != nil {
-		s.events = parsed.Events
+		s.events = trimEvents(parsed.Events, s.maxEvents)
 	}
 	return nil
 }
@@ -197,4 +207,25 @@ func (s *MemoryStore) persistLocked() error {
 		return fmt.Errorf("replace state file: %w", err)
 	}
 	return nil
+}
+
+func eventRetentionLimit() int {
+	raw := strings.TrimSpace(os.Getenv(eventRetentionEnvKey))
+	if raw == "" {
+		return defaultMaxPersistedEvents
+	}
+	limit, err := strconv.Atoi(raw)
+	if err != nil || limit < 1 {
+		return defaultMaxPersistedEvents
+	}
+	return limit
+}
+
+func trimEvents(events []contracts.Event, maxEvents int) []contracts.Event {
+	if maxEvents < 1 || len(events) <= maxEvents {
+		return events
+	}
+	trimmed := make([]contracts.Event, maxEvents)
+	copy(trimmed, events[len(events)-maxEvents:])
+	return trimmed
 }
