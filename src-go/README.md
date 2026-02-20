@@ -16,9 +16,9 @@ cd src-go
 go run ./cmd/nanoclawd
 ```
 
-### Dev CLI (Bubble Tea)
+### Dev CLI (Bubble Tea, Remote Dashboard)
 
-Run the interactive service runner:
+Run the interactive remote dashboard:
 
 ```bash
 cd src-go
@@ -26,14 +26,15 @@ go run ./cmd/devctl
 ```
 
 Controls:
-- `up/down` or `j/k`: select service
-- `s` (or `enter`): start selected service
-- `t` (or `x`): stop selected service
-- `r`: restart selected service
-- `b`: toggle VM backend (`simulated` <-> `firecracker`) for `nanoclawd` and `vm-supervisor` (services must be stopped)
-- `a`: start all services
-- `z`: stop all services
-- `q`: quit (stops managed services)
+- `up/down` or `j/k`: select remote action
+- `enter`: run selected action
+- quick actions: `g` doctor, `s` sync, `u` up, `h` status, `m` smoke, `l` logs, `t` test, `d` down, `r` restart
+- `e`: reload remote config from `src-go/.env` (or `NANOCLAW_GO_ENV_FILE`)
+- `c`: clear output panel
+- `q`: quit
+
+The dashboard is remote-only and executes `scripts/remote-firecracker.sh` commands.
+It surfaces remote host config, action history, command output, and parsed service health.
 
 ## End-to-end test
 

@@ -64,7 +64,9 @@ Supervisor-only API around `internal/vm`.
 
 ### `cmd/devctl`
 
-Bubble Tea development UI to run/stop all services locally (`nanoclawd`, `sessiond`, `vm-supervisor`) and tail logs.
+Bubble Tea remote dashboard that drives `scripts/remote-firecracker.sh` workflows
+(`doctor`, `setup`, `sync`, `up`, `status`, `smoke`, `logs`, `test`, `down`, `restart`),
+with parsed service health snapshots and command output/history panes.
 
 ## Internal Package Map
 
