@@ -218,7 +218,7 @@ func isLegalTransition(observedState string, desiredState string) bool {
 		}
 	case desiredStateStopped:
 		switch current {
-		case desiredStateRunning, desiredStateStopped:
+		case desiredStateRunning, "starting", desiredStateStopped:
 			return true
 		default:
 			return false

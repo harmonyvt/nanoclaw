@@ -45,7 +45,9 @@ func NewBackend(opts Options) (*Backend, error) {
 		opts.NetMode = NetModeNone
 	}
 	switch opts.NetMode {
-	case NetModeNone, NetModeTap:
+	case NetModeNone:
+	case NetModeTap:
+		return nil, fmt.Errorf("firecracker net mode %q is not implemented", NetModeTap)
 	default:
 		return nil, fmt.Errorf("unsupported firecracker net mode %q", opts.NetMode)
 	}

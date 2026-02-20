@@ -43,6 +43,20 @@ func TestEnsureRuntimeRejectsUnsafeSandboxIDs(t *testing.T) {
 	}
 }
 
+func TestNewBackendRejectsTapNetMode(t *testing.T) {
+	_, err := NewBackend(Options{
+		BinaryPath: "firecracker",
+		StateDir:   t.TempDir(),
+		NetMode:    NetModeTap,
+	})
+	if err == nil {
+		t.Fatalf("expected tap net mode to be rejected")
+	}
+	if err.Error() != `firecracker net mode "tap" is not implemented` {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestGetStatusMarksExitedRuntimeAsStoppedError(t *testing.T) {
 	backend, err := NewBackend(Options{
 		BinaryPath: "firecracker",

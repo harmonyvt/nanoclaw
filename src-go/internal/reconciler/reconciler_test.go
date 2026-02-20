@@ -172,6 +172,7 @@ func TestReconcilerPersistsTransientFailureAfterRetryExhaustion(t *testing.T) {
 type stubRuntime struct {
 	startCalls   int
 	startResults []stubTransitionResult
+	stopCalls    int
 }
 
 type stubTransitionResult struct {
@@ -186,6 +187,7 @@ func (s *stubRuntime) StartSandbox(_ context.Context, id string) (contracts.Sand
 }
 
 func (s *stubRuntime) StopSandbox(_ context.Context, id string) (contracts.SandboxStatus, error) {
+	s.stopCalls++
 	return contracts.SandboxStatus{
 		SandboxID:     id,
 		ObservedState: "stopped",
@@ -229,4 +231,51 @@ func failureCode(t *testing.T, reason string) string {
 		t.Fatalf("failure reason missing code: %s", reason)
 	}
 	return code
+}
+
+func TestReconcilerAllowsStopWhileStarting(t *testing.T) {
+	tmpState := filepath.Join(t.TempDir(), "state.json")
+	st, err := store.NewMemoryStore(tmpState)
+	if err != nil {
+		t.Fatalf("store init failed: %v", err)
+	}
+	rt := &stubRuntime{}
+	rec := &Reconciler{
+		store:              st,
+		supervisor:         rt,
+		maxRuntimeAttempts: 1,
+		baseBackoff:        time.Millisecond,
+		maxBackoff:         time.Millisecond,
+	}
+
+	spec := contracts.SandboxSpec{SandboxID: "sbx-starting-stop", DesiredState: "stopped"}
+	initial := contracts.SandboxStatus{
+		SandboxID:     spec.SandboxID,
+		ObservedState: "starting",
+		Health:        "starting",
+	}
+	if err := st.UpsertSandbox(spec, initial); err != nil {
+		t.Fatalf("upsert failed: %v", err)
+	}
+
+	if err := rec.ReconcileSandbox(context.Background(), spec.SandboxID); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	if rt.stopCalls != 1 {
+		t.Fatalf("expected stop to be invoked once, got %d", rt.stopCalls)
+	}
+	_, current, err := st.GetSandbox(spec.SandboxID)
+	if err != nil {
+		t.Fatalf("readback failed: %v", err)
+	}
+	if current.ObservedState != "stopped" {
+		t.Fatalf("expected stopped state, got %s", current.ObservedState)
+	}
+	if current.Health != "ready" {
+		t.Fatalf("expected ready health, got %s", current.Health)
+	}
+	if current.FailureReason != "" {
+		t.Fatalf("expected empty failure reason, got %s", current.FailureReason)
+	}
 }
