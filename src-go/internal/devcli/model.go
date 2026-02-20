@@ -2,6 +2,8 @@ package devcli
 
 import (
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,22 +19,36 @@ type opResultMsg struct {
 
 type tickMsg time.Time
 
+const (
+	vmBackendSimulated   = "simulated"
+	vmBackendFirecracker = "firecracker"
+)
+
+type vmRuntimeConfig struct {
+	backend        string
+	firecrackerBin string
+	netMode        string
+	env            map[string]string
+}
+
 type Model struct {
-	services []*Service
-	cursor   int
-	width    int
-	height   int
-	status   string
+	services       []*Service
+	cursor         int
+	width          int
+	height         int
+	status         string
+	vmBackend      string
+	vmNetMode      string
+	firecrackerBin string
 }
 
 func NewModel(workdir string) *Model {
+	vmCfg := readVMRuntimeConfig()
 	specs := []ServiceSpec{
 		{
 			Name:        "nanoclawd",
 			PackagePath: "./cmd/nanoclawd",
-			Env: map[string]string{
-				"NANOCLAW_GO_SIMULATED_VM": "true",
-			},
+			Env:         vmCfg.env,
 		},
 		{
 			Name:        "sessiond",
@@ -41,9 +57,7 @@ func NewModel(workdir string) *Model {
 		{
 			Name:        "vm-supervisor",
 			PackagePath: "./cmd/vm-supervisor",
-			Env: map[string]string{
-				"NANOCLAW_GO_SIMULATED_VM": "true",
-			},
+			Env:         vmCfg.env,
 		},
 	}
 
@@ -53,9 +67,13 @@ func NewModel(workdir string) *Model {
 	}
 
 	model := &Model{
-		services: services,
-		status:   "Press s to start selected service.",
+		services:       services,
+		vmBackend:      vmCfg.backend,
+		vmNetMode:      vmCfg.netMode,
+		firecrackerBin: vmCfg.firecrackerBin,
+		status:         "Press s to start selected service.",
 	}
+	model.status = model.backendStatus("ready")
 	model.clampCursor()
 	return model
 }
@@ -109,6 +127,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.startAllCmd()
 		case "z":
 			return m, m.stopAllCmd()
+		case "b":
+			if err := m.toggleBackend(); err != nil {
+				m.status = err.Error()
+				return m, nil
+			}
+			m.status = m.backendStatus("backend updated")
 		}
 		return m, nil
 	case opResultMsg:
@@ -133,8 +157,16 @@ func (m *Model) View() string {
 	builder.WriteString("\n")
 	builder.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("247")).Render("Run and monitor Go services with Bubble Tea"))
 	builder.WriteString("\n\n")
+	builder.WriteString(m.backendSummaryLine())
+	builder.WriteString("\n")
+	if m.vmBackend == vmBackendFirecracker && m.firecrackerBin == "" {
+		builder.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Render("firecracker backend selected, but NANOCLAW_GO_FIRECRACKER_BIN is empty"))
+		builder.WriteString("\n")
+	}
+	builder.WriteString("\n")
 
 	for idx, service := range m.services {
+		spec := service.Spec()
 		pointer := "  "
 		if idx == m.cursor {
 			pointer = "> "
@@ -142,7 +174,7 @@ func (m *Model) View() string {
 		state := service.State()
 		statusStyle := stateStyle(state)
 		uptime := formatDuration(service.Uptime())
-		row := fmt.Sprintf("%s%-14s %-10s uptime=%-8s %s", pointer, service.Spec().Name, statusStyle.Render(string(state)), uptime, service.Spec().PackagePath)
+		row := fmt.Sprintf("%s%-14s %-10s uptime=%-8s %s", pointer, spec.Name, statusStyle.Render(string(state)), uptime, spec.PackagePath)
 		builder.WriteString(row)
 		builder.WriteString("\n")
 	}
@@ -150,9 +182,14 @@ func (m *Model) View() string {
 	builder.WriteString("\n")
 	selected := m.selectedService()
 	if selected != nil {
-		logTitle := lipgloss.NewStyle().Bold(true).Render("Logs: " + selected.Spec().Name)
+		spec := selected.Spec()
+		logTitle := lipgloss.NewStyle().Bold(true).Render("Logs: " + spec.Name)
 		builder.WriteString(logTitle)
 		builder.WriteString("\n")
+		if isVMManagedService(spec.Name) {
+			builder.WriteString(m.backendSummaryLine())
+			builder.WriteString("\n")
+		}
 		logs := selected.Logs(8)
 		if len(logs) == 0 {
 			builder.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("(no logs yet)"))
@@ -172,7 +209,7 @@ func (m *Model) View() string {
 	builder.WriteString("\n")
 	builder.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Render(m.status))
 	builder.WriteString("\n")
-	builder.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render("keys: up/down select | s start | t stop | r restart | a start all | z stop all | q quit"))
+	builder.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render("keys: up/down select | s start | t stop | r restart | b toggle vm backend | a start all | z stop all | q quit"))
 	builder.WriteString("\n")
 
 	return builder.String()
@@ -238,6 +275,133 @@ func (m *Model) tickCmd() tea.Cmd {
 	return tea.Tick(400*time.Millisecond, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
+}
+
+func (m *Model) toggleBackend() error {
+	if m.anyServiceActive() {
+		return fmt.Errorf("stop all services before changing VM backend")
+	}
+	if m.vmBackend == vmBackendFirecracker {
+		m.vmBackend = vmBackendSimulated
+	} else {
+		m.vmBackend = vmBackendFirecracker
+	}
+	m.applyVMEnvToServices()
+	return nil
+}
+
+func (m *Model) anyServiceActive() bool {
+	for _, service := range m.services {
+		switch service.State() {
+		case StateRunning, StateStarting, StateStopping:
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Model) applyVMEnvToServices() {
+	vmEnv := buildVMEnv(m.vmBackend, m.vmNetMode, m.firecrackerBin)
+	for _, service := range m.services {
+		spec := service.Spec()
+		if !isVMManagedService(spec.Name) {
+			continue
+		}
+		service.SetEnv(vmEnv)
+	}
+}
+
+func (m *Model) backendSummaryLine() string {
+	bin := m.firecrackerBin
+	if bin == "" {
+		bin = "(unset)"
+	}
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("109")).Render(
+		fmt.Sprintf("vm backend=%s | net_mode=%s | firecracker_bin=%s", m.vmBackend, m.vmNetMode, bin),
+	)
+}
+
+func (m *Model) backendStatus(prefix string) string {
+	if m.vmBackend == vmBackendFirecracker && m.firecrackerBin == "" {
+		return fmt.Sprintf("%s: backend=%s (NANOCLAW_GO_FIRECRACKER_BIN is required)", prefix, m.vmBackend)
+	}
+	return fmt.Sprintf("%s: backend=%s", prefix, m.vmBackend)
+}
+
+func isVMManagedService(name string) bool {
+	return name == "nanoclawd" || name == "vm-supervisor"
+}
+
+func readVMRuntimeConfig() vmRuntimeConfig {
+	backend := normalizeBackend(strings.TrimSpace(os.Getenv("NANOCLAW_GO_VM_BACKEND")))
+	firecrackerBin := strings.TrimSpace(os.Getenv("NANOCLAW_GO_FIRECRACKER_BIN"))
+	netMode := strings.TrimSpace(os.Getenv("NANOCLAW_GO_VM_NET_MODE"))
+	if netMode == "" {
+		netMode = "none"
+	}
+	if backend == "" {
+		if firecrackerBin != "" || !envBool("NANOCLAW_GO_SIMULATED_VM", true) {
+			backend = vmBackendFirecracker
+		} else {
+			backend = vmBackendSimulated
+		}
+	}
+
+	return vmRuntimeConfig{
+		backend:        backend,
+		firecrackerBin: firecrackerBin,
+		netMode:        netMode,
+		env:            buildVMEnv(backend, netMode, firecrackerBin),
+	}
+}
+
+func buildVMEnv(backend string, netMode string, firecrackerBin string) map[string]string {
+	values := map[string]string{
+		"NANOCLAW_GO_VM_BACKEND":         backend,
+		"NANOCLAW_GO_SIMULATED_VM":       strconv.FormatBool(backend != vmBackendFirecracker),
+		"NANOCLAW_GO_VM_NET_MODE":        netMode,
+		"NANOCLAW_GO_VM_STATE_DIR":       strings.TrimSpace(os.Getenv("NANOCLAW_GO_VM_STATE_DIR")),
+		"NANOCLAW_GO_VM_KERNEL_IMAGE":    strings.TrimSpace(os.Getenv("NANOCLAW_GO_VM_KERNEL_IMAGE")),
+		"NANOCLAW_GO_VM_STOP_TIMEOUT_MS": strings.TrimSpace(os.Getenv("NANOCLAW_GO_VM_STOP_TIMEOUT_MS")),
+	}
+	if firecrackerBin != "" {
+		values["NANOCLAW_GO_FIRECRACKER_BIN"] = firecrackerBin
+	}
+	return removeEmpty(values)
+}
+
+func removeEmpty(values map[string]string) map[string]string {
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		out[key] = value
+	}
+	return out
+}
+
+func normalizeBackend(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case vmBackendFirecracker:
+		return vmBackendFirecracker
+	case vmBackendSimulated:
+		return vmBackendSimulated
+	default:
+		return ""
+	}
+}
+
+func envBool(key string, fallback bool) bool {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(raw)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }
 
 func stateStyle(state ServiceState) lipgloss.Style {

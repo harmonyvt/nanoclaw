@@ -23,6 +23,7 @@ groups/*/voice_profile.json
 # Secrets
 *.keys.json
 .env
+src-go/.env
 
 # Python
 .venv/

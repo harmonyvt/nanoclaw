@@ -28,6 +28,12 @@ type SandboxStatus struct {
 	SandboxID      string     `json:"sandbox_id"`
 	ObservedState  string     `json:"observed_state"`
 	Health         string     `json:"health"`
+	Backend        string     `json:"backend,omitempty"`
+	VMID           string     `json:"vm_id,omitempty"`
+	PID            int        `json:"pid,omitempty"`
+	APISocket      string     `json:"api_socket,omitempty"`
+	LastExitCode   int        `json:"last_exit_code,omitempty"`
+	SnapshotRef    string     `json:"snapshot_ref,omitempty"`
 	StartedAt      *time.Time `json:"started_at,omitempty"`
 	LastHeartbeat  *time.Time `json:"last_heartbeat,omitempty"`
 	FailureReason  string     `json:"failure_reason,omitempty"`

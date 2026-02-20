@@ -20,7 +20,11 @@ import (
 
 func main() {
 	cfg := config.Load()
-	sup := vm.NewSupervisor(cfg.EnableSimulatedVM, cfg.FirecrackerBin)
+	backend, err := vm.NewBackendFromConfig(cfg)
+	if err != nil {
+		log.Fatalf("vm backend init failed: %v", err)
+	}
+	sup := vm.NewSupervisorWithBackend(backend)
 
 	mux := http.NewServeMux()
 	newSandbox := func(w http.ResponseWriter, r *http.Request) {
@@ -86,33 +90,31 @@ func main() {
 		}
 		id, action := parts[0], parts[1]
 		ctx := context.Background()
-		var (
-			status contracts.SandboxStatus
-			err    error
-		)
+		var status contracts.SandboxStatus
+		var actionErr error
 		switch action {
 		case "start":
-			status, err = sup.StartSandbox(ctx, id)
+			status, actionErr = sup.StartSandbox(ctx, id)
 		case "stop":
-			status, err = sup.StopSandbox(ctx, id)
+			status, actionErr = sup.StopSandbox(ctx, id)
 		case "snapshot":
-			status, err = sup.SnapshotSandbox(ctx, id)
+			status, actionErr = sup.SnapshotSandbox(ctx, id)
 		case "destroy":
-			status, err = sup.DestroySandbox(ctx, id)
+			status, actionErr = sup.DestroySandbox(ctx, id)
 		case "killswitch":
-			status, err = sup.KillSwitch(ctx, id, "manual supervisor kill-switch")
+			status, actionErr = sup.KillSwitch(ctx, id, "manual supervisor kill-switch")
 		default:
 			w.WriteHeader(http.StatusBadRequest)
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "unsupported action"})
 			return
 		}
-		if err != nil {
-			if errors.Is(err, vm.ErrSandboxNotFound) {
+		if actionErr != nil {
+			if errors.Is(actionErr, vm.ErrSandboxNotFound) {
 				w.WriteHeader(http.StatusNotFound)
 			} else {
 				w.WriteHeader(http.StatusInternalServerError)
 			}
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": actionErr.Error()})
 			return
 		}
 		_ = json.NewEncoder(w).Encode(status)
