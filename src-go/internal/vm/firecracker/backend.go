@@ -86,14 +86,6 @@ func (b *Backend) StartSandbox(ctx context.Context, spec contracts.SandboxSpec, 
 		return contracts.SandboxStatus{}, err
 	}
 
-	clearStarting := func(sandboxID string) {
-		b.mu.Lock()
-		if latest, ok := b.runtimes[sandboxID]; ok {
-			latest.starting = false
-		}
-		b.mu.Unlock()
-	}
-
 	b.mu.Lock()
 	if rt.cmd != nil && isRunning(rt.cmd) {
 		rt.pid = rt.cmd.Process.Pid
@@ -120,23 +112,43 @@ func (b *Backend) StartSandbox(ctx context.Context, spec contracts.SandboxSpec, 
 		return status, nil
 	}
 	rt.starting = true
+	startupCtx, startupCancel := context.WithCancel(ctx)
+	startupDone := make(chan struct{})
+	rt.startupCancel = startupCancel
+	rt.startupDone = startupDone
 	runtimeDir := rt.runtimeDir
 	apiSocket := rt.apiSocket
 	b.mu.Unlock()
 
+	finishStartup := func(sandboxID string, done chan struct{}) {
+		b.mu.Lock()
+		if latest, ok := b.runtimes[sandboxID]; ok && latest.startupDone == done {
+			latest.starting = false
+			latest.startupCancel = nil
+			latest.startupDone = nil
+		}
+		b.mu.Unlock()
+		startupCancel()
+		close(done)
+	}
+	defer finishStartup(current.SandboxID, startupDone)
+
+	var cmd *exec.Cmd
+	killAndWait := func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}
+
 	_ = os.Remove(apiSocket)
-	cmd, err := launchFirecrackerProcess(b.opts.BinaryPath, runtimeDir, apiSocket)
+	cmd, err = launchFirecrackerProcess(b.opts.BinaryPath, runtimeDir, apiSocket)
 	if err != nil {
-		clearStarting(current.SandboxID)
 		return contracts.SandboxStatus{}, err
 	}
 
-	socketCtx, socketCancel := context.WithTimeout(ctx, 5*time.Second)
+	socketCtx, socketCancel := context.WithTimeout(startupCtx, 5*time.Second)
 	defer socketCancel()
 	if err := waitForAPISocket(socketCtx, apiSocket); err != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		clearStarting(current.SandboxID)
+		killAndWait()
 		return contracts.SandboxStatus{}, err
 	}
 
@@ -145,61 +157,47 @@ func (b *Backend) StartSandbox(ctx context.Context, spec contracts.SandboxSpec, 
 		kernelImage = b.opts.KernelImage
 	}
 	if kernelImage == "" {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		clearStarting(current.SandboxID)
+		killAndWait()
 		return contracts.SandboxStatus{}, errors.New("firecracker kernel image is required")
 	}
 	if spec.VMProfile.RootFSImage == "" {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		clearStarting(current.SandboxID)
+		killAndWait()
 		return contracts.SandboxStatus{}, errors.New("firecracker rootfs image is required")
 	}
 	resolvedKernelImage, err := resolveHostPath(kernelImage)
 	if err != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		clearStarting(current.SandboxID)
+		killAndWait()
 		return contracts.SandboxStatus{}, fmt.Errorf("resolve kernel image path: %w", err)
 	}
 	resolvedRootFSImage, err := resolveHostPath(spec.VMProfile.RootFSImage)
 	if err != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		clearStarting(current.SandboxID)
+		killAndWait()
 		return contracts.SandboxStatus{}, fmt.Errorf("resolve rootfs image path: %w", err)
 	}
 
 	client := newAPIClient(apiSocket)
-	if err := client.configureMachine(ctx, spec.VMProfile.VCPU, spec.VMProfile.MemoryMiB); err != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		clearStarting(current.SandboxID)
+	if err := client.configureMachine(startupCtx, spec.VMProfile.VCPU, spec.VMProfile.MemoryMiB); err != nil {
+		killAndWait()
 		return contracts.SandboxStatus{}, err
 	}
-	if err := client.configureBootSource(ctx, resolvedKernelImage); err != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		clearStarting(current.SandboxID)
+	if err := client.configureBootSource(startupCtx, resolvedKernelImage); err != nil {
+		killAndWait()
 		return contracts.SandboxStatus{}, err
 	}
-	if err := client.configureRootDrive(ctx, resolvedRootFSImage); err != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		clearStarting(current.SandboxID)
+	if err := client.configureRootDrive(startupCtx, resolvedRootFSImage); err != nil {
+		killAndWait()
 		return contracts.SandboxStatus{}, err
 	}
-	if err := b.configureNetworking(ctx, spec, rt); err != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		clearStarting(current.SandboxID)
+	if err := b.configureNetworking(startupCtx, spec, rt); err != nil {
+		killAndWait()
 		return contracts.SandboxStatus{}, err
 	}
-	if err := client.startInstance(ctx); err != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		clearStarting(current.SandboxID)
+	if err := client.startInstance(startupCtx); err != nil {
+		killAndWait()
+		return contracts.SandboxStatus{}, err
+	}
+	if err := startupCtx.Err(); err != nil {
+		killAndWait()
 		return contracts.SandboxStatus{}, err
 	}
 
@@ -208,14 +206,16 @@ func (b *Backend) StartSandbox(ctx context.Context, spec contracts.SandboxSpec, 
 	rt, ok := b.runtimes[current.SandboxID]
 	if !ok {
 		b.mu.Unlock()
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		clearStarting(current.SandboxID)
+		killAndWait()
 		return contracts.SandboxStatus{}, fmt.Errorf("runtime disappeared for sandbox %s", current.SandboxID)
+	}
+	if rt.startupDone != startupDone {
+		b.mu.Unlock()
+		killAndWait()
+		return contracts.SandboxStatus{}, fmt.Errorf("startup superseded for sandbox %s", current.SandboxID)
 	}
 	rt.cmd = cmd
 	rt.pid = cmd.Process.Pid
-	rt.starting = false
 	rt.waitDone = waitDone
 	rt.waitErr = nil
 	rt.lastExitCode = 0
@@ -234,32 +234,50 @@ func (b *Backend) StartSandbox(ctx context.Context, spec contracts.SandboxSpec, 
 }
 
 func (b *Backend) StopSandbox(ctx context.Context, current contracts.SandboxStatus) (contracts.SandboxStatus, error) {
-	b.mu.RLock()
-	rt, ok := b.runtimes[current.SandboxID]
-	if !ok {
+	for {
+		b.mu.RLock()
+		rt, ok := b.runtimes[current.SandboxID]
+		if !ok {
+			b.mu.RUnlock()
+			return current, nil
+		}
+		cmd := rt.cmd
+		waitDone := rt.waitDone
+		apiSocket := rt.apiSocket
+		starting := rt.starting
+		startupCancel := rt.startupCancel
+		startupDone := rt.startupDone
 		b.mu.RUnlock()
-		return current, nil
-	}
-	cmd := rt.cmd
-	waitDone := rt.waitDone
-	apiSocket := rt.apiSocket
-	b.mu.RUnlock()
 
-	if cmd != nil {
-		shutdownCtx, shutdownCancel := context.WithTimeout(ctx, 2*time.Second)
-		_ = newAPIClient(apiSocket).sendCtrlAltDel(shutdownCtx)
-		shutdownCancel()
-
-		if waitDone != nil {
+		if starting && startupCancel != nil {
+			startupCancel()
+		}
+		if cmd == nil && starting && startupDone != nil {
 			select {
-			case <-waitDone:
-			case <-time.After(b.opts.StopTimeout):
-				_ = cmd.Process.Kill()
-				<-waitDone
+			case <-startupDone:
+				continue
 			case <-ctx.Done():
 				return contracts.SandboxStatus{}, ctx.Err()
 			}
 		}
+
+		if cmd != nil {
+			shutdownCtx, shutdownCancel := context.WithTimeout(ctx, 2*time.Second)
+			_ = newAPIClient(apiSocket).sendCtrlAltDel(shutdownCtx)
+			shutdownCancel()
+
+			if waitDone != nil {
+				select {
+				case <-waitDone:
+				case <-time.After(b.opts.StopTimeout):
+					_ = cmd.Process.Kill()
+					<-waitDone
+				case <-ctx.Done():
+					return contracts.SandboxStatus{}, ctx.Err()
+				}
+			}
+		}
+		break
 	}
 
 	b.mu.Lock()

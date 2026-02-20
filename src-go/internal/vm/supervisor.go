@@ -160,24 +160,19 @@ func (s *Supervisor) transition(
 		return contracts.SandboxStatus{}, ErrSandboxNotFound
 	}
 	if idempotentState != "" && current.ObservedState == idempotentState {
-		if idempotentState == "running" {
-			refreshed, err := s.backend.GetStatus(ctx, current)
-			if err != nil {
-				return contracts.SandboxStatus{}, err
-			}
-			refreshed = s.ensureStatusDefaults(spec, refreshed)
-			s.mu.Lock()
-			s.states[id] = refreshed
-			s.mu.Unlock()
-			if refreshed.ObservedState == idempotentState {
-				return refreshed, nil
-			}
-			current = refreshed
-		} else {
-		return s.ensureStatusDefaults(spec, current), nil
+		refreshed, err := s.backend.GetStatus(ctx, current)
+		if err != nil {
+			return contracts.SandboxStatus{}, err
+		}
+		refreshed = s.ensureStatusDefaults(spec, refreshed)
+		s.mu.Lock()
+		s.states[id] = refreshed
+		s.mu.Unlock()
+		if refreshed.ObservedState == idempotentState {
+			return refreshed, nil
+		}
+		current = refreshed
 	}
-	}
-
 	next, err := op(spec, current)
 	if err != nil {
 		return contracts.SandboxStatus{}, err
