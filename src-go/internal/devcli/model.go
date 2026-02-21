@@ -454,7 +454,7 @@ func defaultCommands() []commandSpec {
 		{
 			key:         "task_echo",
 			title:       "task (telegram-runtime)",
-			args:        []string{"task", "telegram-agent --runtime microvm --source devctl"},
+			args:        []string{"task", "telegram-agent --runtime bun --source devctl"},
 			description: "submit one remote Telegram runtime task request",
 		},
 		{

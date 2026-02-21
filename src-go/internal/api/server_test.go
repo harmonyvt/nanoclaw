@@ -353,6 +353,116 @@ func TestTaskRunSerializesCredentialReservationUnderConcurrency(t *testing.T) {
 	}
 }
 
+func TestListEndpointsExposeOperationalState(t *testing.T) {
+	srv := newTestServer(t)
+	h := srv.Handler()
+
+	spec := TaskRunSpec{
+		TaskID:    "task-list-1",
+		SandboxID: "sbx-list-1",
+		RiskClass: "high",
+		ImageRef:  "rootfs.img",
+		CredentialRefs: CredentialRefs{
+			TelegramBotTokenRef: "secret/vm/sbx-list-1/telegram",
+			OpenAIAPIKeyRef:     "secret/vm/sbx-list-1/openai",
+		},
+		Capabilities: CapabilityPolicy{
+			EgressRules: []EgressRule{{Host: "api.example.com", Port: 443}},
+		},
+		ResourceProfile: ResourceProfile{CPU: 1, Memory: 256, Pids: 64},
+	}
+	raw, _ := json.Marshal(spec)
+	taskReq := httptest.NewRequest(http.MethodPost, "/v1/tasks/runs", bytes.NewReader(raw))
+	taskResp := httptest.NewRecorder()
+	h.ServeHTTP(taskResp, taskReq)
+	if taskResp.Code != http.StatusAccepted {
+		t.Fatalf("expected accepted task run, got %d: %s", taskResp.Code, taskResp.Body.String())
+	}
+
+	sessionReqBody, _ := json.Marshal(SessionCreateRequest{SandboxID: "sbx-list-1"})
+	sessionReq := httptest.NewRequest(http.MethodPost, "/v1/sessions", bytes.NewReader(sessionReqBody))
+	sessionResp := httptest.NewRecorder()
+	h.ServeHTTP(sessionResp, sessionReq)
+	if sessionResp.Code != http.StatusAccepted {
+		t.Fatalf("expected accepted session creation, got %d: %s", sessionResp.Code, sessionResp.Body.String())
+	}
+
+	getPaths := []string{
+		"/v1/tasks",
+		"/v1/sandboxes",
+		"/v1/sandboxes/sbx-list-1",
+		"/v1/sessions",
+		"/v1/events?limit=10",
+	}
+
+	for _, p := range getPaths {
+		req := httptest.NewRequest(http.MethodGet, p, nil)
+		resp := httptest.NewRecorder()
+		h.ServeHTTP(resp, req)
+		if resp.Code != http.StatusOK {
+			t.Fatalf("expected 200 for %s, got %d: %s", p, resp.Code, resp.Body.String())
+		}
+	}
+}
+
+func TestWriteEndpointsRequireAdminTokenWhenConfigured(t *testing.T) {
+	srv := newTestServer(t)
+	srv.SetAdminToken("super-secret-token")
+	h := srv.Handler()
+
+	spec := TaskRunSpec{
+		TaskID:    "task-auth-1",
+		SandboxID: "sbx-auth-1",
+		RiskClass: "high",
+		ImageRef:  "rootfs.img",
+		CredentialRefs: CredentialRefs{
+			TelegramBotTokenRef: "secret/vm/sbx-auth-1/telegram",
+			OpenAIAPIKeyRef:     "secret/vm/sbx-auth-1/openai",
+		},
+		Capabilities: CapabilityPolicy{
+			EgressRules: []EgressRule{{Host: "api.example.com", Port: 443}},
+		},
+		ResourceProfile: ResourceProfile{CPU: 1, Memory: 256, Pids: 64},
+	}
+	raw, _ := json.Marshal(spec)
+
+	unauthorizedReq := httptest.NewRequest(http.MethodPost, "/v1/tasks/runs", bytes.NewReader(raw))
+	unauthorizedResp := httptest.NewRecorder()
+	h.ServeHTTP(unauthorizedResp, unauthorizedReq)
+	if unauthorizedResp.Code != http.StatusUnauthorized {
+		t.Fatalf("expected unauthorized without token, got %d: %s", unauthorizedResp.Code, unauthorizedResp.Body.String())
+	}
+
+	authorizedReq := httptest.NewRequest(http.MethodPost, "/v1/tasks/runs", bytes.NewReader(raw))
+	authorizedReq.Header.Set("Authorization", "Bearer super-secret-token")
+	authorizedResp := httptest.NewRecorder()
+	h.ServeHTTP(authorizedResp, authorizedReq)
+	if authorizedResp.Code != http.StatusAccepted {
+		t.Fatalf("expected accepted with token, got %d: %s", authorizedResp.Code, authorizedResp.Body.String())
+	}
+
+	cookieSpec := spec
+	cookieSpec.TaskID = "task-auth-2"
+	cookieSpec.SandboxID = "sbx-auth-2"
+	cookieSpec.CredentialRefs.TelegramBotTokenRef = "secret/vm/sbx-auth-2/telegram"
+	cookieSpec.CredentialRefs.OpenAIAPIKeyRef = "secret/vm/sbx-auth-2/openai"
+	cookieRaw, _ := json.Marshal(cookieSpec)
+	cookieReq := httptest.NewRequest(http.MethodPost, "/v1/tasks/runs", bytes.NewReader(cookieRaw))
+	cookieReq.AddCookie(&http.Cookie{Name: "nanoclaw_admin_token", Value: "super-secret-token"})
+	cookieResp := httptest.NewRecorder()
+	h.ServeHTTP(cookieResp, cookieReq)
+	if cookieResp.Code != http.StatusAccepted {
+		t.Fatalf("expected accepted with cookie token, got %d: %s", cookieResp.Code, cookieResp.Body.String())
+	}
+
+	readReq := httptest.NewRequest(http.MethodGet, "/v1/tasks", nil)
+	readResp := httptest.NewRecorder()
+	h.ServeHTTP(readResp, readReq)
+	if readResp.Code != http.StatusOK {
+		t.Fatalf("expected read endpoints to remain accessible, got %d: %s", readResp.Code, readResp.Body.String())
+	}
+}
+
 func waitForEventType(t *testing.T, ch chan Event, eventType string) Event {
 	t.Helper()
 	timeout := time.After(2 * time.Second)

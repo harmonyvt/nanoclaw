@@ -1,0 +1,4 @@
+interface:
+  display_name: "Remote Admin Token"
+  short_description: "Fetch or rotate remote admin token over SSH"
+  default_prompt: "Manage remote NanoClaw admin token over SSH and provide safe usage output."

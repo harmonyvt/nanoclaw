@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +29,7 @@ type Server struct {
 	reconciler *reconciler.Reconciler
 	sessions   *session.Manager
 	bus        *eventBus
+	adminToken string
 
 	credentialReservationMu sync.Mutex
 }
@@ -46,13 +48,19 @@ func NewServer(st *store.MemoryStore, sup *vm.Supervisor, pol *policy.Engine, re
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
+	mux.HandleFunc("/v1/tasks", s.handleTaskList)
 	mux.HandleFunc("/v1/tasks/runs", s.handleTaskRuns)
 	mux.HandleFunc("/v1/tasks/", s.handleTaskGet)
 	mux.HandleFunc("/v1/sandboxes", s.handleSandboxCreate)
 	mux.HandleFunc("/v1/sandboxes/", s.handleSandboxActions)
 	mux.HandleFunc("/v1/sessions", s.handleSessionsCreate)
+	mux.HandleFunc("/v1/events", s.handleEventsList)
 	mux.HandleFunc("/v1/events/stream", s.handleEventsStream)
 	return mux
+}
+
+func (s *Server) SetAdminToken(token string) {
+	s.adminToken = strings.TrimSpace(token)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -66,6 +74,9 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) handleTaskRuns(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
+		return
+	}
+	if !s.authorizeWrite(w, r) {
 		return
 	}
 	var spec TaskRunSpec
@@ -229,9 +240,28 @@ func (s *Server) handleTaskGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (s *Server) handleTaskList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": s.store.ListTasks(),
+	})
+}
+
 func (s *Server) handleSandboxCreate(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"items": s.store.ListSandboxRecords(),
+		})
+		return
+	}
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
+		return
+	}
+	if !s.authorizeWrite(w, r) {
 		return
 	}
 	var spec SandboxSpec
@@ -272,11 +302,27 @@ func (s *Server) handleSandboxCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSandboxActions(w http.ResponseWriter, r *http.Request) {
+	p := strings.TrimPrefix(r.URL.Path, "/v1/sandboxes/")
+	if r.Method == http.MethodGet && !strings.Contains(p, ":") {
+		if p == "" {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("missing sandbox id"))
+			return
+		}
+		spec, status, err := s.store.GetSandbox(p)
+		if err != nil {
+			writeErr(w, http.StatusNotFound, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"spec": spec, "status": status})
+		return
+	}
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
 		return
 	}
-	p := strings.TrimPrefix(r.URL.Path, "/v1/sandboxes/")
+	if !s.authorizeWrite(w, r) {
+		return
+	}
 	parts := strings.SplitN(p, ":", 2)
 	if len(parts) != 2 {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("expected /v1/sandboxes/{id}:{action}"))
@@ -332,8 +378,17 @@ func (s *Server) handleSandboxActions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSessionsCreate(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"items": s.store.ListSessions(),
+		})
+		return
+	}
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
+		return
+	}
+	if !s.authorizeWrite(w, r) {
 		return
 	}
 	var req SessionCreateRequest
@@ -352,6 +407,32 @@ func (s *Server) handleSessionsCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	s.emit("session.created", map[string]any{"session_id": sessionInfo.SessionID, "sandbox_id": sessionInfo.SandboxID})
 	writeJSON(w, http.StatusAccepted, sessionInfo)
+}
+
+func (s *Server) handleEventsList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	limit := 200
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid limit"))
+			return
+		}
+		limit = parsed
+	}
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > 2000 {
+		limit = 2000
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": s.store.ListEvents(limit),
+	})
 }
 
 func (s *Server) handleEventsStream(w http.ResponseWriter, r *http.Request) {
@@ -539,6 +620,11 @@ func writeErr(w http.ResponseWriter, code int, err error) {
 	writeJSON(w, code, map[string]any{"error": err.Error()})
 }
 
+func unauthorized(w http.ResponseWriter) {
+	w.Header().Set("WWW-Authenticate", `Bearer realm="nanoclaw-admin"`)
+	writeErr(w, http.StatusUnauthorized, fmt.Errorf("unauthorized"))
+}
+
 func methodNotAllowed(w http.ResponseWriter) {
 	writeErr(w, http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
 }
@@ -548,6 +634,29 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func (s *Server) authorizeWrite(w http.ResponseWriter, r *http.Request) bool {
+	if strings.TrimSpace(s.adminToken) == "" {
+		return true
+	}
+	token := strings.TrimSpace(r.Header.Get("X-Admin-Token"))
+	if token == "" {
+		auth := strings.TrimSpace(r.Header.Get("Authorization"))
+		if strings.HasPrefix(strings.ToLower(auth), "bearer ") {
+			token = strings.TrimSpace(auth[7:])
+		}
+	}
+	if token == "" {
+		if cookie, err := r.Cookie("nanoclaw_admin_token"); err == nil {
+			token = strings.TrimSpace(cookie.Value)
+		}
+	}
+	if token == s.adminToken {
+		return true
+	}
+	unauthorized(w)
+	return false
 }
 
 type eventBus struct {
