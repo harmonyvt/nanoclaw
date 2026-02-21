@@ -189,11 +189,6 @@ export const createGroupCoordinator = (
           yield* Ref.set(activeFiberRef, null);
         }
 
-        // Cancel any pending browse wait requests
-        yield* browseHost.cancelWaiting(group.folder, 'New message received').pipe(
-          Effect.ignore,
-        );
-
         // Check for "continue" command (browse wait-for-user)
         const continueMatch = msg.content.match(/^continue(?:\s+(\S+))?$/i);
         if (continueMatch) {
@@ -213,6 +208,11 @@ export const createGroupCoordinator = (
             return;
           }
         }
+
+        // Cancel pending browse waits on non-continue messages
+        yield* browseHost.cancelWaiting(group.folder, 'New message received').pipe(
+          Effect.ignore,
+        );
 
         // Store incoming message in DB
         yield* db
@@ -327,7 +327,73 @@ export const createGroupCoordinator = (
 
         // Build RPC handlers that bridge container events to pipeline
         const rpcHandlers: HostRpcHandlers = {
-          onRequest: async () => null as unknown,
+          onRequest: async (req) => {
+            if (req.method !== 'browse.handle') {
+              return null as unknown;
+            }
+
+            const payload =
+              req.params && typeof req.params === 'object'
+                ? (req.params as Record<string, unknown>)
+                : {};
+            const action =
+              typeof payload.action === 'string'
+                ? payload.action
+                : '';
+            const params =
+              payload.params && typeof payload.params === 'object'
+                ? (payload.params as Record<string, unknown>)
+                : {};
+
+            if (!action) {
+              return {
+                status: 'error',
+                error: 'browse.handle requires an action',
+              };
+            }
+
+            if (action === 'wait_for_user') {
+              const requestIdCandidate =
+                payload.requestId ??
+                payload.request_id ??
+                params.requestId ??
+                params.request_id;
+              const requestId =
+                typeof requestIdCandidate === 'string' &&
+                requestIdCandidate.trim()
+                  ? requestIdCandidate.trim()
+                  : `rpc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+              return await Effect.runPromise(
+                browseHost
+                  .waitForUser(
+                    requestId,
+                    group.folder,
+                    String(params.message || ''),
+                    chatJid,
+                  )
+                  .pipe(
+                    Effect.catchAll((error) =>
+                      Effect.succeed({
+                        status: 'error',
+                        error: error instanceof Error ? error.message : String(error),
+                      }),
+                    ),
+                  ),
+              );
+            }
+
+            return await Effect.runPromise(
+              browseHost.processAction(group.folder, action, params).pipe(
+                Effect.catchAll((error) =>
+                  Effect.succeed({
+                    status: 'error',
+                    error: error instanceof Error ? error.message : String(error),
+                  }),
+                ),
+              ),
+            );
+          },
           onEvent: async (evt) => {
             const statusText =
               evt.method === 'container_state' &&

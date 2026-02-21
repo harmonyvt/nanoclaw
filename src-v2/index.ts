@@ -16,6 +16,7 @@ import { Docker } from './services/Docker.js';
 import { ContainerRunner } from './services/ContainerRunner.js';
 import { Scheduler } from './services/Scheduler.js';
 import { Sandbox } from './services/Sandbox.js';
+import { TakeoverWeb } from './services/TakeoverWeb.js';
 import { MainLive, MainLiveSim } from './layers/Live.js';
 
 import { startMessageRouter } from './coordinators/MessageRouter.js';
@@ -68,6 +69,16 @@ const program = Effect.gen(function* () {
   // Start sandbox idle watcher
   const sandbox = yield* Sandbox;
   yield* sandbox.startIdleWatcher;
+
+  // Start takeover web service
+  const takeoverWeb = yield* TakeoverWeb;
+  yield* takeoverWeb.start;
+  const takeoverBaseUrl = yield* takeoverWeb.getTakeoverBaseUrl;
+  if (takeoverBaseUrl) {
+    yield* Effect.log(`CUA takeover UI: ${takeoverBaseUrl}`);
+  } else {
+    yield* Effect.log('CUA takeover UI: disabled');
+  }
 
   // Start scheduler fiber
   const scheduler = yield* Scheduler;

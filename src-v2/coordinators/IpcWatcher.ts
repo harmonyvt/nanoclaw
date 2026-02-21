@@ -7,7 +7,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import { Effect, Schedule } from 'effect';
+import { Cause, Effect, Schedule } from 'effect';
 
 import { AppConfig } from '../config.js';
 import { Database } from '../services/Database.js';
@@ -77,6 +77,7 @@ export const startIpcWatcher: Effect.Effect<
   const registry = yield* GroupRegistry;
 
   const ipcBaseDir = path.join(config.dataDir, 'ipc');
+  const browseActionTimeoutMs = config.ipcBrowseActionTimeoutMs;
 
   const pollOnce = Effect.gen(function* () {
     const groups = yield* registry.getAll;
@@ -150,74 +151,85 @@ export const startIpcWatcher: Effect.Effect<
       const browseFiles = listJsonFiles(browseDir, 'req-*.json');
 
       for (const file of browseFiles) {
+        const reqId = path.basename(file).replace('req-', '').replace('.json', '');
         const data = readJsonFile(file);
         if (!data) {
           deleteFile(file);
           continue;
         }
 
-        const reqId = path
-          .basename(file)
-          .replace('req-', '')
-          .replace('.json', '');
-
         const action = String(data.action || '');
         const params = (data.params || data) as Record<string, unknown>;
 
-        // Special handling for wait_for_user — fork so it doesn't block polling
-        if (action === 'wait_for_user') {
-          deleteFile(file);
-          yield* Effect.fork(
-            browseHost
-              .waitForUser(
+        // Always remove the request file before dispatch to prevent duplicate handling.
+        deleteFile(file);
+
+        const actionEffect =
+          action === 'wait_for_user'
+            ? browseHost.waitForUser(
                 reqId,
                 group.folder,
                 String(params.message || ''),
                 groupChatJid,
               )
-              .pipe(
-                Effect.map((r) => r as unknown as Record<string, unknown>),
-                Effect.catchAll((err) =>
-                  Effect.succeed({
-                    success: false,
-                    error: String(err),
-                  } as Record<string, unknown>),
-                ),
-                Effect.tap((result) =>
-                  Effect.try({
-                    try: () => {
-                      const resPath = path.join(browseDir, `res-${reqId}.json`);
-                      writeJsonAtomic(resPath, result);
-                    },
-                    catch: () => new Error('Failed to write browse response'),
-                  }).pipe(Effect.ignore),
-                ),
-              ),
-          );
-          continue;
-        }
+            : browseHost.processAction(group.folder, action, params).pipe(
+                Effect.timeoutFail({
+                  duration: `${browseActionTimeoutMs} millis`,
+                  onTimeout: () =>
+                    new Error(
+                      `IPC browse action timed out after ${browseActionTimeoutMs}ms`,
+                    ),
+                }),
+              );
 
-        // Regular browse action
-        const result = yield* browseHost
-          .processAction(group.folder, action, params)
-          .pipe(
+        const responseEffect =
+          actionEffect.pipe(
             Effect.map((r) => r as unknown as Record<string, unknown>),
-            Effect.catchAll((err) =>
-              Effect.succeed({
-                success: false,
-                error: String(err),
-              } as Record<string, unknown>),
+            Effect.catchAllCause((cause) =>
+              Effect.gen(function* () {
+                const causeText = Cause.pretty(cause);
+                yield* Effect.log(
+                  `IPC browse action error: group=${group.folder} file=${file} reqId=${reqId} action=${action || 'unknown'} cause=${causeText}`,
+                );
+                return {
+                  status: 'error',
+                  error: causeText,
+                } as Record<string, unknown>;
+              }),
+            ),
+            Effect.tap((result) =>
+              Effect.try({
+                try: () => {
+                  const resPath = path.join(browseDir, `res-${reqId}.json`);
+                  writeJsonAtomic(resPath, result);
+                },
+                catch: (err) =>
+                  new Error(`Failed to write browse response: ${String(err)}`),
+              }).pipe(
+                Effect.tapError((err) =>
+                  Effect.log(
+                    `IPC browse write error: group=${group.folder} file=${file} reqId=${reqId} action=${action || 'unknown'} error=${String(err)}`,
+                  ),
+                ),
+                Effect.ignore,
+              ),
             ),
           );
 
-        // Write response atomically (temp + rename)
-        const resPath = path.join(browseDir, `res-${reqId}.json`);
-        writeJsonAtomic(resPath, result);
-        deleteFile(file);
+        if (action === 'wait_for_user') {
+          yield* Effect.forkDaemon(responseEffect);
+          continue;
+        }
+
+        yield* Effect.fork(responseEffect);
       }
     }
-  }).pipe(Effect.catchAll((err) => Effect.log(`IPC poll error: ${err}`)));
+  }).pipe(
+    Effect.catchAllCause((cause) =>
+      Effect.log(`IPC poll error: ${Cause.pretty(cause)}`),
+    ),
+  );
 
   // Poll every 1 second
   yield* pollOnce.pipe(Effect.repeat(Schedule.fixed('1 second')));
-}).pipe(Effect.catchAll(() => Effect.void));
+}).pipe(Effect.catchAllCause(() => Effect.void));

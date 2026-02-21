@@ -115,7 +115,7 @@ export class RuntimeTelemetry extends Context.Tag('RuntimeTelemetry')<
 
 // ─── Live Layer ─────────────────────────────────────────────────────────────
 
-export const RuntimeTelemetryLive: Layer.Layer<RuntimeTelemetry> = Layer.effect(
+export const RuntimeTelemetryLive: Layer.Layer<RuntimeTelemetry> = Layer.scoped(
   RuntimeTelemetry,
   Effect.gen(function* () {
     const startTime = Date.now();

@@ -16,6 +16,9 @@ import { GroupRegistry } from '../state/GroupRegistry.js';
 import { Scheduler } from '../services/Scheduler.js';
 import { Sandbox } from '../services/Sandbox.js';
 import { BrowseHost } from '../services/BrowseHost.js';
+import { CuaControl } from '../services/CuaControl.js';
+import { DashboardSession } from '../services/DashboardSession.js';
+import { TakeoverWeb } from '../services/TakeoverWeb.js';
 import { TTS } from '../services/TTS.js';
 import { Supermemory } from '../services/Supermemory.js';
 import { Media } from '../services/Media.js';
@@ -30,6 +33,9 @@ import { GroupRegistryLive } from '../state/GroupRegistryLive.js';
 import { SchedulerLive } from '../services/SchedulerLive.js';
 import { SandboxLive } from '../services/SandboxLive.js';
 import { BrowseHostLive } from '../services/BrowseHostLive.js';
+import { CuaControlLive } from '../services/CuaControlLive.js';
+import { DashboardSessionLive } from '../services/DashboardSessionLive.js';
+import { TakeoverWebLive } from '../services/TakeoverWebLive.js';
 import { TTSLive } from '../services/TTSLive.js';
 import { SupermemoryLive } from '../services/SupermemoryLive.js';
 import { MediaLive } from '../services/MediaLive.js';
@@ -66,6 +72,9 @@ const TelegramConsoleResolved = TelegramConsoleLive.pipe(
 const GroupRegistryResolved = GroupRegistryLive.pipe(
   Layer.provide(AppConfigLive),
 );
+const DashboardSessionResolved = DashboardSessionLive.pipe(
+  Layer.provide(AppConfigLive),
+);
 const TTSResolved = TTSLive.pipe(Layer.provide(AppConfigLive));
 const SupermemoryResolved = SupermemoryLive.pipe(Layer.provide(AppConfigLive));
 const MediaResolved = MediaLive.pipe(Layer.provide(AppConfigLive));
@@ -86,6 +95,13 @@ const ContainerRunnerResolved = ContainerRunnerLive.pipe(
 
 const SandboxDeps = Layer.mergeAll(AppConfigLive, DockerResolved);
 const SandboxResolved = SandboxLive.pipe(Layer.provide(SandboxDeps));
+const CuaControlResolved = CuaControlLive.pipe(Layer.provide(SandboxResolved));
+
+const TakeoverWebDeps = Layer.mergeAll(
+  AppConfigLive,
+  DashboardSessionResolved,
+);
+const TakeoverWebResolved = TakeoverWebLive.pipe(Layer.provide(TakeoverWebDeps));
 
 // ── Tier 3: Higher-dep layers ────────────────────────────────────────────────
 
@@ -93,12 +109,18 @@ const BrowseHostDeps = Layer.mergeAll(
   AppConfigLive,
   SandboxResolved,
   TelegramResolved,
+  CuaControlResolved,
+  DashboardSessionResolved,
+  TakeoverWebResolved,
 );
 const BrowseHostResolved = BrowseHostLive.pipe(Layer.provide(BrowseHostDeps));
 const BrowseHostSimDeps = Layer.mergeAll(
   AppConfigLive,
   SandboxResolved,
   TelegramConsoleResolved,
+  CuaControlResolved,
+  DashboardSessionResolved,
+  TakeoverWebResolved,
 );
 const BrowseHostSimResolved = BrowseHostLive.pipe(
   Layer.provide(BrowseHostSimDeps),
@@ -125,6 +147,9 @@ export const MainLive: Layer.Layer<
   | Scheduler
   | Sandbox
   | BrowseHost
+  | CuaControl
+  | DashboardSession
+  | TakeoverWeb
   | TTS
   | Supermemory
   | Media
@@ -142,6 +167,9 @@ export const MainLive: Layer.Layer<
   GroupRegistryResolved,
   SchedulerResolved,
   SandboxResolved,
+  CuaControlResolved,
+  DashboardSessionResolved,
+  TakeoverWebResolved,
   BrowseHostResolved,
   TTSResolved,
   SupermemoryResolved,
@@ -166,6 +194,9 @@ export const MainLiveSim: Layer.Layer<
   | Scheduler
   | Sandbox
   | BrowseHost
+  | CuaControl
+  | DashboardSession
+  | TakeoverWeb
   | TTS
   | Supermemory
   | Media
@@ -182,6 +213,9 @@ export const MainLiveSim: Layer.Layer<
   GroupRegistryResolved,
   SchedulerResolved,
   SandboxResolved,
+  CuaControlResolved,
+  DashboardSessionResolved,
+  TakeoverWebResolved,
   BrowseHostSimResolved,
   TTSResolved,
   SupermemoryResolved,
