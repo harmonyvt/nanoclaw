@@ -14,6 +14,10 @@ type Config struct {
 	SupervisorAddr    string
 	StateFile         string
 	PolicySigningKey  string
+	AdminEnabled      bool
+	AdminToken        string
+	AdminDistDir      string
+	AdminBuildVersion string
 
 	VMBackend      string
 	FirecrackerBin string
@@ -36,6 +40,10 @@ func Load() Config {
 		SupervisorAddr:    getenv("NANOCLAW_GO_SUPERVISOR_ADDR", ":8071"),
 		StateFile:         getenv("NANOCLAW_GO_STATE_FILE", ""),
 		PolicySigningKey:  getenv("NANOCLAW_GO_POLICY_KEY", "nanoclaw-dev-signing-key"),
+		AdminEnabled:      getenvBool("NANOCLAW_GO_ADMIN_ENABLED", true),
+		AdminToken:        strings.TrimSpace(os.Getenv("NANOCLAW_GO_ADMIN_TOKEN")),
+		AdminDistDir:      getenv("NANOCLAW_GO_ADMIN_DIST_DIR", "web/admin/dist"),
+		AdminBuildVersion: getenv("NANOCLAW_GO_BUILD_VERSION", "dev"),
 		VMBackend:         backend,
 		FirecrackerBin:    firecrackerBin,
 		VMStateDir:        getenv("NANOCLAW_GO_VM_STATE_DIR", filepath.Join(os.TempDir(), "nanoclaw-go-vm")),
@@ -70,4 +78,19 @@ func getenvInt(key string, fallback int) int {
 		return fallback
 	}
 	return parsed
+}
+
+func getenvBool(key string, fallback bool) bool {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	switch strings.ToLower(v) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
+	}
 }

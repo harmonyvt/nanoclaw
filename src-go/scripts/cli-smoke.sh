@@ -28,6 +28,7 @@ VM_STOP_TIMEOUT_MS="${NANOCLAW_GO_VM_STOP_TIMEOUT_MS:-10000}"
 VM_STATE_DIR="${NANOCLAW_GO_VM_STATE_DIR:-$RUNTIME_DIR/vm-state}"
 CLI_KERNEL_IMAGE="${NANOCLAW_GO_CLI_KERNEL_IMAGE:-${VM_KERNEL_IMAGE:-$ROOT_DIR/vmlinux}}"
 CLI_ROOTFS_IMAGE="${NANOCLAW_GO_CLI_ROOTFS_IMAGE:-$ROOT_DIR/rootfs.img}"
+TASK_RUNTIME="${NANOCLAW_GO_TASK_RUNTIME:-bun}"
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -55,7 +56,7 @@ Environment loading:
 
 Examples:
   scripts/cli-smoke.sh up
-  scripts/cli-smoke.sh task "telegram-agent --runtime microvm --source cli-smoke"
+  scripts/cli-smoke.sh task "telegram-agent --runtime bun --source cli-smoke"
   scripts/cli-smoke.sh smoke
   scripts/cli-smoke.sh down
 
@@ -237,7 +238,7 @@ cmd_status() {
 cmd_task() {
   require_cmd curl
   require_cmd jq
-  local task_cmd="${1:-telegram-agent --runtime microvm --source cli-smoke}"
+  local task_cmd="${1:-telegram-agent --runtime $TASK_RUNTIME --source cli-smoke}"
   local cred_nonce
   cred_nonce="$(date +%s%N)"
   local tg_ref="secret/vm/telegram-runtime-cli-${cred_nonce}/telegram"
@@ -275,7 +276,7 @@ cmd_smoke() {
   require_cmd jq
 
   local task_resp task_id sbx_id status
-  task_resp="$(cmd_task "telegram-agent --runtime microvm --source cli-smoke-smoke")"
+  task_resp="$(cmd_task "telegram-agent --runtime $TASK_RUNTIME --source cli-smoke-smoke")"
   task_id="$(echo "$task_resp" | jq -r '.task_id')"
   sbx_id="$(echo "$task_resp" | jq -r '.sandbox_id')"
   status="$(echo "$task_resp" | jq -r '.status')"

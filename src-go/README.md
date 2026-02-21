@@ -75,7 +75,7 @@ bun run go:test:e2e
 cd src-go
 ./scripts/cli-smoke.sh up
 ./scripts/cli-smoke.sh status
-./scripts/cli-smoke.sh task "telegram-agent --runtime microvm --source cli-smoke"
+./scripts/cli-smoke.sh task "telegram-agent --runtime bun --source cli-smoke"
 ./scripts/cli-smoke.sh smoke
 ./scripts/cli-smoke.sh logs nanoclawd
 ./scripts/cli-smoke.sh down
@@ -109,6 +109,16 @@ cd src-go
 ./scripts/remote-firecracker.sh down
 ```
 
+Admin token helpers:
+
+```bash
+cd src-go
+./scripts/remote-firecracker.sh admin-token show
+./scripts/remote-firecracker.sh admin-token rotate
+```
+
+The remote helper stores the admin token in `NANOCLAW_REMOTE_ADMIN_TOKEN_FILE` (outside the synced `src-go/` tree), so it persists across `sync` and remote restarts/deployments.
+
 Full step-by-step documentation:
 
 - `REMOTE_FIRECRACKER.md`
@@ -132,6 +142,11 @@ Environment variables:
 - `NANOCLAW_GO_VM_KERNEL_IMAGE` (default kernel image path fallback)
 - `NANOCLAW_GO_VM_NET_MODE` (`none` or `tap`, with `none` as current safe default)
 - `NANOCLAW_GO_VM_STOP_TIMEOUT_MS` (stop timeout in milliseconds)
+- `NANOCLAW_GO_TASK_RUNTIME` (default task command runtime selector used by smoke/helpers; default `bun`)
+- `NANOCLAW_GO_ADMIN_ENABLED` (`true` by default)
+- `NANOCLAW_GO_ADMIN_TOKEN` (optional bearer/X-Admin-Token required for `/admin` and write APIs)
+- `NANOCLAW_GO_ADMIN_DIST_DIR` (default `web/admin/dist`)
+- `NANOCLAW_GO_BUILD_VERSION` (default `dev`, exposed via `/admin/config.json`)
 
 ## API
 - `POST /v1/tasks/runs`
@@ -140,6 +155,13 @@ Environment variables:
 - `POST /v1/sandboxes/{id}:start|stop|destroy|snapshot`
 - `POST /v1/sessions`
 - `GET /v1/events/stream`
+- `GET /v1/tasks`
+- `GET /v1/sandboxes`
+- `GET /v1/sandboxes/{id}`
+- `GET /v1/sessions`
+- `GET /v1/events`
+- `GET /admin` (admin microfrontend shell)
+- `GET /admin/config.json`
 
 Credential isolation requirement:
 - Every sandbox/task request must include `credential_refs.telegram_bot_token_ref` and `credential_refs.openai_api_key_ref`.

@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/harmony/nanoclaw/src-go/internal/adminui"
 	"github.com/harmony/nanoclaw/src-go/internal/api"
 	"github.com/harmony/nanoclaw/src-go/internal/config"
 	"github.com/harmony/nanoclaw/src-go/internal/policy"
@@ -34,10 +35,23 @@ func main() {
 	rec := reconciler.New(st, sup)
 	sess := session.NewManager(st)
 	server := api.NewServer(st, sup, pol, rec, sess)
+	server.SetAdminToken(cfg.AdminToken)
+	adminHandler := adminui.New(adminui.Options{
+		Enabled:      cfg.AdminEnabled,
+		Token:        cfg.AdminToken,
+		DistDir:      cfg.AdminDistDir,
+		APIBasePath:  "/v1",
+		BuildVersion: cfg.AdminBuildVersion,
+	})
+
+	rootMux := http.NewServeMux()
+	rootMux.Handle("/admin", adminHandler)
+	rootMux.Handle("/admin/", adminHandler)
+	rootMux.Handle("/", server.Handler())
 
 	httpServer := &http.Server{
 		Addr:    cfg.APIListenAddr,
-		Handler: server.Handler(),
+		Handler: rootMux,
 	}
 
 	go func() {

@@ -43,6 +43,7 @@ Edit `.env` and set at least:
 
 - `NANOCLAW_REMOTE_HOST` (required, for example `root@your-host`)
 - `NANOCLAW_REMOTE_WORKDIR` (default `/root/nanoclaw-buffalo`)
+- `NANOCLAW_REMOTE_ADMIN_TOKEN_FILE` (default `/root/nanoclaw-buffalo/.secrets/admin-token`)
 - `NANOCLAW_REMOTE_FIRECRACKER_BIN`
 - `NANOCLAW_REMOTE_KERNEL_IMAGE`
 - `NANOCLAW_REMOTE_ROOTFS_IMAGE`
@@ -77,6 +78,11 @@ cd src-go
 
 This pushes local `src-go` to remote `NANOCLAW_REMOTE_SRC_GO_DIR`.
 
+Admin token persistence note:
+
+- The admin token is stored on remote at `NANOCLAW_REMOTE_ADMIN_TOKEN_FILE` (outside synced `src-go/`).
+- This keeps the token stable across repeated `sync`, `restart`, and deployment cycles.
+
 ## 4) Operate services remotely
 
 Start/inspect:
@@ -107,6 +113,8 @@ Extra helpers:
 ```bash
 ./scripts/remote-firecracker.sh task "echo hello"
 ./scripts/remote-firecracker.sh test
+./scripts/remote-firecracker.sh admin-token show
+./scripts/remote-firecracker.sh admin-token rotate
 ./scripts/remote-firecracker.sh shell
 ```
 

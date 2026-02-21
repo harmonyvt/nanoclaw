@@ -135,6 +135,23 @@ func (s *MemoryStore) GetTask(taskID string) (contracts.TaskRunResult, error) {
 	return result, nil
 }
 
+func (s *MemoryStore) ListTasks() []contracts.TaskRunResult {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	items := make([]contracts.TaskRunResult, 0, len(s.tasks))
+	for _, task := range s.tasks {
+		items = append(items, task)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].CompletedAt.Equal(items[j].CompletedAt) {
+			return items[i].TaskID < items[j].TaskID
+		}
+		return items[i].CompletedAt.After(items[j].CompletedAt)
+	})
+	return items
+}
+
 func (s *MemoryStore) SaveSession(session contracts.SessionInfo) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -152,12 +169,51 @@ func (s *MemoryStore) GetSession(sessionID string) (contracts.SessionInfo, error
 	return session, nil
 }
 
+func (s *MemoryStore) ListSessions() []contracts.SessionInfo {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	items := make([]contracts.SessionInfo, 0, len(s.sessions))
+	for _, session := range s.sessions {
+		items = append(items, session)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].CreatedAt.Equal(items[j].CreatedAt) {
+			return items[i].SessionID < items[j].SessionID
+		}
+		return items[i].CreatedAt.After(items[j].CreatedAt)
+	})
+	return items
+}
+
 func (s *MemoryStore) SaveEvent(event contracts.Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.events = append(s.events, event)
 	s.events = trimEvents(s.events, s.maxEvents)
 	return s.persistLocked()
+}
+
+func (s *MemoryStore) ListEvents(limit int) []contracts.Event {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if limit < 1 || limit > len(s.events) {
+		limit = len(s.events)
+	}
+	start := len(s.events) - limit
+	if start < 0 {
+		start = 0
+	}
+	items := make([]contracts.Event, len(s.events[start:]))
+	copy(items, s.events[start:])
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Timestamp.Equal(items[j].Timestamp) {
+			return items[i].Type < items[j].Type
+		}
+		return items[i].Timestamp.Before(items[j].Timestamp)
+	})
+	return items
 }
 
 func (s *MemoryStore) loadFromDisk() error {
