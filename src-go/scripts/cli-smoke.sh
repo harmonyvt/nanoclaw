@@ -30,6 +30,11 @@ VM_STATE_DIR="${NANOCLAW_GO_VM_STATE_DIR:-$RUNTIME_DIR/vm-state}"
 CLI_KERNEL_IMAGE="${NANOCLAW_GO_CLI_KERNEL_IMAGE:-${VM_KERNEL_IMAGE:-$ROOT_DIR/vmlinux}}"
 CLI_ROOTFS_IMAGE="${NANOCLAW_GO_CLI_ROOTFS_IMAGE:-$ROOT_DIR/rootfs.img}"
 TASK_RUNTIME="${NANOCLAW_GO_TASK_RUNTIME:-bun}"
+ADMIN_TOKEN="$(printf '%s' "${NANOCLAW_GO_ADMIN_TOKEN:-}" | tr -d '\r\n')"
+API_AUTH_ARGS=()
+if [[ -n "$ADMIN_TOKEN" ]]; then
+  API_AUTH_ARGS=(-H "Authorization: Bearer $ADMIN_TOKEN")
+fi
 
 timestamp_utc() {
   date -u +"%Y-%m-%dT%H:%M:%SZ"
@@ -484,6 +489,7 @@ cmd_task() {
   log_info "creating task command=$task_cmd image_ref=$CLI_ROOTFS_IMAGE"
   log_info "credential_refs telegram=$tg_ref openai=$oa_ref"
   curl -fsS -X POST "http://$API_ADDR/v1/tasks/runs" \
+    "${API_AUTH_ARGS[@]}" \
     -H 'content-type: application/json' \
     -d "$payload"
   echo
@@ -504,11 +510,11 @@ cmd_smoke() {
   [[ "$status" == "accepted" ]] || { log_error "expected status=accepted got=$status"; exit 1; }
 
   log_info "smoke task accepted task_id=$task_id sandbox_id=$sbx_id"
-  curl -fsS "http://$API_ADDR/v1/tasks/$task_id" | jq '{task_id, sandbox_id, status}'
+  curl -fsS "${API_AUTH_ARGS[@]}" "http://$API_ADDR/v1/tasks/$task_id" | jq '{task_id, sandbox_id, status}'
 
   for action in stop start snapshot destroy; do
     log_info "smoke sandbox action=$action sandbox_id=$sbx_id"
-    curl -fsS -X POST "http://$API_ADDR/v1/sandboxes/$sbx_id:$action" | jq '{sandbox_id, observed_state, health, backend, snapshot_count, snapshot_ref}'
+    curl -fsS -X POST "${API_AUTH_ARGS[@]}" "http://$API_ADDR/v1/sandboxes/$sbx_id:$action" | jq '{sandbox_id, observed_state, health, backend, snapshot_count, snapshot_ref}'
   done
 
   log_info "smoke supervisor lifecycle sandbox_id=sbx-cli-smoke"
