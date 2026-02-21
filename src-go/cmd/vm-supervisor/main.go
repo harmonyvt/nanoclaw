@@ -147,7 +147,11 @@ func newSandboxCreateHandler(sup *vm.Supervisor) http.HandlerFunc {
 
 		spec.CredentialRefs = contracts.NormalizeCredentialRefs(spec.CredentialRefs)
 		if err := validateSandboxCredentialRefs(sup, spec); err != nil {
-			w.WriteHeader(http.StatusConflict)
+			status := http.StatusConflict
+			if validationErr := contracts.ValidateCredentialRefs(spec.CredentialRefs); validationErr != nil {
+				status = http.StatusBadRequest
+			}
+			w.WriteHeader(status)
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return
 		}

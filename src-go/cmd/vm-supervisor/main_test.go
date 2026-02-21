@@ -208,3 +208,24 @@ func TestSandboxCreateHandlerSerializesCredentialReservationUnderConcurrency(t *
 		t.Fatalf("expected %d conflicts, got %d", requests-1, conflicts)
 	}
 }
+
+func TestSandboxCreateHandlerReturnsBadRequestForInvalidCredentialRefs(t *testing.T) {
+	sup := vm.NewSupervisor(true, "")
+	handler := newSandboxCreateHandler(sup)
+
+	spec := contracts.SandboxSpec{
+		SandboxID: "sbx-invalid",
+		CredentialRefs: contracts.CredentialRefs{
+			TelegramBotTokenRef: "",
+			OpenAIAPIKeyRef:     "secret/vm/shared/openai",
+		},
+	}
+	raw, _ := json.Marshal(spec)
+	req := httptest.NewRequest(http.MethodPost, "/v1/supervisor/sandboxes", bytes.NewReader(raw))
+	resp := httptest.NewRecorder()
+	handler(resp, req)
+
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected bad request for invalid credential refs, got %d: %s", resp.Code, resp.Body.String())
+	}
+}
