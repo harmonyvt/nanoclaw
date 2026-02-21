@@ -21,13 +21,13 @@ const (
 	eventRetentionEnvKey      = "NANOCLAW_GO_EVENT_RETENTION"
 )
 
-type sandboxRecord struct {
+type SandboxRecord struct {
 	Spec   contracts.SandboxSpec   `json:"spec"`
 	Status contracts.SandboxStatus `json:"status"`
 }
 
 type persistedState struct {
-	Sandboxes map[string]sandboxRecord           `json:"sandboxes"`
+	Sandboxes map[string]SandboxRecord           `json:"sandboxes"`
 	Tasks     map[string]contracts.TaskRunResult `json:"tasks"`
 	Sessions  map[string]contracts.SessionInfo   `json:"sessions"`
 	Events    []contracts.Event                  `json:"events"`
@@ -38,7 +38,7 @@ type MemoryStore struct {
 
 	stateFile string
 	maxEvents int
-	sandboxes map[string]sandboxRecord
+	sandboxes map[string]SandboxRecord
 	tasks     map[string]contracts.TaskRunResult
 	sessions  map[string]contracts.SessionInfo
 	events    []contracts.Event
@@ -48,7 +48,7 @@ func NewMemoryStore(stateFile string) (*MemoryStore, error) {
 	st := &MemoryStore{
 		stateFile: stateFile,
 		maxEvents: eventRetentionLimit(),
-		sandboxes: map[string]sandboxRecord{},
+		sandboxes: map[string]SandboxRecord{},
 		tasks:     map[string]contracts.TaskRunResult{},
 		sessions:  map[string]contracts.SessionInfo{},
 		events:    []contracts.Event{},
@@ -62,7 +62,7 @@ func NewMemoryStore(stateFile string) (*MemoryStore, error) {
 func (s *MemoryStore) UpsertSandbox(spec contracts.SandboxSpec, status contracts.SandboxStatus) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.sandboxes[spec.SandboxID] = sandboxRecord{Spec: spec, Status: status}
+	s.sandboxes[spec.SandboxID] = SandboxRecord{Spec: spec, Status: status}
 	return s.persistLocked()
 }
 
@@ -98,6 +98,23 @@ func (s *MemoryStore) ListSandboxes() []contracts.SandboxStatus {
 	sort.Slice(items, func(i, j int) bool {
 		return items[i].SandboxID < items[j].SandboxID
 	})
+	return items
+}
+
+func (s *MemoryStore) ListSandboxRecords() []SandboxRecord {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	ids := make([]string, 0, len(s.sandboxes))
+	for id := range s.sandboxes {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	items := make([]SandboxRecord, 0, len(ids))
+	for _, id := range ids {
+		items = append(items, s.sandboxes[id])
+	}
 	return items
 }
 

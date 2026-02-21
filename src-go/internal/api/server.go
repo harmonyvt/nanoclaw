@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/harmony/nanoclaw/src-go/internal/contracts"
 	"github.com/harmony/nanoclaw/src-go/internal/policy"
 	"github.com/harmony/nanoclaw/src-go/internal/reconciler"
 	"github.com/harmony/nanoclaw/src-go/internal/session"
@@ -76,6 +77,10 @@ func (s *Server) handleTaskRuns(w http.ResponseWriter, r *http.Request) {
 	if spec.SandboxID == "" {
 		spec.SandboxID = fmt.Sprintf("sbx-%d-%d", time.Now().Unix(), rand.Intn(1000))
 	}
+	if code, err := s.validateCredentialRefsForSandbox(spec.SandboxID, spec.CredentialRefs); err != nil {
+		writeErr(w, code, err)
+		return
+	}
 
 	decision := s.policy.Evaluate(spec)
 	if !decision.Allowed {
@@ -95,8 +100,9 @@ func (s *Server) handleTaskRuns(w http.ResponseWriter, r *http.Request) {
 	}
 
 	specForSandbox := SandboxSpec{
-		SandboxID:    spec.SandboxID,
-		DesiredState: "running",
+		SandboxID:      spec.SandboxID,
+		DesiredState:   "running",
+		CredentialRefs: spec.CredentialRefs,
 		VMProfile: VMProfile{
 			KernelImage: defaultKernelImagePath(),
 			RootFSImage: spec.ImageRef,
@@ -148,6 +154,43 @@ func defaultKernelImagePath() string {
 	return "vmlinux"
 }
 
+func (s *Server) validateCredentialRefsForSandbox(sandboxID string, refs CredentialRefs) (int, error) {
+	if err := contracts.ValidateCredentialRefs(contracts.CredentialRefs(refs)); err != nil {
+		return http.StatusBadRequest, err
+	}
+
+	for _, record := range s.store.ListSandboxRecords() {
+		existingSpec := record.Spec
+		existingRefs := existingSpec.CredentialRefs
+		if existingSpec.SandboxID == sandboxID {
+			if existingRefs.TelegramBotTokenRef == "" && existingRefs.OpenAIAPIKeyRef == "" {
+				continue
+			}
+			if existingRefs.TelegramBotTokenRef != refs.TelegramBotTokenRef ||
+				existingRefs.OpenAIAPIKeyRef != refs.OpenAIAPIKeyRef {
+				return http.StatusConflict, fmt.Errorf("sandbox %s is already bound to different credential_refs", sandboxID)
+			}
+			continue
+		}
+		if !credentialLockApplies(record.Status.ObservedState) {
+			continue
+		}
+		if existingRefs.TelegramBotTokenRef == refs.TelegramBotTokenRef {
+			return http.StatusConflict, fmt.Errorf("credential_refs.telegram_bot_token_ref is already allocated to sandbox %s", existingSpec.SandboxID)
+		}
+		if existingRefs.OpenAIAPIKeyRef == refs.OpenAIAPIKeyRef {
+			return http.StatusConflict, fmt.Errorf("credential_refs.openai_api_key_ref is already allocated to sandbox %s", existingSpec.SandboxID)
+		}
+	}
+
+	return http.StatusOK, nil
+}
+
+func credentialLockApplies(observedState string) bool {
+	state := strings.ToLower(strings.TrimSpace(observedState))
+	return state != "destroyed"
+}
+
 func (s *Server) handleTaskGet(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
@@ -189,6 +232,10 @@ func (s *Server) handleSandboxCreate(w http.ResponseWriter, r *http.Request) {
 	if spec.NetworkPolicy.Allow == nil {
 		spec.NetworkPolicy.DefaultDeny = true
 		spec.NetworkPolicy.Allow = []EgressRule{}
+	}
+	if code, err := s.validateCredentialRefsForSandbox(spec.SandboxID, spec.CredentialRefs); err != nil {
+		writeErr(w, code, err)
+		return
 	}
 	status := s.supervisor.CreateSandbox(spec)
 	if err := s.store.UpsertSandbox(spec, status); err != nil {

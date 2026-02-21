@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -144,6 +145,23 @@ func (s *Supervisor) AssertOneVMSandboxInvariant(id string) error {
 		return fmt.Errorf("no VM tracked for sandbox %s", id)
 	}
 	return nil
+}
+
+func (s *Supervisor) ListSandboxSpecs() []contracts.SandboxSpec {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	ids := make([]string, 0, len(s.specs))
+	for id := range s.specs {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	specs := make([]contracts.SandboxSpec, 0, len(ids))
+	for _, id := range ids {
+		specs = append(specs, s.specs[id])
+	}
+	return specs
 }
 
 func (s *Supervisor) transition(

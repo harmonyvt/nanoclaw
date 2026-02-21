@@ -199,33 +199,13 @@ func TestIdempotentDestroyRefreshesBackendStatus(t *testing.T) {
 	}
 }
 
-func TestNewBackendFromConfigDefaultsToSimulated(t *testing.T) {
+func TestNewBackendFromConfigDefaultsToFirecracker(t *testing.T) {
 	t.Setenv("NANOCLAW_GO_VM_BACKEND", "")
 	t.Setenv("NANOCLAW_GO_FIRECRACKER_BIN", "")
-	t.Setenv("NANOCLAW_GO_SIMULATED_VM", "")
-
-	cfg := config.Load()
-	if cfg.VMBackend != BackendSimulated {
-		t.Fatalf("expected default backend %q, got %q", BackendSimulated, cfg.VMBackend)
-	}
-
-	backend, err := NewBackendFromConfig(cfg)
-	if err != nil {
-		t.Fatalf("expected simulated backend without error, got %v", err)
-	}
-	if backend.Name() != BackendSimulated {
-		t.Fatalf("expected backend %q, got %q", BackendSimulated, backend.Name())
-	}
-}
-
-func TestLegacySimulatedFlagStillSelectsFirecracker(t *testing.T) {
-	t.Setenv("NANOCLAW_GO_VM_BACKEND", "")
-	t.Setenv("NANOCLAW_GO_FIRECRACKER_BIN", "")
-	t.Setenv("NANOCLAW_GO_SIMULATED_VM", "false")
 
 	cfg := config.Load()
 	if cfg.VMBackend != BackendFirecracker {
-		t.Fatalf("expected legacy compatibility backend %q, got %q", BackendFirecracker, cfg.VMBackend)
+		t.Fatalf("expected default backend %q, got %q", BackendFirecracker, cfg.VMBackend)
 	}
 
 	if _, err := NewBackendFromConfig(cfg); err == nil {
@@ -233,10 +213,9 @@ func TestLegacySimulatedFlagStillSelectsFirecracker(t *testing.T) {
 	}
 }
 
-func TestExplicitBackendOverridesLegacyInputs(t *testing.T) {
+func TestExplicitBackendSelection(t *testing.T) {
 	t.Setenv("NANOCLAW_GO_VM_BACKEND", BackendSimulated)
 	t.Setenv("NANOCLAW_GO_FIRECRACKER_BIN", "/tmp/ignored-firecracker")
-	t.Setenv("NANOCLAW_GO_SIMULATED_VM", "false")
 
 	cfg := config.Load()
 	if cfg.VMBackend != BackendSimulated {

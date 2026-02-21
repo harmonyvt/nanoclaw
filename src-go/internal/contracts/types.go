@@ -9,6 +9,7 @@ type TaskRunSpec struct {
 	RiskClass       string           `json:"risk_class"`
 	Capabilities    CapabilityPolicy `json:"capabilities"`
 	ImageRef        string           `json:"image_ref"`
+	CredentialRefs  CredentialRefs   `json:"credential_refs"`
 	SecretsRef      []string         `json:"secrets_ref,omitempty"`
 	ResourceProfile ResourceProfile  `json:"resource_profile"`
 	Command         string           `json:"command,omitempty"`
@@ -16,11 +17,12 @@ type TaskRunSpec struct {
 
 // SandboxSpec defines desired sandbox state and isolation controls.
 type SandboxSpec struct {
-	SandboxID     string        `json:"sandbox_id"`
-	DesiredState  string        `json:"desired_state"`
-	VMProfile     VMProfile     `json:"vm_profile"`
-	NetworkPolicy NetworkPolicy `json:"network_policy"`
-	TTLSeconds    int           `json:"ttl_seconds"`
+	SandboxID      string         `json:"sandbox_id"`
+	DesiredState   string         `json:"desired_state"`
+	VMProfile      VMProfile      `json:"vm_profile"`
+	NetworkPolicy  NetworkPolicy  `json:"network_policy"`
+	CredentialRefs CredentialRefs `json:"credential_refs"`
+	TTLSeconds     int            `json:"ttl_seconds"`
 }
 
 // SandboxStatus captures live sandbox state.
@@ -68,6 +70,11 @@ type ToolRule struct {
 type SecretRule struct {
 	Ref     string `json:"ref"`
 	Allowed bool   `json:"allowed"`
+}
+
+type CredentialRefs struct {
+	TelegramBotTokenRef string `json:"telegram_bot_token_ref"`
+	OpenAIAPIKeyRef     string `json:"openai_api_key_ref"`
 }
 
 type ResourceProfile struct {

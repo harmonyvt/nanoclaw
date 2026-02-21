@@ -38,6 +38,10 @@ func TestTaskRunAndSandboxActions(t *testing.T) {
 	spec := TaskRunSpec{
 		RiskClass: "high",
 		ImageRef:  "rootfs.img",
+		CredentialRefs: CredentialRefs{
+			TelegramBotTokenRef: "secret/vm/sbx-a/telegram",
+			OpenAIAPIKeyRef:     "secret/vm/sbx-a/openai",
+		},
 		Capabilities: CapabilityPolicy{
 			EgressRules: []EgressRule{{Host: "api.example.com", Port: 443}},
 		},
@@ -127,6 +131,64 @@ func TestTaskRunAndSandboxActions(t *testing.T) {
 	}
 	if _, ok := snapshotEvt.Payload["snapshot"]; !ok {
 		t.Fatalf("expected snapshot metadata in snapshot event payload")
+	}
+}
+
+func TestTaskRunRejectsCredentialRefReuseAcrossSandboxes(t *testing.T) {
+	srv := newTestServer(t)
+	h := srv.Handler()
+
+	first := TaskRunSpec{
+		SandboxID: "sbx-1",
+		RiskClass: "high",
+		ImageRef:  "rootfs.img",
+		CredentialRefs: CredentialRefs{
+			TelegramBotTokenRef: "secret/vm/shared/telegram",
+			OpenAIAPIKeyRef:     "secret/vm/shared/openai",
+		},
+		Capabilities: CapabilityPolicy{
+			EgressRules: []EgressRule{{Host: "api.example.com", Port: 443}},
+		},
+		ResourceProfile: ResourceProfile{CPU: 1, Memory: 256, Pids: 64},
+	}
+	firstRaw, _ := json.Marshal(first)
+	firstReq := httptest.NewRequest(http.MethodPost, "/v1/tasks/runs", bytes.NewReader(firstRaw))
+	firstResp := httptest.NewRecorder()
+	h.ServeHTTP(firstResp, firstReq)
+	if firstResp.Code != http.StatusAccepted {
+		t.Fatalf("expected first run accepted, got %d: %s", firstResp.Code, firstResp.Body.String())
+	}
+
+	second := first
+	second.SandboxID = "sbx-2"
+	second.TaskID = "task-2"
+	secondRaw, _ := json.Marshal(second)
+	secondReq := httptest.NewRequest(http.MethodPost, "/v1/tasks/runs", bytes.NewReader(secondRaw))
+	secondResp := httptest.NewRecorder()
+	h.ServeHTTP(secondResp, secondReq)
+	if secondResp.Code != http.StatusConflict {
+		t.Fatalf("expected conflict for reused credential refs, got %d: %s", secondResp.Code, secondResp.Body.String())
+	}
+}
+
+func TestTaskRunRejectsMissingCredentialRefs(t *testing.T) {
+	srv := newTestServer(t)
+	h := srv.Handler()
+
+	spec := TaskRunSpec{
+		RiskClass: "high",
+		ImageRef:  "rootfs.img",
+		Capabilities: CapabilityPolicy{
+			EgressRules: []EgressRule{{Host: "api.example.com", Port: 443}},
+		},
+		ResourceProfile: ResourceProfile{CPU: 1, Memory: 256, Pids: 64},
+	}
+	raw, _ := json.Marshal(spec)
+	req := httptest.NewRequest(http.MethodPost, "/v1/tasks/runs", bytes.NewReader(raw))
+	resp := httptest.NewRecorder()
+	h.ServeHTTP(resp, req)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected bad request when credential refs missing, got %d: %s", resp.Code, resp.Body.String())
 	}
 }
 

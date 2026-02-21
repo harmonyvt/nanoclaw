@@ -8,12 +8,37 @@ Detailed architecture and flow documentation lives in `SYSTEM.md`.
 - `cmd/nanoclawd`: control plane API.
 - `cmd/vm-supervisor`: sandbox supervisor process (kill-switch endpoint included).
 - `cmd/sessiond`: PTY/session bridge service.
+- `cmd/telegram-agent`: Telegram agent runtime entrypoint (intended for microVM sandbox execution).
 
 ## Run
 
 ```bash
 cd src-go
 go run ./cmd/nanoclawd
+```
+
+### Telegram Agent Runtime Entrypoint (Go)
+
+This service is the Go Telegram runtime loop that the control plane can launch inside a sandbox microVM.
+
+Required env vars:
+- `TELEGRAM_BOT_TOKEN`
+- `OPENAI_API_KEY`
+
+Optional:
+- `OPENAI_BASE_URL`
+- `NANOCLAW_GO_AGENT_MODEL` (falls back to `DEFAULT_MODEL`, then `gpt-4o-mini`)
+- `NANOCLAW_GO_AGENT_SYSTEM_PROMPT`
+- `NANOCLAW_GO_TELEGRAM_ALLOWED_CHAT_IDS` (comma-separated numeric chat IDs)
+- `NANOCLAW_GO_TELEGRAM_POLL_SECONDS` (default `30`)
+- `NANOCLAW_GO_AGENT_TIMEOUT_SECONDS` (default `60`)
+- `NANOCLAW_GO_TELEGRAM_DEBUG` (`true`/`false`)
+
+Run:
+
+```bash
+cd src-go
+go run ./cmd/telegram-agent
 ```
 
 ### Dev CLI (Bubble Tea, Remote Dashboard)
@@ -33,7 +58,7 @@ Controls:
 - `c`: clear output panel
 - `q`: quit
 
-The dashboard is remote-only and executes `scripts/remote-firecracker.sh` commands.
+The dashboard is remote-only and executes `scripts/remote-firecracker.sh` commands for the Telegram runtime microVM flow.
 It surfaces remote host config, action history, command output, and parsed service health.
 
 ## End-to-end test
@@ -48,9 +73,9 @@ bun run go:test:e2e
 
 ```bash
 cd src-go
-NANOCLAW_GO_VM_BACKEND=simulated ./scripts/cli-smoke.sh up
+./scripts/cli-smoke.sh up
 ./scripts/cli-smoke.sh status
-./scripts/cli-smoke.sh task "echo hello from cli"
+./scripts/cli-smoke.sh task "telegram-agent --runtime microvm --source cli-smoke"
 ./scripts/cli-smoke.sh smoke
 ./scripts/cli-smoke.sh logs nanoclawd
 ./scripts/cli-smoke.sh down
@@ -68,7 +93,7 @@ cp .env.example .env
 ```
 
 Default `.env` in this repo includes:
-- local default backend: `NANOCLAW_GO_VM_BACKEND=simulated`
+- remote runtime backend: `NANOCLAW_GO_VM_BACKEND=firecracker`
 - remote target variables (`NANOCLAW_REMOTE_HOST`, `NANOCLAW_REMOTE_WORKDIR`, etc.)
 - remote Firecracker image paths under `/opt/firecracker/images`
 - remote VM net mode: `none`
@@ -101,13 +126,12 @@ Environment variables:
 - `NANOCLAW_GO_SUPERVISOR_ADDR` (default `:8071`)
 - `NANOCLAW_GO_STATE_FILE` (optional persisted state path)
 - `NANOCLAW_GO_POLICY_KEY` (HMAC policy signing key)
-- `NANOCLAW_GO_VM_BACKEND` (`simulated` or `firecracker`; default `simulated`)
+- `NANOCLAW_GO_VM_BACKEND` (`firecracker`; default `firecracker`)
 - `NANOCLAW_GO_FIRECRACKER_BIN` (required when backend is `firecracker`)
 - `NANOCLAW_GO_VM_STATE_DIR` (runtime state/socket/snapshot directory)
 - `NANOCLAW_GO_VM_KERNEL_IMAGE` (default kernel image path fallback)
 - `NANOCLAW_GO_VM_NET_MODE` (`none` or `tap`, with `none` as current safe default)
 - `NANOCLAW_GO_VM_STOP_TIMEOUT_MS` (stop timeout in milliseconds)
-- `NANOCLAW_GO_SIMULATED_VM` (legacy compatibility flag; prefer `NANOCLAW_GO_VM_BACKEND`)
 
 ## API
 - `POST /v1/tasks/runs`
@@ -117,5 +141,9 @@ Environment variables:
 - `POST /v1/sessions`
 - `GET /v1/events/stream`
 
+Credential isolation requirement:
+- Every sandbox/task request must include `credential_refs.telegram_bot_token_ref` and `credential_refs.openai_api_key_ref`.
+- These refs must be unique per sandbox (cannot be reused by another non-destroyed sandbox).
+
 ## Notes
-This implementation is microVM-control-plane oriented with a simulated backend by default, and now includes a Firecracker-backed runtime path for create/start/stop/destroy/snapshot/kill-switch flows.
+This implementation is microVM-control-plane oriented and defaults to Firecracker-backed runtime for create/start/stop/destroy/snapshot/kill-switch flows.

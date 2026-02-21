@@ -41,7 +41,7 @@ Commands:
   restart                 Restart remote services
   status                  Show remote process/health status
   smoke                   Run remote smoke flow
-  task [command]          Run one remote task command
+  task [command]          Run one remote Telegram runtime task command
   logs [service|all]      Tail remote logs
   test                    Run remote go test ./...
   shell                   Open an interactive SSH shell
@@ -162,7 +162,7 @@ cmd_smoke() {
 }
 
 cmd_task() {
-  remote_cli_smoke task "${1:-echo remote smoke}"
+  remote_cli_smoke task "${1:-telegram-agent --runtime microvm --source remote-firecracker}"
 }
 
 cmd_logs() {

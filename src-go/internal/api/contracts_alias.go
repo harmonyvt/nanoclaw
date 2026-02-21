@@ -10,6 +10,7 @@ type PathScope = contracts.PathScope
 type EgressRule = contracts.EgressRule
 type ToolRule = contracts.ToolRule
 type SecretRule = contracts.SecretRule
+type CredentialRefs = contracts.CredentialRefs
 type ResourceProfile = contracts.ResourceProfile
 type VMProfile = contracts.VMProfile
 type NetworkPolicy = contracts.NetworkPolicy
