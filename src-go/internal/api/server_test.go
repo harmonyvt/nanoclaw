@@ -441,6 +441,20 @@ func TestWriteEndpointsRequireAdminTokenWhenConfigured(t *testing.T) {
 		t.Fatalf("expected accepted with token, got %d: %s", authorizedResp.Code, authorizedResp.Body.String())
 	}
 
+	cookieSpec := spec
+	cookieSpec.TaskID = "task-auth-2"
+	cookieSpec.SandboxID = "sbx-auth-2"
+	cookieSpec.CredentialRefs.TelegramBotTokenRef = "secret/vm/sbx-auth-2/telegram"
+	cookieSpec.CredentialRefs.OpenAIAPIKeyRef = "secret/vm/sbx-auth-2/openai"
+	cookieRaw, _ := json.Marshal(cookieSpec)
+	cookieReq := httptest.NewRequest(http.MethodPost, "/v1/tasks/runs", bytes.NewReader(cookieRaw))
+	cookieReq.AddCookie(&http.Cookie{Name: "nanoclaw_admin_token", Value: "super-secret-token"})
+	cookieResp := httptest.NewRecorder()
+	h.ServeHTTP(cookieResp, cookieReq)
+	if cookieResp.Code != http.StatusAccepted {
+		t.Fatalf("expected accepted with cookie token, got %d: %s", cookieResp.Code, cookieResp.Body.String())
+	}
+
 	readReq := httptest.NewRequest(http.MethodGet, "/v1/tasks", nil)
 	readResp := httptest.NewRecorder()
 	h.ServeHTTP(readResp, readReq)

@@ -647,6 +647,11 @@ func (s *Server) authorizeWrite(w http.ResponseWriter, r *http.Request) bool {
 			token = strings.TrimSpace(auth[7:])
 		}
 	}
+	if token == "" {
+		if cookie, err := r.Cookie("nanoclaw_admin_token"); err == nil {
+			token = strings.TrimSpace(cookie.Value)
+		}
+	}
 	if token == s.adminToken {
 		return true
 	}

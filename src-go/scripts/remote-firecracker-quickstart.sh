@@ -1,11 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_NAME="remote-firecracker-quickstart"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SRC_GO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 ENV_FILE="$SRC_GO_DIR/.env"
 ENV_EXAMPLE="$SRC_GO_DIR/.env.example"
 REMOTE_HELPER="$SRC_GO_DIR/scripts/remote-firecracker.sh"
+
+timestamp_utc() {
+  date -u +"%Y-%m-%dT%H:%M:%SZ"
+}
+
+log_info() {
+  printf '[%s][%s][INFO] %s\n' "$SCRIPT_NAME" "$(timestamp_utc)" "$*" >&2
+}
+
+log_warn() {
+  printf '[%s][%s][WARN] %s\n' "$SCRIPT_NAME" "$(timestamp_utc)" "$*" >&2
+}
+
+log_error() {
+  printf '[%s][%s][ERROR] %s\n' "$SCRIPT_NAME" "$(timestamp_utc)" "$*" >&2
+}
 
 read_key_from_file() {
   local key="$1"
@@ -53,7 +70,7 @@ prompt_var() {
       read -r -p "$prompt: " value
     fi
     if [[ "$required" == "true" && -z "$value" ]]; then
-      echo "$key is required." >&2
+      log_error "$key is required"
       continue
     fi
     printf '%s' "$value"
@@ -71,22 +88,32 @@ yes_no() {
   esac
 }
 
+run_optional_remote_step() {
+  local label="$1"
+  local command="$2"
+  log_info "running remote step: $label"
+  if "$REMOTE_HELPER" "$command"; then
+    log_info "remote step succeeded: $label"
+  else
+    log_warn "remote step failed but continuing: $label"
+  fi
+}
+
 main() {
   if [[ ! -f "$ENV_EXAMPLE" ]]; then
-    echo "missing template: $ENV_EXAMPLE" >&2
+    log_error "missing template: $ENV_EXAMPLE"
     exit 1
   fi
   if [[ ! -x "$REMOTE_HELPER" ]]; then
-    echo "missing helper script: $REMOTE_HELPER" >&2
+    log_error "missing helper script: $REMOTE_HELPER"
     exit 1
   fi
 
-  echo "Remote Firecracker quickstart"
-  echo "This will create/update: $ENV_FILE"
-  echo
+  log_info "starting quickstart"
+  log_info "target env file: $ENV_FILE"
 
   if [[ -f "$ENV_FILE" ]] && ! yes_no ".env already exists. Overwrite it"; then
-    echo "aborted"
+    log_warn "aborted by user"
     exit 0
   fi
 
@@ -104,6 +131,18 @@ main() {
   remote_vm_net_mode="$(prompt_var "NANOCLAW_REMOTE_VM_NET_MODE" "Remote VM net mode (none|tap)" "$(default_for NANOCLAW_REMOTE_VM_NET_MODE none)" true)"
   remote_admin_token_file="$(prompt_var "NANOCLAW_REMOTE_ADMIN_TOKEN_FILE" "Remote admin token file path" "$(default_for NANOCLAW_REMOTE_ADMIN_TOKEN_FILE "$remote_workdir/.secrets/admin-token")" true)"
 
+  log_info "resolved configuration:"
+  log_info "NANOCLAW_GO_VM_BACKEND=$vm_backend"
+  log_info "NANOCLAW_GO_VM_NET_MODE=$vm_net_mode"
+  log_info "NANOCLAW_REMOTE_HOST=$remote_host"
+  log_info "NANOCLAW_REMOTE_WORKDIR=$remote_workdir"
+  log_info "NANOCLAW_REMOTE_SRC_GO_DIR=$remote_src_dir"
+  log_info "NANOCLAW_REMOTE_FIRECRACKER_BIN=$remote_firecracker_bin"
+  log_info "NANOCLAW_REMOTE_KERNEL_IMAGE=$remote_kernel_image"
+  log_info "NANOCLAW_REMOTE_ROOTFS_IMAGE=$remote_rootfs_image"
+  log_info "NANOCLAW_REMOTE_VM_NET_MODE=$remote_vm_net_mode"
+  log_info "NANOCLAW_REMOTE_ADMIN_TOKEN_FILE=$remote_admin_token_file"
+
   cat > "$ENV_FILE" <<EOF
 NANOCLAW_GO_VM_BACKEND=$vm_backend
 NANOCLAW_GO_VM_NET_MODE=$vm_net_mode
@@ -119,18 +158,22 @@ NANOCLAW_REMOTE_VM_NET_MODE=$remote_vm_net_mode
 NANOCLAW_REMOTE_ADMIN_TOKEN_FILE=$remote_admin_token_file
 EOF
 
-  echo
-  echo "Wrote $ENV_FILE"
-  echo
+  log_info "wrote $ENV_FILE"
 
   if yes_no "Run remote doctor now"; then
-    "$REMOTE_HELPER" doctor || true
+    run_optional_remote_step "doctor" "doctor"
+  else
+    log_info "skipped remote doctor"
   fi
   if yes_no "Run remote setup now"; then
-    "$REMOTE_HELPER" setup || true
+    run_optional_remote_step "setup" "setup"
+  else
+    log_info "skipped remote setup"
   fi
   if yes_no "Sync local src-go to remote now"; then
-    "$REMOTE_HELPER" sync || true
+    run_optional_remote_step "sync" "sync"
+  else
+    log_info "skipped remote sync"
   fi
 
   cat <<EOF
@@ -141,6 +184,7 @@ Next commands:
   ./scripts/remote-firecracker.sh smoke
   ./scripts/remote-firecracker.sh down
 EOF
+  log_info "quickstart complete"
 }
 
 main "$@"
