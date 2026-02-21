@@ -118,3 +118,42 @@ func TestFallbackServedWhenBuiltIndexRemovedAfterStartup(t *testing.T) {
 		t.Fatalf("expected fallback html body")
 	}
 }
+
+func TestRootLevelDistFileServedWithoutSPAFallback(t *testing.T) {
+	tmp := t.TempDir()
+	index := "<html><body>built-index</body></html>"
+	if err := os.WriteFile(filepath.Join(tmp, "index.html"), []byte(index), 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "favicon.ico"), []byte("ICO"), 0o644); err != nil {
+		t.Fatalf("write favicon: %v", err)
+	}
+
+	h := New(Options{Enabled: true, DistDir: tmp})
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/favicon.ico", nil)
+	resp := httptest.NewRecorder()
+	h.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200 for root dist file, got %d", resp.Code)
+	}
+	if resp.Body.String() != "ICO" {
+		t.Fatalf("expected favicon content, got %q", resp.Body.String())
+	}
+}
+
+func TestUnknownRootLevelFileWithExtensionReturnsNotFound(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmp, "index.html"), []byte("<html><body>built-index</body></html>"), 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+
+	h := New(Options{Enabled: true, DistDir: tmp})
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/site.webmanifest", nil)
+	resp := httptest.NewRecorder()
+	h.ServeHTTP(resp, req)
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for missing root dist file, got %d", resp.Code)
+	}
+}

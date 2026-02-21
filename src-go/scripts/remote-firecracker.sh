@@ -211,6 +211,18 @@ done
 EOF
 }
 
+remote_any_service_running() {
+  remote_exec "bash -s" <<'EOF'
+set -euo pipefail
+for svc in nanoclawd sessiond vm-supervisor; do
+  if pgrep -x "$svc" >/dev/null 2>&1; then
+    exit 0
+  fi
+done
+exit 1
+EOF
+}
+
 snapshot_inline() {
   printf '%s\n' "${1:-}" | tr '\n' ';' | sed -e 's/;$//'
 }
@@ -728,6 +740,20 @@ cmd_admin_token() {
       exit 1
       ;;
   esac
+  if [[ "$action" == "rotate" ]]; then
+    local restart_required=0
+    if remote_any_service_running; then
+      restart_required=1
+    fi
+    remote_admin_token "$action"
+    if [[ "$restart_required" -eq 1 ]]; then
+      log_info "admin token rotated; restarting remote services so the new token is active now"
+      cmd_restart
+    else
+      log_info "admin token rotated; services are not running so restart is skipped"
+    fi
+    return 0
+  fi
   remote_admin_token "$action"
 }
 

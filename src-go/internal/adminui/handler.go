@@ -85,11 +85,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.URL.Path == "/admin/config.json":
 		h.serveConfig(w)
 	case strings.HasPrefix(r.URL.Path, "/admin/assets/"):
-		h.serveAsset(w, strings.TrimPrefix(r.URL.Path, "/admin/"))
+		if !h.serveAsset(w, strings.TrimPrefix(r.URL.Path, "/admin/")) {
+			w.WriteHeader(http.StatusNotFound)
+		}
 	case r.URL.Path == "/admin" || r.URL.Path == "/admin/":
 		h.serveIndex(w)
 	case strings.HasPrefix(r.URL.Path, "/admin/"):
-		// SPA route fallback.
+		relativePath := strings.TrimPrefix(r.URL.Path, "/admin/")
+		if h.serveAsset(w, relativePath) {
+			return
+		}
+		if path.Ext(relativePath) != "" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		// SPA route fallback for extensionless routes.
 		h.serveIndex(w)
 	default:
 		http.NotFound(w, r)
@@ -193,39 +203,36 @@ func (h *Handler) serveIndex(w http.ResponseWriter) {
 	h.serveFallback(w, "fallback/index.html")
 }
 
-func (h *Handler) serveAsset(w http.ResponseWriter, relativePath string) {
+func (h *Handler) serveAsset(w http.ResponseWriter, relativePath string) bool {
 	if !fs.ValidPath(relativePath) {
-		w.WriteHeader(http.StatusNotFound)
-		return
+		return false
 	}
 	content, err := fs.ReadFile(h.distFS, relativePath)
 	if err != nil {
 		if strings.HasPrefix(relativePath, "assets/") {
-			h.serveFallback(w, "fallback/"+relativePath)
-			return
+			return h.serveFallback(w, "fallback/"+relativePath)
 		}
-		w.WriteHeader(http.StatusNotFound)
-		return
+		return false
 	}
 	setContentType(w, relativePath)
 	if strings.HasPrefix(relativePath, "assets/") {
 		w.Header().Set("Cache-Control", "public, max-age=3600")
 	}
 	_, _ = w.Write(content)
+	return true
 }
 
-func (h *Handler) serveFallback(w http.ResponseWriter, relativePath string) {
+func (h *Handler) serveFallback(w http.ResponseWriter, relativePath string) bool {
 	if !fs.ValidPath(relativePath) {
-		w.WriteHeader(http.StatusNotFound)
-		return
+		return false
 	}
 	content, err := fs.ReadFile(fallbackFS, relativePath)
 	if err != nil {
-		w.WriteHeader(http.StatusNotFound)
-		return
+		return false
 	}
 	setContentType(w, relativePath)
 	_, _ = w.Write(content)
+	return true
 }
 
 func (h *Handler) authorized(r *http.Request) bool {
