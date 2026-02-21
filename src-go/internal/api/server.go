@@ -77,10 +77,12 @@ func (s *Server) handleTaskRuns(w http.ResponseWriter, r *http.Request) {
 	if spec.SandboxID == "" {
 		spec.SandboxID = fmt.Sprintf("sbx-%d-%d", time.Now().Unix(), rand.Intn(1000))
 	}
-	if code, err := s.validateCredentialRefsForSandbox(spec.SandboxID, spec.CredentialRefs); err != nil {
+	normalizedRefs, code, err := s.validateCredentialRefsForSandbox(spec.SandboxID, spec.CredentialRefs)
+	if err != nil {
 		writeErr(w, code, err)
 		return
 	}
+	spec.CredentialRefs = normalizedRefs
 
 	decision := s.policy.Evaluate(spec)
 	if !decision.Allowed {
@@ -154,41 +156,37 @@ func defaultKernelImagePath() string {
 	return "vmlinux"
 }
 
-func (s *Server) validateCredentialRefsForSandbox(sandboxID string, refs CredentialRefs) (int, error) {
-	if err := contracts.ValidateCredentialRefs(contracts.CredentialRefs(refs)); err != nil {
-		return http.StatusBadRequest, err
+func (s *Server) validateCredentialRefsForSandbox(sandboxID string, refs CredentialRefs) (CredentialRefs, int, error) {
+	normalizedRefs := CredentialRefs(contracts.NormalizeCredentialRefs(contracts.CredentialRefs(refs)))
+	if err := contracts.ValidateCredentialRefs(contracts.CredentialRefs(normalizedRefs)); err != nil {
+		return CredentialRefs{}, http.StatusBadRequest, err
 	}
 
 	for _, record := range s.store.ListSandboxRecords() {
 		existingSpec := record.Spec
-		existingRefs := existingSpec.CredentialRefs
+		existingRefs := CredentialRefs(contracts.NormalizeCredentialRefs(contracts.CredentialRefs(existingSpec.CredentialRefs)))
 		if existingSpec.SandboxID == sandboxID {
 			if existingRefs.TelegramBotTokenRef == "" && existingRefs.OpenAIAPIKeyRef == "" {
 				continue
 			}
-			if existingRefs.TelegramBotTokenRef != refs.TelegramBotTokenRef ||
-				existingRefs.OpenAIAPIKeyRef != refs.OpenAIAPIKeyRef {
-				return http.StatusConflict, fmt.Errorf("sandbox %s is already bound to different credential_refs", sandboxID)
+			if existingRefs.TelegramBotTokenRef != normalizedRefs.TelegramBotTokenRef ||
+				existingRefs.OpenAIAPIKeyRef != normalizedRefs.OpenAIAPIKeyRef {
+				return CredentialRefs{}, http.StatusConflict, fmt.Errorf("sandbox %s is already bound to different credential_refs", sandboxID)
 			}
 			continue
 		}
-		if !credentialLockApplies(record.Status.ObservedState) {
+		if !contracts.CredentialLockApplies(record.Status.ObservedState) {
 			continue
 		}
-		if existingRefs.TelegramBotTokenRef == refs.TelegramBotTokenRef {
-			return http.StatusConflict, fmt.Errorf("credential_refs.telegram_bot_token_ref is already allocated to sandbox %s", existingSpec.SandboxID)
+		if existingRefs.TelegramBotTokenRef == normalizedRefs.TelegramBotTokenRef {
+			return CredentialRefs{}, http.StatusConflict, fmt.Errorf("credential_refs.telegram_bot_token_ref is already allocated to sandbox %s", existingSpec.SandboxID)
 		}
-		if existingRefs.OpenAIAPIKeyRef == refs.OpenAIAPIKeyRef {
-			return http.StatusConflict, fmt.Errorf("credential_refs.openai_api_key_ref is already allocated to sandbox %s", existingSpec.SandboxID)
+		if existingRefs.OpenAIAPIKeyRef == normalizedRefs.OpenAIAPIKeyRef {
+			return CredentialRefs{}, http.StatusConflict, fmt.Errorf("credential_refs.openai_api_key_ref is already allocated to sandbox %s", existingSpec.SandboxID)
 		}
 	}
 
-	return http.StatusOK, nil
-}
-
-func credentialLockApplies(observedState string) bool {
-	state := strings.ToLower(strings.TrimSpace(observedState))
-	return state != "destroyed"
+	return normalizedRefs, http.StatusOK, nil
 }
 
 func (s *Server) handleTaskGet(w http.ResponseWriter, r *http.Request) {
@@ -233,10 +231,12 @@ func (s *Server) handleSandboxCreate(w http.ResponseWriter, r *http.Request) {
 		spec.NetworkPolicy.DefaultDeny = true
 		spec.NetworkPolicy.Allow = []EgressRule{}
 	}
-	if code, err := s.validateCredentialRefsForSandbox(spec.SandboxID, spec.CredentialRefs); err != nil {
+	normalizedRefs, code, err := s.validateCredentialRefsForSandbox(spec.SandboxID, spec.CredentialRefs)
+	if err != nil {
 		writeErr(w, code, err)
 		return
 	}
+	spec.CredentialRefs = normalizedRefs
 	status := s.supervisor.CreateSandbox(spec)
 	if err := s.store.UpsertSandbox(spec, status); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)

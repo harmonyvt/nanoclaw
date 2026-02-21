@@ -192,6 +192,103 @@ func TestTaskRunRejectsMissingCredentialRefs(t *testing.T) {
 	}
 }
 
+func TestTaskRunRejectsCredentialRefReuseAgainstWhitespacePaddedSandbox(t *testing.T) {
+	srv := newTestServer(t)
+	h := srv.Handler()
+
+	legacySpec := SandboxSpec{
+		SandboxID:    "sbx-legacy",
+		DesiredState: "running",
+		CredentialRefs: CredentialRefs{
+			TelegramBotTokenRef: " secret/vm/shared/telegram ",
+			OpenAIAPIKeyRef:     " secret/vm/shared/openai\t",
+		},
+	}
+	legacyStatus := SandboxStatus{
+		SandboxID:     legacySpec.SandboxID,
+		ObservedState: "running",
+		Health:        "healthy",
+	}
+	if err := srv.store.UpsertSandbox(legacySpec, legacyStatus); err != nil {
+		t.Fatalf("failed to seed legacy sandbox: %v", err)
+	}
+
+	spec := TaskRunSpec{
+		SandboxID: "sbx-2",
+		RiskClass: "high",
+		ImageRef:  "rootfs.img",
+		CredentialRefs: CredentialRefs{
+			TelegramBotTokenRef: "secret/vm/shared/telegram",
+			OpenAIAPIKeyRef:     "secret/vm/shared/openai",
+		},
+		Capabilities: CapabilityPolicy{
+			EgressRules: []EgressRule{{Host: "api.example.com", Port: 443}},
+		},
+		ResourceProfile: ResourceProfile{CPU: 1, Memory: 256, Pids: 64},
+	}
+	raw, _ := json.Marshal(spec)
+	req := httptest.NewRequest(http.MethodPost, "/v1/tasks/runs", bytes.NewReader(raw))
+	resp := httptest.NewRecorder()
+	h.ServeHTTP(resp, req)
+	if resp.Code != http.StatusConflict {
+		t.Fatalf("expected conflict for reuse against whitespace-padded refs, got %d: %s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestTaskRunAllowsBindingWhenExistingSandboxRefsAreWhitespaceOnly(t *testing.T) {
+	srv := newTestServer(t)
+	h := srv.Handler()
+
+	legacySpec := SandboxSpec{
+		SandboxID:    "sbx-legacy",
+		DesiredState: "running",
+		CredentialRefs: CredentialRefs{
+			TelegramBotTokenRef: " ",
+			OpenAIAPIKeyRef:     "\t",
+		},
+	}
+	legacyStatus := SandboxStatus{
+		SandboxID:     legacySpec.SandboxID,
+		ObservedState: "running",
+		Health:        "healthy",
+	}
+	if err := srv.store.UpsertSandbox(legacySpec, legacyStatus); err != nil {
+		t.Fatalf("failed to seed legacy sandbox: %v", err)
+	}
+
+	spec := TaskRunSpec{
+		SandboxID: "sbx-legacy",
+		RiskClass: "high",
+		ImageRef:  "rootfs.img",
+		CredentialRefs: CredentialRefs{
+			TelegramBotTokenRef: "secret/vm/new/telegram",
+			OpenAIAPIKeyRef:     "secret/vm/new/openai",
+		},
+		Capabilities: CapabilityPolicy{
+			EgressRules: []EgressRule{{Host: "api.example.com", Port: 443}},
+		},
+		ResourceProfile: ResourceProfile{CPU: 1, Memory: 256, Pids: 64},
+	}
+	raw, _ := json.Marshal(spec)
+	req := httptest.NewRequest(http.MethodPost, "/v1/tasks/runs", bytes.NewReader(raw))
+	resp := httptest.NewRecorder()
+	h.ServeHTTP(resp, req)
+	if resp.Code != http.StatusAccepted {
+		t.Fatalf("expected accepted task run for whitespace-only legacy refs, got %d: %s", resp.Code, resp.Body.String())
+	}
+
+	savedSpec, _, err := srv.store.GetSandbox(spec.SandboxID)
+	if err != nil {
+		t.Fatalf("failed to read updated sandbox: %v", err)
+	}
+	if savedSpec.CredentialRefs.TelegramBotTokenRef != "secret/vm/new/telegram" {
+		t.Fatalf("expected normalized telegram ref to be persisted, got %q", savedSpec.CredentialRefs.TelegramBotTokenRef)
+	}
+	if savedSpec.CredentialRefs.OpenAIAPIKeyRef != "secret/vm/new/openai" {
+		t.Fatalf("expected normalized openai ref to be persisted, got %q", savedSpec.CredentialRefs.OpenAIAPIKeyRef)
+	}
+}
+
 func waitForEventType(t *testing.T, ch chan Event, eventType string) Event {
 	t.Helper()
 	timeout := time.After(2 * time.Second)

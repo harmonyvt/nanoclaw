@@ -43,6 +43,7 @@ func main() {
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "sandbox_id is required"})
 			return
 		}
+		spec.CredentialRefs = contracts.NormalizeCredentialRefs(spec.CredentialRefs)
 		if err := validateSandboxCredentialRefs(sup, spec); err != nil {
 			w.WriteHeader(http.StatusConflict)
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
@@ -145,12 +146,13 @@ func main() {
 }
 
 func validateSandboxCredentialRefs(sup *vm.Supervisor, incoming contracts.SandboxSpec) error {
+	incoming.CredentialRefs = contracts.NormalizeCredentialRefs(incoming.CredentialRefs)
 	if err := contracts.ValidateCredentialRefs(incoming.CredentialRefs); err != nil {
 		return err
 	}
 
 	for _, existingSpec := range sup.ListSandboxSpecs() {
-		existingRefs := existingSpec.CredentialRefs
+		existingRefs := contracts.NormalizeCredentialRefs(existingSpec.CredentialRefs)
 		if existingSpec.SandboxID == incoming.SandboxID {
 			if existingRefs.TelegramBotTokenRef == "" && existingRefs.OpenAIAPIKeyRef == "" {
 				continue
@@ -163,7 +165,7 @@ func validateSandboxCredentialRefs(sup *vm.Supervisor, incoming contracts.Sandbo
 		}
 
 		status, err := sup.GetStatus(existingSpec.SandboxID)
-		if err == nil && strings.EqualFold(status.ObservedState, "destroyed") {
+		if err == nil && !contracts.CredentialLockApplies(status.ObservedState) {
 			continue
 		}
 

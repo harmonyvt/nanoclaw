@@ -6,8 +6,9 @@ import (
 )
 
 func ValidateCredentialRefs(refs CredentialRefs) error {
-	telegram := strings.TrimSpace(refs.TelegramBotTokenRef)
-	openai := strings.TrimSpace(refs.OpenAIAPIKeyRef)
+	normalized := NormalizeCredentialRefs(refs)
+	telegram := normalized.TelegramBotTokenRef
+	openai := normalized.OpenAIAPIKeyRef
 
 	switch {
 	case telegram == "":
@@ -19,4 +20,15 @@ func ValidateCredentialRefs(refs CredentialRefs) error {
 	}
 
 	return nil
+}
+
+func NormalizeCredentialRefs(refs CredentialRefs) CredentialRefs {
+	refs.TelegramBotTokenRef = strings.TrimSpace(refs.TelegramBotTokenRef)
+	refs.OpenAIAPIKeyRef = strings.TrimSpace(refs.OpenAIAPIKeyRef)
+	return refs
+}
+
+func CredentialLockApplies(observedState string) bool {
+	state := strings.ToLower(strings.TrimSpace(observedState))
+	return state != "destroyed"
 }
