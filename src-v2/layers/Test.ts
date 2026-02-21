@@ -34,7 +34,7 @@ import {
 export const TestAppConfig: AppConfigShape = {
   telegramBotToken: 'test-token',
   telegramOwnerId: '12345',
-  defaultProvider: 'anthropic',
+  defaultProvider: 'openai',
   defaultModel: '',
   assistantName: 'TestBot',
   triggerPattern: /^@TestBot\b/i,

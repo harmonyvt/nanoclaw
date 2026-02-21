@@ -9,11 +9,13 @@
  * keeping the process alive and reusing the imported SDK.
  */
 
+import fs from 'fs';
 import { Effect, Layer, Stream } from 'effect';
 import type { ContainerInput, ContainerOutput } from './schemas/ContainerIO.js';
 import { decodeContainerInput } from './rpc/oneshot.js';
 import type { AgentEvent } from './schemas/AgentEvent.js';
 import { createAdapter } from './adapters/index.js';
+import { CancellationError } from './errors/index.js';
 import {
   HostBridge,
   HostBridgeOneShot,
@@ -29,11 +31,71 @@ import {
 import { RpcServer, RpcServerLive } from './rpc/server.js';
 import { runOneShot, writeOutput } from './rpc/oneshot.js';
 import type { HostBridgeService } from './services/HostBridge.js';
+import type { CancellationService } from './services/Cancellation.js';
 
 // ─── Logging ─────────────────────────────────────────────────────────────────
 
 function log(msg: string): void {
   process.stderr.write(`[agent-runner-v2] ${msg}\n`);
+}
+
+function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (
+    typeof err === 'object' &&
+    err !== null &&
+    'message' in err &&
+    typeof (err as { message?: unknown }).message === 'string'
+  ) {
+    return (err as { message: string }).message;
+  }
+  return String(err);
+}
+
+function isCancellationError(err: unknown): boolean {
+  return (
+    err instanceof CancellationError ||
+    (typeof err === 'object' &&
+      err !== null &&
+      '_tag' in err &&
+      (err as { _tag?: unknown })._tag === 'CancellationError')
+  );
+}
+
+const CANCEL_FILE = '/workspace/ipc/cancel';
+const CANCEL_POLL_INTERVAL_MS = 150;
+
+function startCancelFileWatcher(
+  cancellation: CancellationService,
+  onCancelled: () => void,
+): () => void {
+  let cancellationRequested = false;
+  const timer = setInterval(() => {
+    if (cancellationRequested) return;
+
+    try {
+      if (!fs.existsSync(CANCEL_FILE)) return;
+
+      cancellationRequested = true;
+      onCancelled();
+      log(`Cancel file detected: ${CANCEL_FILE}`);
+      try {
+        fs.unlinkSync(CANCEL_FILE);
+      } catch (err) {
+        log(`Failed to clear cancel file: ${errorMessage(err)}`);
+      }
+      void Effect.runPromise(cancellation.cancel).catch((err) => {
+        log(`Failed to signal cancellation: ${errorMessage(err)}`);
+      });
+    } catch (err) {
+      log(`Cancel watcher error: ${errorMessage(err)}`);
+    }
+  }, CANCEL_POLL_INTERVAL_MS);
+
+  timer.unref();
+  return () => {
+    clearInterval(timer);
+  };
 }
 
 // ─── Query Execution (shared by both modes) ──────────────────────────────────
@@ -83,87 +145,90 @@ async function runQuery(
   };
 
   let result: string | null = null;
+  let cancelDetected = false;
+  let stopCancelWatcher: (() => void) | null = null;
 
   try {
     log('Starting agent query...');
 
+    const cancellation = await Effect.runPromise(
+      Effect.gen(function* () {
+        return yield* Cancellation;
+      }).pipe(Effect.provide(fullLayer)),
+    );
+
+    stopCancelWatcher = startCancelFileWatcher(cancellation, () => {
+      cancelDetected = true;
+    });
+
     await Effect.runPromise(
-      Stream.runForEach(adapter.run(adapterInput), (event: AgentEvent) =>
-        Effect.gen(function* () {
-          const status = yield* StatusEmitter;
-          const cancellation = yield* Cancellation;
+      cancellation.withCancellation(
+        Stream.runForEach(adapter.run(adapterInput), (event: AgentEvent) =>
+          Effect.gen(function* () {
+            const status = yield* StatusEmitter;
 
-          // Check for cancellation between events
-          const cancelled = yield* cancellation.isCancelled;
-          if (cancelled) {
-            log('Cancel detected, aborting query');
-            result = result || '[Interrupted by user]';
-            return;
-          }
-
-          switch (event.type) {
-            case 'session_init':
-              log(`Session initialized: ${event.sessionId}`);
-              break;
-            case 'result':
-              result = event.result;
-              break;
-            case 'tool_start':
-              yield* status.emit({
-                type: 'tool_start',
-                tool_name: event.toolName,
-                preview: event.preview,
-              });
-              break;
-            case 'tool_progress':
-              yield* status.emit({
-                type: 'tool_progress',
-                tool_name: event.toolName,
-                elapsed_seconds: event.elapsedSeconds,
-              });
-              break;
-            case 'thinking':
-              yield* status.emit({
-                type: 'thinking',
-                content: event.content,
-              });
-              break;
-            case 'response_delta':
-              yield* status.emit({
-                type: 'response_delta',
-                content: event.content,
-              });
-              break;
-            case 'adapter_stderr':
-              yield* status.emit({
-                type: 'adapter_stderr',
-                message: event.message,
-              });
-              break;
-          }
-        }),
-      ).pipe(
-        Effect.catchAll((err) =>
-          Effect.sync(() => {
-            const errorMessage = err instanceof Error
-              ? err.message
-              : 'message' in err
-                ? (err as { message: string }).message
-                : String(err);
-            log(`Adapter error: ${errorMessage}`);
-            result = null;
+            switch (event.type) {
+              case 'session_init':
+                log(`Session initialized: ${event.sessionId}`);
+                break;
+              case 'result':
+                result = event.result;
+                break;
+              case 'tool_start':
+                yield* status.emit({
+                  type: 'tool_start',
+                  tool_name: event.toolName,
+                  preview: event.preview,
+                });
+                break;
+              case 'tool_progress':
+                yield* status.emit({
+                  type: 'tool_progress',
+                  tool_name: event.toolName,
+                  elapsed_seconds: event.elapsedSeconds,
+                });
+                break;
+              case 'thinking':
+                yield* status.emit({
+                  type: 'thinking',
+                  content: event.content,
+                });
+                break;
+              case 'response_delta':
+                yield* status.emit({
+                  type: 'response_delta',
+                  content: event.content,
+                });
+                break;
+              case 'adapter_stderr':
+                yield* status.emit({
+                  type: 'adapter_stderr',
+                  message: event.message,
+                });
+                break;
+            }
           }),
-        ),
-        Effect.provide(fullLayer),
+        ).pipe(Effect.provide(fullLayer)),
       ),
     );
 
     log('Agent query completed successfully');
+    stopCancelWatcher?.();
     return { status: 'success', result };
   } catch (err) {
-    const errorMessage = err instanceof Error ? err.message : String(err);
-    log(`Agent error: ${errorMessage}`);
-    return { status: 'error', result: null, error: errorMessage };
+    stopCancelWatcher?.();
+
+    if (isCancellationError(err) || cancelDetected) {
+      log('Agent query interrupted by cancellation');
+      return {
+        status: 'interrupted',
+        result: result || '[Interrupted by user]',
+      };
+    }
+
+    const message = errorMessage(err);
+    log(`Agent error: ${message}`);
+    return { status: 'error', result: null, error: message };
   }
 }
 

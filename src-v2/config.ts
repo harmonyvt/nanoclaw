@@ -174,7 +174,7 @@ export const AppConfigLive: Layer.Layer<AppConfig> = Layer.succeed(
       telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || '',
       telegramOwnerId: process.env.TELEGRAM_OWNER_ID || '',
 
-      defaultProvider: process.env.DEFAULT_PROVIDER || 'anthropic',
+      defaultProvider: process.env.DEFAULT_PROVIDER || 'openai',
       defaultModel: process.env.DEFAULT_MODEL || '',
 
       assistantName,
