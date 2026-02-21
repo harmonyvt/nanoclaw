@@ -28,6 +28,8 @@ type Server struct {
 	reconciler *reconciler.Reconciler
 	sessions   *session.Manager
 	bus        *eventBus
+
+	credentialReservationMu sync.Mutex
 }
 
 func NewServer(st *store.MemoryStore, sup *vm.Supervisor, pol *policy.Engine, rec *reconciler.Reconciler, ses *session.Manager) *Server {
@@ -77,12 +79,11 @@ func (s *Server) handleTaskRuns(w http.ResponseWriter, r *http.Request) {
 	if spec.SandboxID == "" {
 		spec.SandboxID = fmt.Sprintf("sbx-%d-%d", time.Now().Unix(), rand.Intn(1000))
 	}
-	normalizedRefs, code, err := s.validateCredentialRefsForSandbox(spec.SandboxID, spec.CredentialRefs)
-	if err != nil {
-		writeErr(w, code, err)
+	spec.CredentialRefs = CredentialRefs(contracts.NormalizeCredentialRefs(contracts.CredentialRefs(spec.CredentialRefs)))
+	if err := contracts.ValidateCredentialRefs(contracts.CredentialRefs(spec.CredentialRefs)); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	spec.CredentialRefs = normalizedRefs
 
 	decision := s.policy.Evaluate(spec)
 	if !decision.Allowed {
@@ -115,9 +116,9 @@ func (s *Server) handleTaskRuns(w http.ResponseWriter, r *http.Request) {
 		TTLSeconds:    3600,
 	}
 
-	status := s.supervisor.CreateSandbox(specForSandbox)
-	if err := s.store.UpsertSandbox(specForSandbox, status); err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
+	specForSandbox, _, code, err := s.createSandboxWithCredentialReservation(specForSandbox)
+	if err != nil {
+		writeErr(w, code, err)
 		return
 	}
 	if err := s.reconciler.ReconcileSandbox(r.Context(), spec.SandboxID); err != nil {
@@ -189,6 +190,23 @@ func (s *Server) validateCredentialRefsForSandbox(sandboxID string, refs Credent
 	return normalizedRefs, http.StatusOK, nil
 }
 
+func (s *Server) createSandboxWithCredentialReservation(spec SandboxSpec) (SandboxSpec, SandboxStatus, int, error) {
+	s.credentialReservationMu.Lock()
+	defer s.credentialReservationMu.Unlock()
+
+	normalizedRefs, code, err := s.validateCredentialRefsForSandbox(spec.SandboxID, spec.CredentialRefs)
+	if err != nil {
+		return SandboxSpec{}, SandboxStatus{}, code, err
+	}
+	spec.CredentialRefs = normalizedRefs
+
+	status := s.supervisor.CreateSandbox(spec)
+	if err := s.store.UpsertSandbox(spec, status); err != nil {
+		return SandboxSpec{}, SandboxStatus{}, http.StatusInternalServerError, err
+	}
+	return spec, status, http.StatusAccepted, nil
+}
+
 func (s *Server) handleTaskGet(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
@@ -231,15 +249,9 @@ func (s *Server) handleSandboxCreate(w http.ResponseWriter, r *http.Request) {
 		spec.NetworkPolicy.DefaultDeny = true
 		spec.NetworkPolicy.Allow = []EgressRule{}
 	}
-	normalizedRefs, code, err := s.validateCredentialRefsForSandbox(spec.SandboxID, spec.CredentialRefs)
+	spec, status, code, err := s.createSandboxWithCredentialReservation(spec)
 	if err != nil {
 		writeErr(w, code, err)
-		return
-	}
-	spec.CredentialRefs = normalizedRefs
-	status := s.supervisor.CreateSandbox(spec)
-	if err := s.store.UpsertSandbox(spec, status); err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	if spec.DesiredState == "running" || spec.DesiredState == "started" {

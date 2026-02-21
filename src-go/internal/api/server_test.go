@@ -3,9 +3,11 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -286,6 +288,68 @@ func TestTaskRunAllowsBindingWhenExistingSandboxRefsAreWhitespaceOnly(t *testing
 	}
 	if savedSpec.CredentialRefs.OpenAIAPIKeyRef != "secret/vm/new/openai" {
 		t.Fatalf("expected normalized openai ref to be persisted, got %q", savedSpec.CredentialRefs.OpenAIAPIKeyRef)
+	}
+}
+
+func TestTaskRunSerializesCredentialReservationUnderConcurrency(t *testing.T) {
+	srv := newTestServer(t)
+	h := srv.Handler()
+
+	const requests = 12
+	start := make(chan struct{})
+	codes := make(chan int, requests)
+	var wg sync.WaitGroup
+
+	for i := 0; i < requests; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+
+			spec := TaskRunSpec{
+				TaskID:    fmt.Sprintf("task-%d", i),
+				SandboxID: fmt.Sprintf("sbx-%d", i),
+				RiskClass: "high",
+				ImageRef:  "rootfs.img",
+				CredentialRefs: CredentialRefs{
+					TelegramBotTokenRef: "secret/vm/shared/telegram",
+					OpenAIAPIKeyRef:     "secret/vm/shared/openai",
+				},
+				Capabilities: CapabilityPolicy{
+					EgressRules: []EgressRule{{Host: "api.example.com", Port: 443}},
+				},
+				ResourceProfile: ResourceProfile{CPU: 1, Memory: 256, Pids: 64},
+			}
+			raw, _ := json.Marshal(spec)
+			req := httptest.NewRequest(http.MethodPost, "/v1/tasks/runs", bytes.NewReader(raw))
+			resp := httptest.NewRecorder()
+			h.ServeHTTP(resp, req)
+			codes <- resp.Code
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	close(codes)
+
+	accepted := 0
+	conflicts := 0
+	for code := range codes {
+		switch code {
+		case http.StatusAccepted:
+			accepted++
+		case http.StatusConflict:
+			conflicts++
+		default:
+			t.Fatalf("expected only accepted/conflict responses, got %d", code)
+		}
+	}
+	if accepted != 1 {
+		t.Fatalf("expected exactly one accepted request, got %d", accepted)
+	}
+	if conflicts != requests-1 {
+		t.Fatalf("expected %d conflicts, got %d", requests-1, conflicts)
 	}
 }
 

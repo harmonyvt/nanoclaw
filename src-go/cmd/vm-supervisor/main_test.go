@@ -1,9 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/harmony/nanoclaw/src-go/internal/contracts"
@@ -145,5 +151,60 @@ func TestValidateSandboxCredentialRefsAllowsRebindForWhitespaceOnlyRefs(t *testi
 	}
 	if err := validateSandboxCredentialRefs(sup, incoming); err != nil {
 		t.Fatalf("expected whitespace-only refs to be treated as unbound, got %v", err)
+	}
+}
+
+func TestSandboxCreateHandlerSerializesCredentialReservationUnderConcurrency(t *testing.T) {
+	sup := vm.NewSupervisor(true, "")
+	handler := newSandboxCreateHandler(sup)
+
+	const requests = 12
+	start := make(chan struct{})
+	codes := make(chan int, requests)
+	var wg sync.WaitGroup
+
+	for i := 0; i < requests; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+
+			spec := contracts.SandboxSpec{
+				SandboxID: fmt.Sprintf("sbx-%d", i),
+				CredentialRefs: contracts.CredentialRefs{
+					TelegramBotTokenRef: "secret/vm/shared/telegram",
+					OpenAIAPIKeyRef:     "secret/vm/shared/openai",
+				},
+			}
+			raw, _ := json.Marshal(spec)
+			req := httptest.NewRequest(http.MethodPost, "/v1/supervisor/sandboxes", bytes.NewReader(raw))
+			resp := httptest.NewRecorder()
+			handler(resp, req)
+			codes <- resp.Code
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	close(codes)
+
+	created := 0
+	conflicts := 0
+	for code := range codes {
+		switch code {
+		case http.StatusOK:
+			created++
+		case http.StatusConflict:
+			conflicts++
+		default:
+			t.Fatalf("expected only ok/conflict responses, got %d", code)
+		}
+	}
+	if created != 1 {
+		t.Fatalf("expected exactly one successful create, got %d", created)
+	}
+	if conflicts != requests-1 {
+		t.Fatalf("expected %d conflicts, got %d", requests-1, conflicts)
 	}
 }
