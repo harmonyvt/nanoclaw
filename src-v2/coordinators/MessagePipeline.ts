@@ -333,7 +333,7 @@ export const createMessagePipeline = (
       handleEvent: (event) =>
         Effect.gen(function* () {
           if (event.type === 'thinking' && event.content) {
-            yield* handle.onThinking();
+            yield* handle.onStatusText(event.content);
           } else if (event.type === 'tool_start' && event.tool_name) {
             yield* handle.onToolUse(event.tool_name);
           } else if (event.type === 'response_delta' && event.content) {
@@ -372,7 +372,7 @@ export const createMessagePipeline = (
               statusMsgId,
               chunks[0],
             )
-            .pipe(Effect.ignore);
+            .pipe(Effect.orElseSucceed(() => false));
           if (!edited) return;
 
           lastStatusText = newText;
@@ -382,7 +382,7 @@ export const createMessagePipeline = (
             const msgId = yield* telegram.sendStatusMessage(
               pipelineConfig.chatJid,
               chunk,
-            );
+            ).pipe(Effect.orElseSucceed(() => null));
             if (msgId) statusExtraIds.push(msgId);
           }
           return;
@@ -391,7 +391,7 @@ export const createMessagePipeline = (
         const msgId = yield* telegram.sendStatusMessage(
           pipelineConfig.chatJid,
           newText,
-        );
+        ).pipe(Effect.orElseSucceed(() => null));
         if (msgId) {
           statusMsgId = msgId;
           lastStatusText = newText;
