@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/harmony/nanoclaw/src-go/internal/contracts"
 	"github.com/harmony/nanoclaw/src-go/internal/policy"
 	"github.com/harmony/nanoclaw/src-go/internal/reconciler"
 	"github.com/harmony/nanoclaw/src-go/internal/session"
@@ -27,6 +28,8 @@ type Server struct {
 	reconciler *reconciler.Reconciler
 	sessions   *session.Manager
 	bus        *eventBus
+
+	credentialReservationMu sync.Mutex
 }
 
 func NewServer(st *store.MemoryStore, sup *vm.Supervisor, pol *policy.Engine, rec *reconciler.Reconciler, ses *session.Manager) *Server {
@@ -76,6 +79,11 @@ func (s *Server) handleTaskRuns(w http.ResponseWriter, r *http.Request) {
 	if spec.SandboxID == "" {
 		spec.SandboxID = fmt.Sprintf("sbx-%d-%d", time.Now().Unix(), rand.Intn(1000))
 	}
+	spec.CredentialRefs = CredentialRefs(contracts.NormalizeCredentialRefs(contracts.CredentialRefs(spec.CredentialRefs)))
+	if err := contracts.ValidateCredentialRefs(contracts.CredentialRefs(spec.CredentialRefs)); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
 
 	decision := s.policy.Evaluate(spec)
 	if !decision.Allowed {
@@ -95,8 +103,9 @@ func (s *Server) handleTaskRuns(w http.ResponseWriter, r *http.Request) {
 	}
 
 	specForSandbox := SandboxSpec{
-		SandboxID:    spec.SandboxID,
-		DesiredState: "running",
+		SandboxID:      spec.SandboxID,
+		DesiredState:   "running",
+		CredentialRefs: spec.CredentialRefs,
 		VMProfile: VMProfile{
 			KernelImage: defaultKernelImagePath(),
 			RootFSImage: spec.ImageRef,
@@ -107,9 +116,9 @@ func (s *Server) handleTaskRuns(w http.ResponseWriter, r *http.Request) {
 		TTLSeconds:    3600,
 	}
 
-	status := s.supervisor.CreateSandbox(specForSandbox)
-	if err := s.store.UpsertSandbox(specForSandbox, status); err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
+	specForSandbox, _, code, err := s.createSandboxWithCredentialReservation(specForSandbox)
+	if err != nil {
+		writeErr(w, code, err)
 		return
 	}
 	if err := s.reconciler.ReconcileSandbox(r.Context(), spec.SandboxID); err != nil {
@@ -146,6 +155,56 @@ func defaultKernelImagePath() string {
 		return kernel
 	}
 	return "vmlinux"
+}
+
+func (s *Server) validateCredentialRefsForSandbox(sandboxID string, refs CredentialRefs) (CredentialRefs, int, error) {
+	normalizedRefs := CredentialRefs(contracts.NormalizeCredentialRefs(contracts.CredentialRefs(refs)))
+	if err := contracts.ValidateCredentialRefs(contracts.CredentialRefs(normalizedRefs)); err != nil {
+		return CredentialRefs{}, http.StatusBadRequest, err
+	}
+
+	for _, record := range s.store.ListSandboxRecords() {
+		existingSpec := record.Spec
+		existingRefs := CredentialRefs(contracts.NormalizeCredentialRefs(contracts.CredentialRefs(existingSpec.CredentialRefs)))
+		if existingSpec.SandboxID == sandboxID {
+			if existingRefs.TelegramBotTokenRef == "" && existingRefs.OpenAIAPIKeyRef == "" {
+				continue
+			}
+			if existingRefs.TelegramBotTokenRef != normalizedRefs.TelegramBotTokenRef ||
+				existingRefs.OpenAIAPIKeyRef != normalizedRefs.OpenAIAPIKeyRef {
+				return CredentialRefs{}, http.StatusConflict, fmt.Errorf("sandbox %s is already bound to different credential_refs", sandboxID)
+			}
+			continue
+		}
+		if !contracts.CredentialLockApplies(record.Status.ObservedState) {
+			continue
+		}
+		if existingRefs.TelegramBotTokenRef == normalizedRefs.TelegramBotTokenRef {
+			return CredentialRefs{}, http.StatusConflict, fmt.Errorf("credential_refs.telegram_bot_token_ref is already allocated to sandbox %s", existingSpec.SandboxID)
+		}
+		if existingRefs.OpenAIAPIKeyRef == normalizedRefs.OpenAIAPIKeyRef {
+			return CredentialRefs{}, http.StatusConflict, fmt.Errorf("credential_refs.openai_api_key_ref is already allocated to sandbox %s", existingSpec.SandboxID)
+		}
+	}
+
+	return normalizedRefs, http.StatusOK, nil
+}
+
+func (s *Server) createSandboxWithCredentialReservation(spec SandboxSpec) (SandboxSpec, SandboxStatus, int, error) {
+	s.credentialReservationMu.Lock()
+	defer s.credentialReservationMu.Unlock()
+
+	normalizedRefs, code, err := s.validateCredentialRefsForSandbox(spec.SandboxID, spec.CredentialRefs)
+	if err != nil {
+		return SandboxSpec{}, SandboxStatus{}, code, err
+	}
+	spec.CredentialRefs = normalizedRefs
+
+	status := s.supervisor.CreateSandbox(spec)
+	if err := s.store.UpsertSandbox(spec, status); err != nil {
+		return SandboxSpec{}, SandboxStatus{}, http.StatusInternalServerError, err
+	}
+	return spec, status, http.StatusAccepted, nil
 }
 
 func (s *Server) handleTaskGet(w http.ResponseWriter, r *http.Request) {
@@ -190,9 +249,9 @@ func (s *Server) handleSandboxCreate(w http.ResponseWriter, r *http.Request) {
 		spec.NetworkPolicy.DefaultDeny = true
 		spec.NetworkPolicy.Allow = []EgressRule{}
 	}
-	status := s.supervisor.CreateSandbox(spec)
-	if err := s.store.UpsertSandbox(spec, status); err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
+	spec, status, code, err := s.createSandboxWithCredentialReservation(spec)
+	if err != nil {
+		writeErr(w, code, err)
 		return
 	}
 	if spec.DesiredState == "running" || spec.DesiredState == "started" {

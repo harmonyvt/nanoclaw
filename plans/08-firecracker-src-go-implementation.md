@@ -77,7 +77,7 @@ Suggested files:
 
 Extend `src-go/internal/config/config.go` to avoid mode ambiguity:
 
-- `NANOCLAW_GO_VM_BACKEND=simulated|firecracker` (default `simulated`).
+- `NANOCLAW_GO_VM_BACKEND=firecracker|simulated` (default `firecracker`).
 - `NANOCLAW_GO_FIRECRACKER_BIN` (required when backend is `firecracker`).
 - `NANOCLAW_GO_JAILER_BIN` (optional for later jailer support).
 - `NANOCLAW_GO_VM_STATE_DIR` (runtime files, sockets, snapshots).
@@ -85,7 +85,7 @@ Extend `src-go/internal/config/config.go` to avoid mode ambiguity:
 - `NANOCLAW_GO_VM_NET_MODE=none|tap` (start with `none`).
 - `NANOCLAW_GO_VM_STOP_TIMEOUT_MS`.
 
-Keep legacy `NANOCLAW_GO_SIMULATED_VM` temporarily for compatibility, but mark as deprecated once backend flag exists.
+Avoid reintroducing legacy `NANOCLAW_GO_SIMULATED_VM`; backend selection should be handled only by `NANOCLAW_GO_VM_BACKEND`.
 
 ## 4) Contract additions for real runtime observability
 

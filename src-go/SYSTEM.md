@@ -9,7 +9,7 @@
 - session metadata tracking,
 - event fanout and optional state persistence.
 
-Important reality: execution is still simulated. The APIs and contracts are in place, but there is no real Firecracker launch path in this code yet.
+Runtime defaults are Firecracker-first (`NANOCLAW_GO_VM_BACKEND=firecracker`). A simulated backend may still exist in test/development paths, but it is not the default operating mode.
 
 ## Branch Delta vs `main`
 
@@ -115,7 +115,7 @@ Session metadata manager:
 
 ### `internal/vm`
 
-Supervisor state machine (simulated):
+Supervisor state machine:
 
 - create/start/stop/destroy/snapshot/kill-switch transitions,
 - idempotent start/stop behavior,
@@ -139,8 +139,6 @@ Supervisor state machine (simulated):
 4. If allowed: build `SandboxSpec`, create sandbox in supervisor, persist to store.
 5. Reconcile desired state to running.
 6. Persist success `TaskRunResult`, emit `task.completed`, return `202`.
-
-Output is currently simulated (`"simulated execution completed"` or echoed command text).
 
 ### Sandbox Actions (`POST /v1/sandboxes/{id}:{action}`)
 
@@ -169,8 +167,8 @@ From `internal/config/config.go`:
 - `NANOCLAW_GO_SUPERVISOR_ADDR` (default `:8071`)
 - `NANOCLAW_GO_STATE_FILE` (optional persisted JSON state path)
 - `NANOCLAW_GO_POLICY_KEY` (HMAC signing key)
-- `NANOCLAW_GO_FIRECRACKER_BIN` (optional binary path)
-- `NANOCLAW_GO_SIMULATED_VM` (default `true`, forced `false` when firecracker bin is set)
+- `NANOCLAW_GO_VM_BACKEND` (`firecracker` default)
+- `NANOCLAW_GO_FIRECRACKER_BIN` (required when backend is `firecracker`)
 
 ## Test Coverage Snapshot
 
@@ -187,7 +185,7 @@ Notably thin/absent:
 - broader API error-path coverage,
 - reconciler failure-mode tests,
 - durable event replay/ordering guarantees,
-- real VM execution behavior (still simulated),
+- real VM execution behavior hardening under production load,
 - PTY-backed session behavior.
 
 ## Migration Alignment
@@ -203,7 +201,7 @@ Per `src-go/MIGRATION.md`:
 
 ## Known Limits and Sharp Edges
 
-1. Simulated backend: setting `NANOCLAW_GO_FIRECRACKER_BIN` changes mode flags but does not add real Firecracker execution logic by itself.
+1. Firecracker backend requires a valid runtime host/kernel/rootfs setup; missing host prerequisites will fail startup.
 2. Session actions are metadata-only; no active terminal bridge is wired.
 3. Event stream is best-effort and may drop messages for slow subscribers.
 4. With `NANOCLAW_GO_STATE_FILE` enabled, full state is rewritten on each mutation; event growth is currently unbounded.

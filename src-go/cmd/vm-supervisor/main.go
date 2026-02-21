@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -26,36 +27,18 @@ func main() {
 	}
 	sup := vm.NewSupervisorWithBackend(backend)
 
+	createSandboxHandler := newSandboxCreateHandler(sup)
 	mux := http.NewServeMux()
-	newSandbox := func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		var spec contracts.SandboxSpec
-		if err := json.NewDecoder(r.Body).Decode(&spec); err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-			return
-		}
-		if spec.SandboxID == "" {
-			w.WriteHeader(http.StatusBadRequest)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "sandbox_id is required"})
-			return
-		}
-		status := sup.CreateSandbox(spec)
-		_ = json.NewEncoder(w).Encode(map[string]any{"spec": spec, "status": status})
-	}
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "summary": sup.Summary()})
 	})
 	mux.HandleFunc("/v1/supervisor/sandboxes", func(w http.ResponseWriter, r *http.Request) {
-		newSandbox(w, r)
+		createSandboxHandler(w, r)
 	})
 	mux.HandleFunc("/v1/supervisor/sandboxes/", func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/v1/supervisor/sandboxes/")
 		if path == "" {
-			newSandbox(w, r)
+			createSandboxHandler(w, r)
 			return
 		}
 
@@ -137,4 +120,76 @@ func main() {
 	if err := httpServer.Shutdown(ctx); err != nil {
 		fmt.Printf("shutdown error: %v\n", err)
 	}
+}
+
+func newSandboxCreateHandler(sup *vm.Supervisor) http.HandlerFunc {
+	var sandboxCreateMu sync.Mutex
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var spec contracts.SandboxSpec
+		if err := json.NewDecoder(r.Body).Decode(&spec); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		if spec.SandboxID == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "sandbox_id is required"})
+			return
+		}
+
+		sandboxCreateMu.Lock()
+		defer sandboxCreateMu.Unlock()
+
+		spec.CredentialRefs = contracts.NormalizeCredentialRefs(spec.CredentialRefs)
+		if err := validateSandboxCredentialRefs(sup, spec); err != nil {
+			status := http.StatusConflict
+			if validationErr := contracts.ValidateCredentialRefs(spec.CredentialRefs); validationErr != nil {
+				status = http.StatusBadRequest
+			}
+			w.WriteHeader(status)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		status := sup.CreateSandbox(spec)
+		_ = json.NewEncoder(w).Encode(map[string]any{"spec": spec, "status": status})
+	}
+}
+
+func validateSandboxCredentialRefs(sup *vm.Supervisor, incoming contracts.SandboxSpec) error {
+	incoming.CredentialRefs = contracts.NormalizeCredentialRefs(incoming.CredentialRefs)
+	if err := contracts.ValidateCredentialRefs(incoming.CredentialRefs); err != nil {
+		return err
+	}
+
+	for _, existingSpec := range sup.ListSandboxSpecs() {
+		existingRefs := contracts.NormalizeCredentialRefs(existingSpec.CredentialRefs)
+		if existingSpec.SandboxID == incoming.SandboxID {
+			if existingRefs.TelegramBotTokenRef == "" && existingRefs.OpenAIAPIKeyRef == "" {
+				continue
+			}
+			if existingRefs.TelegramBotTokenRef != incoming.CredentialRefs.TelegramBotTokenRef ||
+				existingRefs.OpenAIAPIKeyRef != incoming.CredentialRefs.OpenAIAPIKeyRef {
+				return fmt.Errorf("sandbox %s is already bound to different credential_refs", incoming.SandboxID)
+			}
+			continue
+		}
+
+		status, err := sup.GetStatus(existingSpec.SandboxID)
+		if err == nil && !contracts.CredentialLockApplies(status.ObservedState) {
+			continue
+		}
+
+		if existingRefs.TelegramBotTokenRef == incoming.CredentialRefs.TelegramBotTokenRef {
+			return fmt.Errorf("credential_refs.telegram_bot_token_ref is already allocated to sandbox %s", existingSpec.SandboxID)
+		}
+		if existingRefs.OpenAIAPIKeyRef == incoming.CredentialRefs.OpenAIAPIKeyRef {
+			return fmt.Errorf("credential_refs.openai_api_key_ref is already allocated to sandbox %s", existingSpec.SandboxID)
+		}
+	}
+	return nil
 }

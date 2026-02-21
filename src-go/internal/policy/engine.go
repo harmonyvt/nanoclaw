@@ -44,6 +44,11 @@ func (e *Engine) Evaluate(spec contracts.TaskRunSpec) contracts.SignedPolicyDeci
 		decision.Reason = "egress rules required for deny-by-default policy"
 	}
 
+	if err := contracts.ValidateCredentialRefs(spec.CredentialRefs); err != nil {
+		decision.Allowed = false
+		decision.Reason = err.Error()
+	}
+
 	for _, secret := range spec.SecretsRef {
 		if e.IsSecretRevoked(secret) {
 			decision.Allowed = false

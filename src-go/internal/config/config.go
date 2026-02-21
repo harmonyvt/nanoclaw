@@ -15,9 +15,6 @@ type Config struct {
 	StateFile         string
 	PolicySigningKey  string
 
-	// Deprecated compatibility flag. Prefer VMBackend.
-	EnableSimulatedVM bool
-
 	VMBackend      string
 	FirecrackerBin string
 	VMStateDir     string
@@ -28,17 +25,9 @@ type Config struct {
 
 func Load() Config {
 	firecrackerBin := getenv("NANOCLAW_GO_FIRECRACKER_BIN", "")
-	legacySimulated := getenvBool("NANOCLAW_GO_SIMULATED_VM", true)
 	backend := strings.ToLower(strings.TrimSpace(os.Getenv("NANOCLAW_GO_VM_BACKEND")))
 	if backend == "" {
-		switch {
-		case firecrackerBin != "":
-			backend = "firecracker"
-		case !legacySimulated:
-			backend = "firecracker"
-		default:
-			backend = "simulated"
-		}
+		backend = "firecracker"
 	}
 
 	cfg := Config{
@@ -47,7 +36,6 @@ func Load() Config {
 		SupervisorAddr:    getenv("NANOCLAW_GO_SUPERVISOR_ADDR", ":8071"),
 		StateFile:         getenv("NANOCLAW_GO_STATE_FILE", ""),
 		PolicySigningKey:  getenv("NANOCLAW_GO_POLICY_KEY", "nanoclaw-dev-signing-key"),
-		EnableSimulatedVM: backend != "firecracker",
 		VMBackend:         backend,
 		FirecrackerBin:    firecrackerBin,
 		VMStateDir:        getenv("NANOCLAW_GO_VM_STATE_DIR", filepath.Join(os.TempDir(), "nanoclaw-go-vm")),
@@ -70,18 +58,6 @@ func getenv(key, fallback string) string {
 		return fallback
 	}
 	return v
-}
-
-func getenvBool(key string, fallback bool) bool {
-	v := os.Getenv(key)
-	if v == "" {
-		return fallback
-	}
-	parsed, err := strconv.ParseBool(v)
-	if err != nil {
-		return fallback
-	}
-	return parsed
 }
 
 func getenvInt(key string, fallback int) int {

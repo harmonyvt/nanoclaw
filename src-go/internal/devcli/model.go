@@ -83,7 +83,7 @@ func NewModel(workdir string) *Model {
 		runner:      NewRunner(workdir),
 		commands:    defaultCommands(),
 		remote:      loadRemoteConfig(workdir),
-		status:      "Remote dashboard ready. Press Enter to run an action.",
+		status:      "Remote dashboard ready. Press Enter to run a Telegram runtime action.",
 		outputLabel: "No command run yet",
 		output:      "",
 		snapshot:    remoteSnapshot{services: map[string]remoteServiceState{}},
@@ -199,8 +199,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *Model) View() string {
 	var builder strings.Builder
 
-	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("69")).Render("NanoClaw Remote Firecracker Dashboard")
-	subtitle := lipgloss.NewStyle().Foreground(lipgloss.Color("246")).Render("Remote-only devctl for Firecracker host operations and src-go workflows")
+	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("69")).Render("NanoClaw Remote MicroVM Dashboard")
+	subtitle := lipgloss.NewStyle().Foreground(lipgloss.Color("246")).Render("Remote-only devctl for Telegram agent runtime operations on Firecracker hosts")
 	builder.WriteString(title)
 	builder.WriteString("\n")
 	builder.WriteString(subtitle)
@@ -449,13 +449,13 @@ func defaultCommands() []commandSpec {
 			key:         "smoke",
 			title:       "smoke",
 			args:        []string{"smoke"},
-			description: "run remote task and sandbox lifecycle smoke suite",
+			description: "run remote Telegram runtime and sandbox lifecycle smoke suite",
 		},
 		{
 			key:         "task_echo",
-			title:       "task (echo)",
-			args:        []string{"task", "echo dashboard task run"},
-			description: "submit one remote task run request",
+			title:       "task (telegram-runtime)",
+			args:        []string{"task", "telegram-agent --runtime microvm --source devctl"},
+			description: "submit one remote Telegram runtime task request",
 		},
 		{
 			key:         "logs_all",

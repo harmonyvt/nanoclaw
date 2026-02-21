@@ -93,8 +93,8 @@ main() {
   local vm_backend vm_net_mode remote_host remote_workdir remote_src_dir
   local remote_firecracker_bin remote_kernel_image remote_rootfs_image remote_vm_net_mode
 
-  vm_backend="$(prompt_var "NANOCLAW_GO_VM_BACKEND" "Local default VM backend (simulated|firecracker)" "$(default_for NANOCLAW_GO_VM_BACKEND simulated)" true)"
-  vm_net_mode="$(prompt_var "NANOCLAW_GO_VM_NET_MODE" "Local VM net mode (none|tap)" "$(default_for NANOCLAW_GO_VM_NET_MODE none)" true)"
+  vm_backend="$(prompt_var "NANOCLAW_GO_VM_BACKEND" "VM backend (recommended: firecracker)" "$(default_for NANOCLAW_GO_VM_BACKEND firecracker)" true)"
+  vm_net_mode="$(prompt_var "NANOCLAW_GO_VM_NET_MODE" "VM net mode (none|tap)" "$(default_for NANOCLAW_GO_VM_NET_MODE none)" true)"
   remote_host="$(prompt_var "NANOCLAW_REMOTE_HOST" "Remote SSH host (example root@100.64.0.10)" "$(default_for NANOCLAW_REMOTE_HOST)" true)"
   remote_workdir="$(prompt_var "NANOCLAW_REMOTE_WORKDIR" "Remote working directory" "$(default_for NANOCLAW_REMOTE_WORKDIR /root/nanoclaw-buffalo)" true)"
   remote_src_dir="$(prompt_var "NANOCLAW_REMOTE_SRC_GO_DIR" "Remote src-go path" "$(default_for NANOCLAW_REMOTE_SRC_GO_DIR "$remote_workdir/src-go")" true)"
@@ -142,4 +142,3 @@ EOF
 }
 
 main "$@"
-

@@ -10,6 +10,10 @@ func TestEvaluateRequiresEgressRules(t *testing.T) {
 	eng := NewEngine("test-key")
 	spec := contracts.TaskRunSpec{
 		RiskClass: "high",
+		CredentialRefs: contracts.CredentialRefs{
+			TelegramBotTokenRef: "secret/vm/test/telegram",
+			OpenAIAPIKeyRef:     "secret/vm/test/openai",
+		},
 		Capabilities: contracts.CapabilityPolicy{
 			FSScopes: []contracts.PathScope{{Path: "/workspace", Mode: "write"}},
 		},
@@ -53,6 +57,10 @@ func TestSecretRevocationAndSignature(t *testing.T) {
 	spec := contracts.TaskRunSpec{
 		RiskClass:  "high",
 		SecretsRef: []string{"secret/db"},
+		CredentialRefs: contracts.CredentialRefs{
+			TelegramBotTokenRef: "secret/vm/test/telegram",
+			OpenAIAPIKeyRef:     "secret/vm/test/openai",
+		},
 		Capabilities: contracts.CapabilityPolicy{
 			EgressRules: []contracts.EgressRule{{Host: "*", Port: 443}},
 		},
@@ -63,5 +71,23 @@ func TestSecretRevocationAndSignature(t *testing.T) {
 	}
 	if !eng.VerifySignature(spec, decision) {
 		t.Fatalf("expected valid signature")
+	}
+}
+
+func TestEvaluateRequiresCredentialRefs(t *testing.T) {
+	eng := NewEngine("test-key")
+	spec := contracts.TaskRunSpec{
+		RiskClass: "high",
+		Capabilities: contracts.CapabilityPolicy{
+			EgressRules: []contracts.EgressRule{{Host: "api.example.com", Port: 443}},
+		},
+	}
+
+	decision := eng.Evaluate(spec)
+	if decision.Allowed {
+		t.Fatalf("expected policy denial when credential refs are missing")
+	}
+	if decision.Reason == "" {
+		t.Fatalf("expected denial reason")
 	}
 }

@@ -20,7 +20,7 @@ API_ADDR="${NANOCLAW_GO_API_ADDR:-127.0.0.1:18088}"
 SESSION_ADDR="${NANOCLAW_GO_SESSION_ADDR:-127.0.0.1:18089}"
 SUPERVISOR_ADDR="${NANOCLAW_GO_SUPERVISOR_ADDR:-127.0.0.1:18090}"
 
-VM_BACKEND="${NANOCLAW_GO_VM_BACKEND:-simulated}"
+VM_BACKEND="${NANOCLAW_GO_VM_BACKEND:-firecracker}"
 VM_NET_MODE="${NANOCLAW_GO_VM_NET_MODE:-none}"
 FIRECRACKER_BIN="${NANOCLAW_GO_FIRECRACKER_BIN:-}"
 VM_KERNEL_IMAGE="${NANOCLAW_GO_VM_KERNEL_IMAGE:-}"
@@ -45,8 +45,8 @@ Commands:
   down          Stop all services started by this script
   restart       Restart all services
   status        Show service + health status
-  task [cmd]    Create a task run and print response JSON
-  smoke         Run task + sandbox + supervisor lifecycle checks
+  task [cmd]    Create a Telegram agent runtime task and print response JSON
+  smoke         Run Telegram runtime + sandbox + supervisor lifecycle checks
   logs [name]   Tail logs for all services or one service
 
 Environment loading:
@@ -54,7 +54,8 @@ Environment loading:
   Override with NANOCLAW_GO_ENV_FILE=/path/to/custom.env
 
 Examples:
-  NANOCLAW_GO_VM_BACKEND=simulated scripts/cli-smoke.sh up
+  scripts/cli-smoke.sh up
+  scripts/cli-smoke.sh task "telegram-agent --runtime microvm --source cli-smoke"
   scripts/cli-smoke.sh smoke
   scripts/cli-smoke.sh down
 
@@ -85,8 +86,8 @@ EOF
 check_backend_requirements() {
   if [[ "$VM_BACKEND" == "firecracker" ]]; then
     if [[ "$(uname -s)" == "Darwin" ]]; then
-      echo "firecracker backend on macOS requires a Linux VM/host with KVM; use simulated mode on local macOS." >&2
-      echo "quick fix: NANOCLAW_GO_VM_BACKEND=simulated scripts/cli-smoke.sh up" >&2
+      echo "firecracker backend on macOS requires a Linux VM/host with KVM." >&2
+      echo "use remote workflow: ./scripts/remote-firecracker.sh up" >&2
       exit 1
     fi
     if [[ -z "$FIRECRACKER_BIN" ]]; then
@@ -236,14 +237,24 @@ cmd_status() {
 cmd_task() {
   require_cmd curl
   require_cmd jq
-  local task_cmd="${1:-echo smoke}"
+  local task_cmd="${1:-telegram-agent --runtime microvm --source cli-smoke}"
+  local cred_nonce
+  cred_nonce="$(date +%s%N)"
+  local tg_ref="secret/vm/telegram-runtime-cli-${cred_nonce}/telegram"
+  local oa_ref="secret/vm/telegram-runtime-cli-${cred_nonce}/openai"
   local payload
   payload="$(jq -n \
     --arg image_ref "$CLI_ROOTFS_IMAGE" \
     --arg command "$task_cmd" \
+    --arg telegram_ref "$tg_ref" \
+    --arg openai_ref "$oa_ref" \
     '{
       risk_class: "high",
       image_ref: $image_ref,
+      credential_refs: {
+        telegram_bot_token_ref: $telegram_ref,
+        openai_api_key_ref: $openai_ref
+      },
       command: $command,
       resource_profile: {cpu: 1, memory: 256, pids: 64},
       capabilities: {
@@ -264,7 +275,7 @@ cmd_smoke() {
   require_cmd jq
 
   local task_resp task_id sbx_id status
-  task_resp="$(cmd_task "echo cli-smoke")"
+  task_resp="$(cmd_task "telegram-agent --runtime microvm --source cli-smoke-smoke")"
   task_id="$(echo "$task_resp" | jq -r '.task_id')"
   sbx_id="$(echo "$task_resp" | jq -r '.sandbox_id')"
   status="$(echo "$task_resp" | jq -r '.status')"
@@ -273,7 +284,7 @@ cmd_smoke() {
   [[ -n "$sbx_id" && "$sbx_id" != "null" ]] || { echo "missing sandbox_id" >&2; exit 1; }
   [[ "$status" == "accepted" ]] || { echo "expected status=accepted, got $status" >&2; exit 1; }
 
-  echo "[smoke] task accepted task_id=$task_id sandbox_id=$sbx_id"
+  echo "[smoke] telegram runtime task accepted task_id=$task_id sandbox_id=$sbx_id"
   curl -fsS "http://$API_ADDR/v1/tasks/$task_id" | jq '{task_id, sandbox_id, status}'
 
   for action in stop start snapshot destroy; do
@@ -284,7 +295,7 @@ cmd_smoke() {
   echo "[smoke] supervisor lifecycle"
   curl -fsS -X POST "http://$SUPERVISOR_ADDR/v1/supervisor/sandboxes" \
     -H 'content-type: application/json' \
-    -d "{\"sandbox_id\":\"sbx-cli-smoke\",\"desired_state\":\"stopped\",\"vm_profile\":{\"kernel_image\":\"$CLI_KERNEL_IMAGE\",\"rootfs_image\":\"$CLI_ROOTFS_IMAGE\",\"vcpu\":1,\"memory_mib\":256},\"network_policy\":{\"default_deny\":true,\"allow\":[]},\"ttl_seconds\":3600}" \
+    -d "{\"sandbox_id\":\"sbx-cli-smoke\",\"desired_state\":\"stopped\",\"vm_profile\":{\"kernel_image\":\"$CLI_KERNEL_IMAGE\",\"rootfs_image\":\"$CLI_ROOTFS_IMAGE\",\"vcpu\":1,\"memory_mib\":256},\"network_policy\":{\"default_deny\":true,\"allow\":[]},\"credential_refs\":{\"telegram_bot_token_ref\":\"secret/vm/telegram-runtime-cli-supervisor/telegram\",\"openai_api_key_ref\":\"secret/vm/telegram-runtime-cli-supervisor/openai\"},\"ttl_seconds\":3600}" \
     >/dev/null
   for action in start stop snapshot killswitch; do
     curl -fsS -X POST "http://$SUPERVISOR_ADDR/v1/supervisor/sandboxes/sbx-cli-smoke:$action" | jq '{sandbox_id, observed_state, health, backend, snapshot_count, snapshot_ref, kill_switch_note}'
